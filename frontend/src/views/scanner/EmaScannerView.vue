@@ -13,7 +13,7 @@
       </div>
 
       <aside class="flex h-full min-h-0 flex-col overflow-hidden xl:col-start-1 xl:row-start-2">
-        <div class="shrink-0 space-y-4 pr-1">
+        <div class="shrink-0 space-y-4">
           <BaseCard>
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
@@ -39,12 +39,15 @@
           </BaseCard>
 
           <button
-            class="w-full rounded-md border border-border bg-accent px-3 py-2 text-sm font-medium text-base"
+            class="w-full rounded-md border border-border px-3 py-2 text-sm font-medium transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-70"
+            :class="automationIsRunning || !automationStateReady ? 'bg-panel text-muted' : 'bg-accent text-base'"
             type="button"
-            :disabled="store.isScanning"
+            :disabled="isScanDisabled"
             @click="handleScan"
           >
-            {{ store.isScanning ? "Scanning..." : "Run Scan" }}
+            <Transition name="fade" mode="out-in">
+              <span :key="scanButtonLabel">{{ scanButtonLabel }}</span>
+            </Transition>
           </button>
         </div>
 
@@ -97,7 +100,7 @@
               <form class="flex items-center gap-2" @submit.prevent="handleAddEma">
                 <input
                   v-model.number="newEma"
-                  class="w-16 rounded-md border border-border bg-panel px-2 py-1 text-xs"
+                  class="w-20 rounded-md border border-border bg-panel px-2 py-1 text-xs"
                   type="number"
                   placeholder="+ EMA"
                 />
@@ -647,6 +650,7 @@ const newEma = ref<number | null>(null);
 const toleranceValue = ref(store.tolerancePct);
 const scanFileInput = ref<HTMLInputElement | null>(null);
 const automationIsRunning = ref(false);
+const automationStateReady = ref(false);
 const automationIntervalSeconds = ref<number | null>(null);
 const automationLastEmaAt = ref<string | null>(null);
 const automationCountdown = ref<number | null>(null);
@@ -672,7 +676,19 @@ const logOverlayRef = ref<HTMLElement | null>(null);
 const logListAutoScroll = ref(true);
 const logOverlayAutoScroll = ref(true);
 
+const scanButtonLabel = computed(() => {
+  if (!automationStateReady.value) return "Checking automation...";
+  if (store.isScanning) return "Scanning...";
+  if (automationIsRunning.value) return "managed by agent";
+  return "Run Scan Once";
+});
+
+const isScanDisabled = computed(
+  () => !automationStateReady.value || store.isScanning || automationIsRunning.value,
+);
+
 const handleScan = () => {
+  if (isScanDisabled.value) return;
   void store.runScan();
 };
 
@@ -1194,6 +1210,8 @@ const loadAutomationState = async () => {
     computeNextEmaAt();
   } catch {
     // Ignore automation state load errors.
+  } finally {
+    automationStateReady.value = true;
   }
 };
 
@@ -1332,6 +1350,16 @@ onBeforeUnmount(() => {
 .log-overlay-leave-to .log-panel {
   opacity: 0;
   transform: translateY(6px) scale(0.98);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 160ms ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 </style>

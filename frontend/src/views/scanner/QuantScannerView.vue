@@ -34,12 +34,15 @@
           </BaseCard>
 
           <button
-            class="w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted hover:text-text"
+            class="w-full rounded-md border border-border px-3 py-2 text-sm font-medium transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-70"
+            :class="automationIsRunning || !automationStateReady ? 'bg-panel text-muted' : 'bg-accent text-base'"
             type="button"
-            :disabled="store.isRunning"
+            :disabled="isScanDisabled"
             @click="handleRun"
           >
-            {{ store.isRunning ? "Scanning..." : "Run Scanner" }}
+            <Transition name="fade" mode="out-in">
+              <span :key="scanButtonLabel">{{ scanButtonLabel }}</span>
+            </Transition>
           </button>
         </div>
 
@@ -634,6 +637,9 @@ type AnomalyCard = {
 };
 
 const store = useScannerQuantStore();
+const automationIsRunning = ref(false);
+const automationStateReady = ref(false);
+let automationPollTimer: ReturnType<typeof setInterval> | null = null;
 const leftPanelRef = ref<HTMLElement | null>(null);
 const leftPanelScrollTop = ref(0);
 let unsubscribeMarketCache: (() => void) | null = null;
@@ -965,7 +971,33 @@ const filteredLogs = computed(() => {
   return store.logs.filter((log) => (log.type || "").toLowerCase().includes(key));
 });
 
+const scanButtonLabel = computed(() => {
+  if (!automationStateReady.value) return "Checking automation...";
+  if (store.isRunning) return "Scanning...";
+  if (automationIsRunning.value) return "managed by agent";
+  return "Run Scan Once";
+});
+
+const isScanDisabled = computed(
+  () => !automationStateReady.value || store.isRunning || automationIsRunning.value,
+);
+
+const loadAutomationState = async () => {
+  try {
+    const response = await fetch("/api/v1/automation/state");
+    const data = await response.json();
+    const payload = data?.data;
+    if (!payload) return;
+    automationIsRunning.value = Boolean(payload.is_running);
+  } catch {
+    // Ignore automation state load errors.
+  } finally {
+    automationStateReady.value = true;
+  }
+};
+
 const handleRun = () => {
+  if (isScanDisabled.value) return;
   void store.runScan();
 };
 
@@ -1669,6 +1701,8 @@ onMounted(async () => {
     applyMarketAssets(cached);
   }
   unsubscribeMarketCache = subscribeMarketCache((data) => applyMarketAssets(data));
+  void loadAutomationState();
+  automationPollTimer = setInterval(loadAutomationState, 15000);
   await store.loadAssets();
 });
 
@@ -1692,5 +1726,21 @@ onBeforeUnmount(() => {
     unsubscribeMarketCache();
     unsubscribeMarketCache = null;
   }
+  if (automationPollTimer) {
+    clearInterval(automationPollTimer);
+    automationPollTimer = null;
+  }
 });
 </script>
+
+<style scoped>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 160ms ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

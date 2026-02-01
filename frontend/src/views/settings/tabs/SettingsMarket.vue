@@ -3,63 +3,6 @@
     <BaseCard>
       <template v-if="showLoading">
         <div class="animate-pulse space-y-3">
-          <div class="flex items-center justify-between">
-            <div class="space-y-2">
-              <div class="h-3 w-40 rounded bg-panel/60"></div>
-              <div class="h-2 w-64 rounded bg-panel/40"></div>
-            </div>
-            <div class="h-5 w-16 rounded-full bg-panel/50"></div>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <div class="h-8 w-20 rounded bg-panel/60"></div>
-            <div class="h-8 w-16 rounded bg-panel/40"></div>
-          </div>
-        </div>
-      </template>
-      <template v-else>
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="text-xs uppercase tracking-wide text-muted">Market Data Source</div>
-            <p class="mt-1 text-xs text-muted">
-              Spot uses cleaner price action. Futures keeps OI and funding metrics.
-            </p>
-          </div>
-          <BaseBadge>{{ marketSourceLabel }}</BaseBadge>
-        </div>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <button
-            class="rounded-md border border-border px-3 py-2 text-xs font-medium"
-            :class="
-              marketSource === 'futures'
-                ? 'bg-accent text-base'
-                : 'bg-panel text-muted hover:text-text'
-            "
-            type="button"
-            :disabled="marketSource === 'futures' || isSavingSource"
-            @click="updateMarketSource('futures')"
-          >
-            Futures
-          </button>
-          <button
-            class="rounded-md border border-border px-3 py-2 text-xs font-medium"
-            :class="
-              marketSource === 'spot'
-                ? 'bg-accent text-base'
-                : 'bg-panel text-muted hover:text-text'
-            "
-            type="button"
-            :disabled="marketSource === 'spot' || isSavingSource"
-            @click="updateMarketSource('spot')"
-          >
-            Spot
-          </button>
-        </div>
-      </template>
-    </BaseCard>
-
-    <BaseCard>
-      <template v-if="showLoading">
-        <div class="animate-pulse space-y-3">
           <div class="flex items-start justify-between gap-3">
             <div class="space-y-2">
               <div class="h-3 w-32 rounded bg-panel/60"></div>
@@ -273,13 +216,11 @@ const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
 
 const assets = ref<string[]>([]);
 const intervals = ref<string[]>([]);
-const marketSource = ref<"spot" | "futures">("futures");
 const assetInput = ref("");
 const intervalInput = ref("");
 const error = ref("");
 const statusMessage = ref("");
 const statusTone = ref<"info" | "success" | "error">("info");
-const isSavingSource = ref(false);
 const isAddingAsset = ref(false);
 const isAddingInterval = ref(false);
 const isUpdatingDynamic = ref(false);
@@ -298,10 +239,6 @@ const statusToneClass = computed(() => {
   if (statusTone.value === "error") return "text-negative";
   return "text-muted";
 });
-
-const marketSourceLabel = computed(() =>
-  marketSource.value === "spot" ? "Spot" : "Futures",
-);
 
 const showLoading = computed(() => isLoading.value && !hasLoaded.value);
 
@@ -354,7 +291,6 @@ const refreshAssets = async (force = false) => {
 const applyMarketCache = (data: MarketCacheData) => {
   assets.value = Array.isArray(data.assets) ? [...data.assets] : [];
   intervals.value = Array.isArray(data.intervals) ? [...data.intervals] : [];
-  marketSource.value = data.marketSource === "spot" ? "spot" : "futures";
   dynamicEnabled.value = Boolean(data.dynamicEnabled);
   hasApiKey.value = Boolean(data.hasApiKey);
   isBinanceActive.value = Boolean(data.isBinanceActive);
@@ -368,7 +304,6 @@ const persistMarketCache = () => {
   writeMarketCache({
     assets: [...assets.value],
     intervals: [...intervals.value],
-    marketSource: marketSource.value,
     dynamicEnabled: dynamicEnabled.value,
     hasApiKey: hasApiKey.value,
     isBinanceActive: isBinanceActive.value,
@@ -397,27 +332,18 @@ const loadMarketSettings = async (force = false) => {
       fetch(assetsUrl),
     ];
     if (shouldFetchCore) {
-      requests.push(
-        fetch("/api/v1/market/monitored-intervals"),
-        fetch("/api/config/scanner/market-data-source"),
-      );
+      requests.push(fetch("/api/v1/market/monitored-intervals"));
     }
 
-    const [dynamicRes, assetsRes, intervalsRes, sourceRes] = await Promise.all(requests);
+    const [dynamicRes, assetsRes, intervalsRes] = await Promise.all(requests);
     const dynamicData = await dynamicRes.json();
     const assetsData = await assetsRes.json();
 
     assets.value = Array.isArray(assetsData?.data) ? assetsData.data : [];
 
-    if (shouldFetchCore && intervalsRes && sourceRes) {
+    if (shouldFetchCore && intervalsRes) {
       const intervalsData = await intervalsRes.json();
-      const sourceData = await sourceRes.json();
-
       intervals.value = Array.isArray(intervalsData?.data) ? intervalsData.data : [];
-
-      if (sourceData.success && (sourceData.source === "spot" || sourceData.source === "futures")) {
-        marketSource.value = sourceData.source;
-      }
     }
 
     if (dynamicData?.data) {
@@ -439,29 +365,6 @@ const loadMarketSettings = async (force = false) => {
     if (shouldFetchCore) {
       isLoading.value = false;
     }
-  }
-};
-
-const updateMarketSource = async (source: "spot" | "futures") => {
-  if (marketSource.value === source) return;
-  isSavingSource.value = true;
-  try {
-    const response = await fetch("/api/config/scanner/market-data-source", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source }),
-    });
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.error || "Failed to update market data source.");
-    }
-    marketSource.value = source;
-    setStatus(`Market data source set to ${source}.`, "success");
-    persistMarketCache();
-  } catch (err) {
-    setStatus(err instanceof Error ? err.message : "Failed to update data source.", "error");
-  } finally {
-    isSavingSource.value = false;
   }
 };
 

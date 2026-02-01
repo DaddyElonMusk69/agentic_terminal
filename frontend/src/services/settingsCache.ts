@@ -8,7 +8,6 @@ export type DynamicSources = {
 export type MarketCacheData = {
   assets: string[];
   intervals: string[];
-  marketSource: "spot" | "futures";
   dynamicEnabled: boolean;
   hasApiKey: boolean;
   isBinanceActive: boolean;
@@ -101,7 +100,6 @@ const cloneDynamicSources = (sources: DynamicSources): DynamicSources => ({
 const cloneMarketCache = (data: MarketCacheData): MarketCacheData => ({
   assets: [...data.assets],
   intervals: [...data.intervals],
-  marketSource: data.marketSource,
   dynamicEnabled: data.dynamicEnabled,
   hasApiKey: data.hasApiKey,
   isBinanceActive: data.isBinanceActive,

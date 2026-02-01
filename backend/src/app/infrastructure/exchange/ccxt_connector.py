@@ -446,7 +446,12 @@ class CCXTConnector(ExchangeConnector):
                 exchange=self._config.exchange_id,
             )
         except Exception as exc:
-            logger.warning("Could not fetch Binance income history: %s", exc)
+            if _is_restricted_location_error(exc):
+                logger.warning(
+                    "Binance income history unavailable due to exchange location restrictions."
+                )
+            else:
+                logger.warning("Could not fetch Binance income history: %s", exc)
             return None
 
     async def _get_okx_daily_pnl(
@@ -777,6 +782,12 @@ class _CCXTClientContext:
                 await self._client.load_markets()
             except Exception as exc:
                 logger = logging.getLogger(__name__)
+                if _is_restricted_location_error(exc):
+                    logger.warning(
+                        "CCXT load_markets blocked by exchange location restrictions for %s; continuing without markets",
+                        exchange_id,
+                    )
+                    return self._client
                 if cached_entry:
                     self._apply_cached_markets(self._client, cached_entry)
                     logger.warning(
@@ -1051,6 +1062,15 @@ def _resolve_position_opened_at(raw: dict, info: dict) -> Optional[datetime]:
     if timestamp_ms is None:
         return None
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+
+
+def _is_restricted_location_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if "restricted location" in message or "eligibility" in message:
+        return True
+    if "service unavailable" in message and "451" in message:
+        return True
+    return False
 
 
 async def _fetch_binance_income_trades(client: Any, since_ms: int, limit: int) -> List[dict]:

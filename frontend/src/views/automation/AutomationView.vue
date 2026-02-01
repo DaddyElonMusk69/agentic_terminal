@@ -38,12 +38,24 @@
             </div>
             <div class="mt-3 flex flex-wrap items-center gap-2">
               <button
-                class="flex-1 rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted hover:text-text disabled:opacity-50"
+                class="group relative flex-1 overflow-hidden rounded-md border border-border bg-panel px-3 py-2 text-xs font-semibold text-muted shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/60 hover:text-text hover:shadow-md active:translate-y-0 active:scale-[0.99] disabled:opacity-50"
                 type="button"
                 :disabled="isStarting || isStopping"
                 @click="handleToggle"
               >
-                {{ store.status.isRunning ? "Stop" : "Start" }}
+                <span
+                  class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                >
+                  <span
+                    class="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(94,234,212,0.18),transparent_55%)]"
+                  ></span>
+                  <span
+                    class="absolute -left-1/3 top-0 h-full w-1/2 bg-white/10 blur-sm transition-transform duration-500 group-hover:translate-x-[220%]"
+                  ></span>
+                </span>
+                <span class="relative z-10 tracking-wide">
+                  {{ store.status.isRunning ? "Stop" : "Start" }}
+                </span>
               </button>
               <button
                 class="rounded-md border border-negative/40 bg-negative/10 px-3 py-2 text-xs text-negative hover:text-negative/80 disabled:opacity-50"
@@ -98,7 +110,7 @@
                   type="radio"
                   name="execution-mode"
                   :value="mode.value"
-                  :checked="automationConfig.execution_mode === mode.value"
+                  v-model="executionModeSelection"
                   @change="setExecutionMode(mode.value)"
                 />
               </label>
@@ -1081,14 +1093,24 @@
                     </div>
                   </div>
 
-                  <div class="rounded-md border border-border bg-panel/50 p-3 text-[11px] text-muted">
-                    <div v-if="!sessionDetail" class="text-[11px] text-muted">
+                  <div class="h-[200px] overflow-hidden rounded-md border border-border bg-panel/50 p-3 text-[11px] text-muted">
+                    <div v-if="sessionDetailLoading" class="h-full animate-pulse">
+                      <div class="grid grid-cols-3 gap-3">
+                        <div v-for="idx in 10" :key="idx" class="space-y-2">
+                          <div class="h-2 w-20 rounded bg-panel/60"></div>
+                          <div class="h-3 w-28 rounded bg-panel/40"></div>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-else-if="!sessionDetail" class="text-[11px] text-muted">
                       No session selected.
                     </div>
                     <div v-else class="grid grid-cols-3 gap-3">
                       <div>
                         <div class="text-[10px] uppercase tracking-wide text-muted">Session ID</div>
-                        <div class="break-all font-mono text-text">{{ sessionDetail.session.id }}</div>
+                        <div class="truncate font-mono text-text" :title="sessionDetail.session.id">
+                          {{ sessionDetail.session.id }}
+                        </div>
                       </div>
                       <div>
                         <div class="text-[10px] uppercase tracking-wide text-muted">Mode</div>
@@ -1144,16 +1166,24 @@
 
                   <div class="flex items-center gap-2">
                     <button
-                      class="rounded-md border border-border px-3 py-1 text-[11px]"
-                      :class="activeSessionTab === 'logs' ? 'bg-accent text-base' : 'bg-panel text-muted'"
+                      class="rounded-md border border-border px-3 py-1 text-[11px] transition-colors duration-150"
+                      :class="
+                        activeSessionTab === 'logs'
+                          ? 'bg-accent/20 text-text'
+                          : 'bg-panel text-muted hover:text-text'
+                      "
                       type="button"
                       @click="activeSessionTab = 'logs'"
                     >
                       Logs
                     </button>
                     <button
-                      class="rounded-md border border-border px-3 py-1 text-[11px]"
-                      :class="activeSessionTab === 'trades' ? 'bg-accent text-base' : 'bg-panel text-muted'"
+                      class="rounded-md border border-border px-3 py-1 text-[11px] transition-colors duration-150"
+                      :class="
+                        activeSessionTab === 'trades'
+                          ? 'bg-accent/20 text-text'
+                          : 'bg-panel text-muted hover:text-text'
+                      "
                       type="button"
                       @click="activeSessionTab = 'trades'"
                     >
@@ -1255,6 +1285,83 @@
                     </div>
                   </div>
                 </div>
+              </div>
+            </DialogPanel>
+          </TransitionChild>
+        </div>
+      </Dialog>
+    </TransitionRoot>
+
+    <TransitionRoot :show="showLiveModeConfirm" as="template">
+      <Dialog class="relative z-50" @close="closeLiveModeConfirm">
+        <TransitionChild
+          as="template"
+          enter="ease-out duration-200"
+          enter-from="opacity-0"
+          enter-to="opacity-100"
+          leave="ease-in duration-150"
+          leave-from="opacity-100"
+          leave-to="opacity-0"
+        >
+          <div class="fixed inset-0 bg-black/60" />
+        </TransitionChild>
+
+        <div class="fixed inset-0 flex items-center justify-center p-4">
+          <TransitionChild
+            as="template"
+            enter="ease-out duration-200"
+            enter-from="opacity-0 translate-y-4"
+            enter-to="opacity-100 translate-y-0"
+            leave="ease-in duration-150"
+            leave-from="opacity-100 translate-y-0"
+            leave-to="opacity-0 translate-y-4"
+          >
+            <DialogPanel class="w-full max-w-lg rounded-lg border border-border bg-surface p-6 shadow-panel">
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <DialogTitle class="font-display text-base text-white">
+                    Switch to Live Execution
+                  </DialogTitle>
+                  <p class="mt-2 text-xs text-muted">
+                    Live mode sends real orders to your connected exchange account. This can result in
+                    real losses. Double-check your exchange selection, balances, and risk limits.
+                  </p>
+                </div>
+                <button
+                  class="rounded-md border border-border bg-panel px-2 py-1 text-xs text-muted"
+                  type="button"
+                  @click="closeLiveModeConfirm"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div class="mt-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-[11px] text-warning">
+                Live execution is irreversible for the current cycle once started. Verify testnet is
+                disabled and guardrails are configured.
+              </div>
+
+              <label class="mt-4 flex items-start gap-2 text-xs text-muted">
+                <input v-model="liveModeConfirmed" type="checkbox" />
+                <span>I understand the risks and want to enable live execution.</span>
+              </label>
+
+              <div class="mt-5 flex items-center justify-end gap-2">
+                <button
+                  class="rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted hover:text-text"
+                  type="button"
+                  @click="closeLiveModeConfirm"
+                >
+                  Cancel
+                </button>
+                <button
+                  class="rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-xs text-warning hover:text-warning/80 disabled:opacity-50"
+                  type="button"
+                  :disabled="!liveModeConfirmed"
+                  @click="confirmLiveMode"
+                >
+                  Enable Live
+                </button>
               </div>
             </DialogPanel>
           </TransitionChild>
@@ -1512,6 +1619,8 @@ if (cachedAutomationConfig) {
   };
 }
 
+const executionModeSelection = ref(automationConfig.value.execution_mode);
+
 const providers = ref<ProviderOption[]>(readProvidersCache() ?? []);
 const models = ref<ModelOption[]>([]);
 const promptConfigs = ref<PromptConfigOption[]>(readPromptConfigCache() ?? []);
@@ -1564,6 +1673,9 @@ const automationLogRef = ref<HTMLElement | null>(null);
 const automationLogAutoScroll = ref(true);
 const sessionLogRef = ref<HTMLElement | null>(null);
 const sessionLogAutoScroll = ref(true);
+const showLiveModeConfirm = ref(false);
+const liveModeConfirmed = ref(false);
+const pendingExecutionMode = ref<string | null>(null);
 
 const executionModes = [
   { label: "Prompt Test", value: "prompt_test" },
@@ -1588,6 +1700,13 @@ const executionModeLabel = computed(() => {
   if (mode === "prompt_test") return "Prompt Test";
   return "Dry Run";
 });
+
+watch(
+  () => automationConfig.value.execution_mode,
+  (value) => {
+    executionModeSelection.value = value || "dry_run";
+  },
+);
 
 const missingProviderModel = computed(
   () => !automationConfig.value.provider || !automationConfig.value.model,
@@ -2353,6 +2472,13 @@ const updateCircuitBreaker = (updates: Partial<CircuitBreakerConfig>) => {
 
 const setExecutionMode = (mode: string) => {
   if (automationConfig.value.execution_mode === mode) return;
+  if (mode === "production") {
+    pendingExecutionMode.value = mode;
+    liveModeConfirmed.value = false;
+    showLiveModeConfirm.value = true;
+    executionModeSelection.value = automationConfig.value.execution_mode;
+    return;
+  }
   updateConfigPersisted({ execution_mode: mode });
 };
 
@@ -2736,6 +2862,22 @@ const handleDeleteSession = async (sessionId: string) => {
 const closeSessionModal = () => {
   showSessionModal.value = false;
   sessionError.value = "";
+};
+
+const closeLiveModeConfirm = () => {
+  showLiveModeConfirm.value = false;
+  liveModeConfirmed.value = false;
+  pendingExecutionMode.value = null;
+  executionModeSelection.value = automationConfig.value.execution_mode;
+};
+
+const confirmLiveMode = () => {
+  if (!pendingExecutionMode.value) {
+    closeLiveModeConfirm();
+    return;
+  }
+  updateConfigPersisted({ execution_mode: pendingExecutionMode.value });
+  closeLiveModeConfirm();
 };
 
 const loadEquityHistory = async () => {
