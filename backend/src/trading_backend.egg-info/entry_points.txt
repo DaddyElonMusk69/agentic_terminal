@@ -1,0 +1,2 @@
+[console_scripts]
+backend-cli = app.cli:main

@@ -1,0 +1,89 @@
+:root {
+  color-scheme: dark;
+  --color-base: 14 15 17;
+  --color-surface: 18 19 22;
+  --color-panel: 26 28 32;
+  --color-text: 231 238 247;
+  --color-muted: 138 154 175;
+  --color-border: 36 39 43;
+  --color-accent: 0 122 255;
+  --color-positive: 35 194 119;
+  --color-negative: 228 88 88;
+  --color-warning: 246 178 74;
+  --color-scanner: 56 189 248;
+  --color-state: 45 212 191;
+  --color-prompt: 167 139 250;
+  --color-llm: 251 191 36;
+  --color-parser: 96 165 250;
+  --color-guard: 251 113 133;
+  --color-circuit: 248 113 113;
+  --color-execution: 52 211 153;
+  --shadow-panel: 0 16px 36px rgba(6, 8, 10, 0.6);
+  --card-padding: 16px;
+  --radius-lg: 10px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --font-display: "IBM Plex Sans Condensed", "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", monospace;
+}
+
+:root[data-theme="vanilla"] {
+  color-scheme: dark;
+  --color-base: 11 15 20;
+  --color-surface: 17 22 29;
+  --color-panel: 24 30 39;
+  --color-text: 226 232 240;
+  --color-muted: 148 163 184;
+  --color-border: 38 50 64;
+  --color-accent: 34 197 94;
+  --color-positive: 34 197 94;
+  --color-negative: 248 113 113;
+  --color-warning: 251 146 60;
+  --color-scanner: 56 189 248;
+  --color-state: 45 212 191;
+  --color-prompt: 196 181 253;
+  --color-llm: 251 191 36;
+  --color-parser: 125 211 252;
+  --color-guard: 251 113 133;
+  --color-circuit: 248 113 113;
+  --color-execution: 52 211 153;
+  --shadow-panel: 0 14px 36px rgba(2, 6, 23, 0.45);
+  --card-padding: 12px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --font-display: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-base: 246 247 249;
+  --color-surface: 255 255 255;
+  --color-panel: 238 241 246;
+  --color-text: 15 23 42;
+  --color-muted: 71 85 105;
+  --color-border: 213 219 228;
+  --color-accent: 14 116 144;
+  --color-positive: 22 163 74;
+  --color-negative: 220 38 38;
+  --color-warning: 217 119 6;
+  --color-scanner: 2 132 199;
+  --color-state: 13 148 136;
+  --color-prompt: 124 58 237;
+  --color-llm: 217 119 6;
+  --color-parser: 37 99 235;
+  --color-guard: 225 29 72;
+  --color-circuit: 220 38 38;
+  --color-execution: 16 185 129;
+  --shadow-panel: 0 10px 30px rgba(15, 23, 42, 0.08);
+  --card-padding: 16px;
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --font-display: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", monospace;
+}

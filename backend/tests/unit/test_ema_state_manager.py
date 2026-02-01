@@ -1,0 +1,104 @@
+from datetime import datetime, timezone
+
+from app.domain.ema_scanner.models import EmaScannerSignal
+from app.domain.ema_state_manager.models import EmaStateManagerConfig, EmaStateTrigger
+from app.domain.ema_state_manager.service import EmaStateManager
+
+
+def _config() -> EmaStateManagerConfig:
+    return EmaStateManagerConfig(
+        min_resonance=2,
+        ema_resonance_cooldown_seconds=60,
+        bb_rejection_cooldown_seconds=60,
+        bb_exit_warning_cooldown_seconds=60,
+        position_check_interval_seconds=60,
+        bb_rejection_min_touches=2,
+        bb_htf_min_interval_minutes=480,
+    )
+
+
+def _ema_signal(symbol: str, timeframe: str) -> EmaScannerSignal:
+    return EmaScannerSignal(
+        symbol=symbol,
+        timeframe=timeframe,
+        indicator="EMA",
+        parameter="EMA-144",
+        value=100.0,
+        price=101.0,
+        lower_bound=99.0,
+        upper_bound=102.0,
+        condition="proximity",
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
+def _bb_signal(symbol: str, timeframe: str, parameter: str) -> EmaScannerSignal:
+    return EmaScannerSignal(
+        symbol=symbol,
+        timeframe=timeframe,
+        indicator="BB",
+        parameter=parameter,
+        value=100.0,
+        price=101.0,
+        lower_bound=99.0,
+        upper_bound=102.0,
+        condition="proximity",
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
+def test_state_manager_emits_new_resonance():
+    manager = EmaStateManager()
+    config = _config()
+
+    signals = [
+        _ema_signal("BTC/USDT", "2h"),
+        _ema_signal("BTC/USDT", "4h"),
+    ]
+
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.trigger_reason == EmaStateTrigger.NEW_RESONANCE
+    assert set(event.active_intervals) == {"2h", "4h"}
+
+
+def test_state_manager_bb_rejection_entry_requires_consecutive_touches():
+    manager = EmaStateManager()
+    config = _config()
+
+    signals = [_bb_signal("BTC/USDT", "8h", "BB-Upper")]
+
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert events == []
+
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert len(events) == 1
+    event = events[0]
+    assert event.trigger_reason == EmaStateTrigger.BB_REJECTION_ENTRY
+    assert event.direction_signal == "SHORT"
+    assert event.bb_signal_intervals == ["8h"]
+
+
+def test_state_manager_ignores_unmonitored_symbols():
+    manager = EmaStateManager()
+    config = _config()
+
+    signals = [_ema_signal("ETH/USDT", "4h"), _ema_signal("ETH/USDT", "8h")]
+
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert events == []
+    assert manager.get_state("ETH/USDT") is None
+
+
+def test_state_manager_prunes_removed_symbols():
+    manager = EmaStateManager()
+    config = _config()
+
+    signals = [_ema_signal("BTC/USDT", "4h"), _ema_signal("BTC/USDT", "8h")]
+    manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert manager.get_state("BTC/USDT") is not None
+
+    manager.update([], monitored_symbols=["ETH/USDT"], config=config)
+    assert manager.get_state("BTC/USDT") is None

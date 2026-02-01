@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="brandGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#38BDF8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2DD4BF;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- L-shaped bracket (stylized T base) -->
+  <path d="M12 12 L28 12 L28 18 L18 18 L18 52 L12 52 Z" fill="url(#brandGradient)"/>
+  <!-- Candlestick -->
+  <rect x="21" y="24" width="8" height="22" rx="1" fill="url(#brandGradient)"/>
+  <line x1="25" y1="20" x2="25" y2="24" stroke="url(#brandGradient)" stroke-width="3" stroke-linecap="round"/>
+  <line x1="25" y1="46" x2="25" y2="52" stroke="url(#brandGradient)" stroke-width="3" stroke-linecap="round"/>
+  <!-- Upward trend arrow -->
+  <path d="M34 44 L44 28 L52 36" stroke="url(#brandGradient)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <polygon points="46,24 56,24 56,34" fill="url(#brandGradient)"/>
+</svg>

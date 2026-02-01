@@ -1,0 +1,14 @@
+```json
+[
+  {
+    "action": "OPEN_LONG",
+    "symbol": "BTC",
+    "tier": 2,
+    "leverage": 3,
+    "stop_loss_roe": 0.03,
+    "take_profit_roe": 0.12,
+    "confidence": 72,
+    "reasoning": "Higher timeframe structure remains bullish."
+  }
+]
+```
