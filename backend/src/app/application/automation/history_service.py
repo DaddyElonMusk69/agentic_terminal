@@ -120,6 +120,40 @@ class AutomationHistoryService:
         trades = await self._trades.list_by_session(session_id)
         return session, logs, trades
 
+    async def get_session_detail_all(
+        self,
+        session_id: str,
+        log_batch_size: int = 1000,
+    ) -> tuple[Optional[AutomationSessionRecord], list[AutomationLogRecord], list[AutomationTradeRecord]]:
+        session = await self._sessions.get_by_id(session_id)
+        if session is None:
+            return None, [], []
+        logs = await self._list_all_logs(session_id, log_batch_size)
+        trades = await self._trades.list_by_session(session_id)
+        return session, logs, trades
+
+    async def _list_all_logs(
+        self,
+        session_id: str,
+        batch_size: int,
+    ) -> list[AutomationLogRecord]:
+        logs: list[AutomationLogRecord] = []
+        offset = 0
+        safe_batch = max(1, int(batch_size))
+        while True:
+            batch = await self._logs.list_by_session(
+                session_id,
+                limit=safe_batch,
+                offset=offset,
+            )
+            if not batch:
+                break
+            logs.extend(batch)
+            if len(batch) < safe_batch:
+                break
+            offset += safe_batch
+        return logs
+
     async def delete_session(self, session_id: str) -> bool:
         await self._trades.delete_by_session(session_id)
         await self._logs.delete_by_session(session_id)

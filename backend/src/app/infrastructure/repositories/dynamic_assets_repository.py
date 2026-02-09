@@ -48,6 +48,7 @@ class SqlDynamicAssetsConfigRepository(DynamicAssetsConfigRepository):
             )
             model.sources = config.sources or None
             model.refresh_interval_seconds = config.refresh_interval_seconds
+            model.volatility_threshold_pct = config.volatility_threshold_pct
             model.last_fetch_at = config.last_fetch_at
             model.last_success_at = config.last_success_at
             model.last_success_assets = config.last_success_assets or None
@@ -65,6 +66,7 @@ class SqlDynamicAssetsConfigRepository(DynamicAssetsConfigRepository):
             api_key=api_key,
             sources=model.sources or {},
             refresh_interval_seconds=model.refresh_interval_seconds,
+            volatility_threshold_pct=model.volatility_threshold_pct,
             last_fetch_at=model.last_fetch_at,
             last_success_at=model.last_success_at,
             last_success_assets=model.last_success_assets,

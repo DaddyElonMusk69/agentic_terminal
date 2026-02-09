@@ -36,6 +36,11 @@ class StubChartGenerator:
         return b"fakeimage"
 
 
+class StubChartGeneratorMissing:
+    def render_with_overlays(self, symbol, interval, candle_limit, overlays=None):  # noqa: ANN001
+        return None
+
+
 class StubPortfolioState:
     account_value = 1000.0
     total_margin_used = 0.0
@@ -190,3 +195,38 @@ async def test_prompt_builder_raises_on_missing_snapshot():
 
     with pytest.raises(PromptBuildError):
         await service.build(request)
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_raises_on_missing_charts():
+    template = PromptTemplate(
+        id=1,
+        name="default",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        is_default=True,
+    )
+    snapshot = _build_snapshot()
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGeneratorMissing(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioService(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-3",
+        template_id=1,
+        trigger_reason="new_resonance",
+        tickers=["BTC"],
+        intervals=["2h"],
+        chart_requests=[ChartRequest(interval="2h")],
+        template_context={"ticker": "BTC"},
+    )
+
+    with pytest.raises(PromptBuildError) as exc:
+        await service.build(request)
+    assert "missing chart snapshots" in str(exc.value).lower()

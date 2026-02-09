@@ -263,6 +263,43 @@
                   step="1"
                 />
               </label>
+              <div class="rounded-md border border-border/60 bg-panel/40 p-2">
+                <div class="text-[10px] uppercase tracking-wide text-muted">Emit Events</div>
+                <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_new_resonance" type="checkbox" />
+                    New Resonance
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_resonance_increase" type="checkbox" />
+                    Resonance Increase
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_structure_shift" type="checkbox" />
+                    Structure Shift
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_resonance_refresh" type="checkbox" />
+                    Resonance Refresh
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_bb_rejection_upper" type="checkbox" />
+                    BB Rejection Upper
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_bb_rejection_lower" type="checkbox" />
+                    BB Rejection Lower
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_position_management" type="checkbox" />
+                    Position Management
+                  </label>
+                  <label class="flex items-center gap-2 text-[11px] text-muted">
+                    <input v-model="stateConfig.emit_bb_exit_warning" type="checkbox" />
+                    BB Exit Warning
+                  </label>
+                </div>
+              </div>
               <button
                 class="w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted hover:text-text disabled:opacity-60"
                 type="button"
@@ -643,6 +680,14 @@ type StateManagerConfig = {
   position_check_interval_seconds: number;
   bb_rejection_min_touches: number;
   bb_htf_min_interval_minutes: number;
+  emit_new_resonance: boolean;
+  emit_resonance_increase: boolean;
+  emit_structure_shift: boolean;
+  emit_resonance_refresh: boolean;
+  emit_bb_rejection_upper: boolean;
+  emit_bb_rejection_lower: boolean;
+  emit_position_management: boolean;
+  emit_bb_exit_warning: boolean;
 };
 
 const store = useScannerEmaStore();
@@ -666,6 +711,14 @@ const stateConfig = ref<StateManagerConfig>({
   position_check_interval_seconds: 1800,
   bb_rejection_min_touches: 10,
   bb_htf_min_interval_minutes: 480,
+  emit_new_resonance: true,
+  emit_resonance_increase: true,
+  emit_structure_shift: true,
+  emit_resonance_refresh: true,
+  emit_bb_rejection_upper: true,
+  emit_bb_rejection_lower: true,
+  emit_position_management: true,
+  emit_bb_exit_warning: true,
 });
 const isSavingStateConfig = ref(false);
 const stateConfigError = ref("");
@@ -1228,6 +1281,8 @@ const loadStateConfig = async () => {
     if (!payload) {
       throw new Error("Failed to load config.");
     }
+    const resolveBool = (value: unknown, fallback: boolean) =>
+      typeof value === "boolean" ? value : fallback;
     stateConfig.value = {
       min_resonance: Number(payload.min_resonance) || stateConfig.value.min_resonance,
       ema_resonance_cooldown_seconds:
@@ -1247,6 +1302,38 @@ const loadStateConfig = async () => {
       bb_htf_min_interval_minutes:
         Number(payload.bb_htf_min_interval_minutes) ||
         stateConfig.value.bb_htf_min_interval_minutes,
+      emit_new_resonance: resolveBool(
+        payload.emit_new_resonance,
+        stateConfig.value.emit_new_resonance,
+      ),
+      emit_resonance_increase: resolveBool(
+        payload.emit_resonance_increase,
+        stateConfig.value.emit_resonance_increase,
+      ),
+      emit_structure_shift: resolveBool(
+        payload.emit_structure_shift,
+        stateConfig.value.emit_structure_shift,
+      ),
+      emit_resonance_refresh: resolveBool(
+        payload.emit_resonance_refresh,
+        stateConfig.value.emit_resonance_refresh,
+      ),
+      emit_bb_rejection_upper: resolveBool(
+        payload.emit_bb_rejection_upper,
+        stateConfig.value.emit_bb_rejection_upper,
+      ),
+      emit_bb_rejection_lower: resolveBool(
+        payload.emit_bb_rejection_lower,
+        stateConfig.value.emit_bb_rejection_lower,
+      ),
+      emit_position_management: resolveBool(
+        payload.emit_position_management,
+        stateConfig.value.emit_position_management,
+      ),
+      emit_bb_exit_warning: resolveBool(
+        payload.emit_bb_exit_warning,
+        stateConfig.value.emit_bb_exit_warning,
+      ),
     };
   } catch (err) {
     stateConfigError.value = err instanceof Error ? err.message : "Failed to load config.";

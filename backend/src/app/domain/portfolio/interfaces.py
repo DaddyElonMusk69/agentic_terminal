@@ -1,4 +1,4 @@
-from typing import Protocol, Dict, List, Optional
+from typing import Protocol, Any, Dict, List, Optional
 
 from app.domain.portfolio.models import (
     AccountSetup,
@@ -95,6 +95,9 @@ class ExchangeConnector(Protocol):
         ...
 
     async def fetch_daily_pnl(self) -> DailyPnlSnapshot:
+        ...
+
+    async def fetch_market_limits(self, symbol: str) -> Dict[str, Any] | None:
         ...
 
 

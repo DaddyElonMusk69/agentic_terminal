@@ -1,8 +1,8 @@
 from functools import lru_cache
 
+from app.application.risk_management.dependencies import get_risk_management_config_service
 from app.application.trade_guard.service import TradeGuardService
 from app.infrastructure.db import get_sessionmaker
-from app.infrastructure.repositories.account_setup_repository import SqlAccountSetupRepository
 from app.infrastructure.repositories.trade_guard_config_repository import SqlTradeGuardConfigRepository
 
 
@@ -10,5 +10,5 @@ from app.infrastructure.repositories.trade_guard_config_repository import SqlTra
 def get_trade_guard_service() -> TradeGuardService:
     sessionmaker = get_sessionmaker()
     config_repo = SqlTradeGuardConfigRepository(sessionmaker)
-    account_setup_repo = SqlAccountSetupRepository(sessionmaker)
-    return TradeGuardService(config_repo, account_setup_repo)
+    risk_config_service = get_risk_management_config_service()
+    return TradeGuardService(config_repo, risk_config_service)

@@ -23,6 +23,9 @@
           <div>
             <div class="text-xs uppercase tracking-wide text-muted">Monitored Assets</div>
             <p class="mt-1 text-xs text-muted">Assets used in scanners and automation.</p>
+            <p class="mt-1 text-[11px] text-muted">
+              Final global list = Base List (manual or dynamic) + Open Positions − High Volatility removals.
+            </p>
           </div>
           <div class="flex items-center gap-2">
             <button
@@ -34,6 +37,55 @@
               Hard Refresh
             </button>
             <BaseBadge v-if="dynamicEnabled">Dynamic Mode</BaseBadge>
+          </div>
+        </div>
+
+        <div class="mt-3 rounded-md border border-border bg-panel/40 p-3 text-[11px] text-muted">
+          <div class="text-[10px] uppercase tracking-wide text-muted">Global List Breakdown</div>
+          <div class="mt-2 space-y-2">
+            <div>
+              <div class="text-[10px] uppercase tracking-wide text-muted">Base List</div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                <span
+                  v-for="asset in baseAssets"
+                  :key="`base-${asset}`"
+                  class="rounded-full border border-border bg-panel px-2 py-0.5 text-[10px] text-text"
+                >
+                  {{ asset }}
+                </span>
+                <span v-if="baseAssets.length === 0" class="text-[10px] text-muted">None</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wide text-muted">Open Positions</div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                <span
+                  v-for="asset in openPositions"
+                  :key="`open-${asset}`"
+                  class="rounded-full border border-border bg-panel px-2 py-0.5 text-[10px] text-text"
+                >
+                  {{ asset }}
+                </span>
+                <span v-if="openPositions.length === 0" class="text-[10px] text-muted">None</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wide text-muted">
+                Removed High Volatility
+              </div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                <span
+                  v-for="asset in removedHighVolAssets"
+                  :key="`vol-${asset}`"
+                  class="rounded-full border border-border bg-panel px-2 py-0.5 text-[10px] text-text"
+                >
+                  {{ asset }}
+                </span>
+                <span v-if="removedHighVolAssets.length === 0" class="text-[10px] text-muted"
+                  >None</span
+                >
+              </div>
+            </div>
           </div>
         </div>
 
@@ -215,6 +267,9 @@ const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
 });
 
 const assets = ref<string[]>([]);
+const baseAssets = ref<string[]>([]);
+const openPositions = ref<string[]>([]);
+const removedHighVolAssets = ref<string[]>([]);
 const intervals = ref<string[]>([]);
 const assetInput = ref("");
 const intervalInput = ref("");
@@ -279,6 +334,7 @@ const refreshAssets = async (force = false) => {
     const data = await response.json();
     if (Array.isArray(data?.data)) {
       assets.value = data.data;
+      await loadAssetsBreakdown(force);
       persistMarketCache();
       return true;
     }
@@ -310,6 +366,48 @@ const persistMarketCache = () => {
     dynamicSources: buildDynamicSources(dynamicSources.value),
     dynamicRefreshMinutes: dynamicRefreshMinutes.value,
   });
+};
+
+const normalizeAssetList = (list: string[]) =>
+  Array.from(
+    new Set(
+      list
+        .map((item) => item?.toString().trim().toUpperCase())
+        .filter((item) => item),
+    ),
+  );
+
+const loadAssetsBreakdown = async (force = false) => {
+  const baseUrl = force
+    ? "/api/v1/market/monitored-assets?include_positions=false&force_refresh=true"
+    : "/api/v1/market/monitored-assets?include_positions=false";
+
+  try {
+    const response = await fetch(baseUrl);
+    const data = await response.json();
+    baseAssets.value = Array.isArray(data?.data) ? normalizeAssetList(data.data) : [];
+  } catch {
+    baseAssets.value = [];
+  }
+
+  try {
+    const response = await fetch("/api/v1/portfolio/snapshot");
+    const data = await response.json();
+    const positions = Array.isArray(data?.data?.positions) ? data.data.positions : [];
+    openPositions.value = normalizeAssetList(positions.map((pos: { symbol?: string }) => pos.symbol || ""));
+  } catch {
+    openPositions.value = [];
+  }
+
+  try {
+    const response = await fetch("/api/v1/market/dynamic-assets/volatility");
+    const data = await response.json();
+    removedHighVolAssets.value = Array.isArray(data?.data?.removed_assets)
+      ? normalizeAssetList(data.data.removed_assets)
+      : [];
+  } catch {
+    removedHighVolAssets.value = [];
+  }
 };
 
 const loadMarketSettings = async (force = false) => {
@@ -357,6 +455,7 @@ const loadMarketSettings = async (force = false) => {
       );
       isBinanceActive.value = Boolean(dynamicConfig.is_binance_active);
     }
+    await loadAssetsBreakdown(force);
     persistMarketCache();
     hasLoaded.value = true;
   } catch (err) {

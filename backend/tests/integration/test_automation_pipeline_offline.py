@@ -295,6 +295,7 @@ class FakeTradeGuardService:
         decision: ExecutionIdea,
         account_state: Optional[dict] = None,
         market_data: Optional[dict] = None,
+        open_orders: Optional[list] = None,
         open_positions: Optional[list] = None,
         price_fetcher: Optional[Any] = None,
         tradeable_symbols: Optional[set] = None,

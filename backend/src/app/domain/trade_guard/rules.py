@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.domain.trade_guard.guard import (
@@ -492,6 +492,7 @@ class ExchangeMinimumOrderSizeModifier(ModifierRule):
         ExecutionAction.OPEN_LONG_LIMIT,
         ExecutionAction.OPEN_SHORT_LIMIT,
     }
+    _MIN_NOTIONAL_BUFFER_USD = 1.0
 
     @property
     def name(self) -> str:
@@ -521,20 +522,25 @@ class ExchangeMinimumOrderSizeModifier(ModifierRule):
             return self._no_change(decision, "No exchange minimum notional available")
 
         current_size = decision.position_size_usd or 0
-        if current_size >= min_notional:
+        min_notional_with_buffer = min_notional + self._MIN_NOTIONAL_BUFFER_USD
+
+        if current_size >= min_notional_with_buffer:
             return self._no_change(
                 decision,
-                f"Meets exchange minimum notional: ${current_size:,.2f} >= ${min_notional:,.2f}",
+                "Meets exchange minimum notional + buffer: "
+                f"${current_size:,.2f} >= ${min_notional_with_buffer:,.2f}",
             )
 
         leverage = decision.leverage or 1
-        required_margin = min_notional / leverage if leverage > 0 else min_notional
+        required_margin = (
+            min_notional_with_buffer / leverage if leverage > 0 else min_notional_with_buffer
+        )
         exchange_name = market_data.get("exchange_name", "exchange")
         order_type = market_data.get("order_type", "market")
 
-        new_decision = replace(decision, position_size_usd=min_notional)
+        new_decision = replace(decision, position_size_usd=min_notional_with_buffer)
         reason_parts = [
-            f"{exchange_name} {order_type} min notional ${min_notional:,.2f}",
+            f"{exchange_name} {order_type} min notional ${min_notional_with_buffer:,.2f}",
             f"margin ${required_margin:,.2f} @ {leverage}x",
         ]
         if reference_price:
@@ -763,22 +769,6 @@ class TakeProfitROEModifier(ModifierRule):
         if decision.action not in self.OPEN_ACTIONS:
             return self._no_change(decision, "Not an OPEN action")
 
-        take_profit_roe = decision.take_profit_roe
-        if take_profit_roe is None:
-            return self._no_change(decision, "No take_profit_roe specified")
-        if take_profit_roe <= 0:
-            return self._no_change(decision, f"Invalid take_profit_roe: {take_profit_roe}")
-
-        clamp_reason = None
-        if take_profit_roe < self._min_roe:
-            clamped_roe = self._min_roe
-            clamp_reason = "too small"
-        elif take_profit_roe > self._max_roe:
-            clamped_roe = self._max_roe
-            clamp_reason = "too large"
-        else:
-            clamped_roe = take_profit_roe
-
         leverage = decision.leverage or 1
         if leverage <= 0:
             leverage = 1
@@ -788,17 +778,64 @@ class TakeProfitROEModifier(ModifierRule):
             return self._no_change(decision, f"Could not fetch price for {decision.symbol}")
 
         original_tp = decision.take_profit
-        if decision.action in self.LONG_ACTIONS:
+        take_profit_roe = decision.take_profit_roe
+        invalid_roe = None
+        if take_profit_roe is not None and take_profit_roe <= 0:
+            invalid_roe = take_profit_roe
+            take_profit_roe = None
+
+        clamp_reason = None
+        llm_roe = None
+        direction = "LONG" if decision.action in self.LONG_ACTIONS else "SHORT"
+        is_long = decision.action in self.LONG_ACTIONS
+
+        if take_profit_roe is not None:
+            llm_roe = take_profit_roe
+            if take_profit_roe < self._min_roe:
+                clamped_roe = self._min_roe
+                clamp_reason = "too small"
+            elif take_profit_roe > self._max_roe:
+                clamped_roe = self._max_roe
+                clamp_reason = "too large"
+            else:
+                clamped_roe = take_profit_roe
+        elif original_tp is not None and original_tp > 0:
+            if is_long:
+                llm_roe = (original_tp - current_price) / current_price * leverage
+            else:
+                llm_roe = (current_price - original_tp) / current_price * leverage
+
+            if self._min_roe <= llm_roe <= self._max_roe:
+                return self._no_change(
+                    decision,
+                    f"{direction} TP OK: {original_tp:.5g} (ROE: {llm_roe*100:.1f}%)",
+                )
+
+            if llm_roe < self._min_roe:
+                clamped_roe = self._min_roe
+                clamp_reason = "too small"
+            else:
+                clamped_roe = self._max_roe
+                clamp_reason = "too large"
+        else:
+            clamped_roe = self._min_roe
+            if invalid_roe is not None:
+                clamp_reason = f"invalid take_profit_roe: {invalid_roe}"
+            else:
+                clamp_reason = "not specified"
+
+        if is_long:
             calculated_tp = current_price * (1 + (clamped_roe / leverage))
         else:
             calculated_tp = current_price * (1 - (clamped_roe / leverage))
 
         calculated_tp = float(f"{calculated_tp:.5g}")
         new_decision = replace(decision, take_profit=calculated_tp)
-        direction = "LONG" if decision.action in self.LONG_ACTIONS else "SHORT"
         roe_detail = f"{clamped_roe*100:.1f}%"
-        if clamp_reason:
-            roe_detail = f"{take_profit_roe*100:.1f}% → {clamped_roe*100:.1f}% ({clamp_reason})"
+        if llm_roe is not None and clamp_reason:
+            roe_detail = f"{llm_roe*100:.1f}% → {clamped_roe*100:.1f}% ({clamp_reason})"
+        elif clamp_reason and llm_roe is None:
+            roe_detail = f"{clamped_roe*100:.1f}% ({clamp_reason})"
 
         if original_tp is None or abs(calculated_tp - original_tp) > 0.0001:
             return self._modified(
@@ -816,6 +853,43 @@ class TakeProfitROEModifier(ModifierRule):
             new_decision,
             f"{direction} TP OK: {calculated_tp:.5g} (price: {current_price}, ROE: {roe_detail})",
         )
+
+
+class TightenStopLossModifier(ModifierRule):
+    @property
+    def name(self) -> str:
+        return "tighten_stop_loss"
+
+    @property
+    def description(self) -> str:
+        return "Blocks UPDATE_SL if new stop loss is wider than existing"
+
+    def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
+        if decision.action != ExecutionAction.UPDATE_SL:
+            return self._no_change(decision, "Not an UPDATE_SL action")
+
+        new_sl = decision.new_stop_loss
+        if new_sl is None or new_sl <= 0:
+            return self._no_change(decision, "No valid new_stop_loss")
+
+        previous_sl = _resolve_previous_stop_loss(decision, context)
+        if previous_sl is None or previous_sl <= 0:
+            return self._no_change(decision, "No previous stop loss available")
+
+        direction = _resolve_position_side(context.open_positions, decision.symbol)
+        current_price = context.get_current_price(decision.symbol)
+
+        if _is_stop_loss_wider(new_sl, previous_sl, direction, current_price):
+            new_decision = replace(decision, action=ExecutionAction.HOLD, new_stop_loss=None)
+            return self._modified(
+                new_decision,
+                field_name="action",
+                original_value=decision.action.value,
+                new_value="HOLD",
+                reason=f"UPDATE_SL blocked: {new_sl:.5g} wider than {previous_sl:.5g}",
+            )
+
+        return self._no_change(decision, "SL is tighter or unchanged")
 
 
 class ReduceToDustCloseModifier(ModifierRule):
@@ -936,6 +1010,155 @@ def create_default_guard(
     guard.register_modifier(ExchangeMinimumOrderSizeModifier())
     guard.register_modifier(StopLossROEModifier(min_roe=config.sl_min_roe, max_roe=config.sl_max_roe))
     guard.register_modifier(TakeProfitROEModifier(min_roe=config.tp_min_roe, max_roe=config.tp_max_roe))
+    guard.register_modifier(TightenStopLossModifier())
     guard.register_modifier(ReduceToDustCloseModifier(dust_threshold_usd=config.dust_threshold_usd))
 
     return guard
+
+
+def _resolve_previous_stop_loss(
+    decision: ExecutionIdea,
+    context: GuardContext,
+) -> Optional[float]:
+    symbol = decision.symbol
+    direction = _resolve_position_side(context.open_positions, symbol)
+    current_price = context.get_current_price(symbol)
+
+    stop_prices = _extract_stop_prices(context.open_orders or [], symbol)
+    if stop_prices:
+        return _select_stop_price(stop_prices, direction, current_price)
+
+    fallback = decision.stop_loss
+    if fallback is not None and fallback > 0:
+        return float(fallback)
+    return None
+
+
+def _resolve_position_side(open_positions: Optional[list], symbol: str) -> Optional[str]:
+    if not open_positions or not symbol:
+        return None
+    target = _normalize_symbol(symbol)
+    for pos in open_positions:
+        if not isinstance(pos, dict):
+            continue
+        pos_symbol = _normalize_symbol(pos.get("symbol"))
+        if target and pos_symbol and pos_symbol != target:
+            continue
+        side = str(pos.get("direction") or pos.get("side") or "").lower()
+        if side in ("long", "short"):
+            return side
+        size = _safe_float(pos.get("size"))
+        if size is not None:
+            if size > 0:
+                return "long"
+            if size < 0:
+                return "short"
+    return None
+
+
+def _extract_stop_prices(orders: list, symbol: str) -> List[float]:
+    prices: List[float] = []
+    target = _normalize_symbol(symbol)
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        order_symbol = _normalize_symbol(order.get("symbol") or info.get("symbol"))
+        if target and order_symbol and order_symbol != target:
+            continue
+
+        order_type = str(
+            order.get("type")
+            or order.get("orderType")
+            or info.get("type")
+            or info.get("orderType")
+            or ""
+        ).lower()
+
+        stop_price = _safe_float(
+            order.get("stopPrice")
+            or order.get("triggerPrice")
+            or order.get("triggerPx")
+            or info.get("stopPrice")
+            or info.get("triggerPrice")
+            or info.get("triggerPx")
+        )
+        if stop_price is None:
+            continue
+
+        if "take" in order_type and "stop" not in order_type:
+            continue
+
+        prices.append(stop_price)
+
+    return prices
+
+
+def _select_stop_price(
+    stop_prices: List[float],
+    direction: Optional[str],
+    current_price: Optional[float],
+) -> Optional[float]:
+    if not stop_prices:
+        return None
+    if direction == "long":
+        return max(stop_prices)
+    if direction == "short":
+        return min(stop_prices)
+    if current_price is not None:
+        return min(stop_prices, key=lambda price: abs(current_price - price))
+    return stop_prices[0]
+
+
+def _is_stop_loss_wider(
+    new_sl: float,
+    previous_sl: float,
+    direction: Optional[str],
+    current_price: Optional[float],
+) -> bool:
+    if direction == "long":
+        return new_sl < previous_sl
+    if direction == "short":
+        return new_sl > previous_sl
+    if current_price is not None:
+        return abs(current_price - new_sl) > abs(current_price - previous_sl)
+    return False
+
+
+def _normalize_symbol(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    symbol = value.strip().upper()
+    if not symbol:
+        return ""
+    if ":" in symbol:
+        symbol = symbol.split(":", 1)[0]
+    if "/" in symbol:
+        return symbol.split("/", 1)[0]
+
+    for quote in _KNOWN_QUOTES:
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return symbol[: -len(quote)]
+
+    return symbol
+
+
+_KNOWN_QUOTES = (
+    "USDT",
+    "USDC",
+    "USD",
+    "BUSD",
+    "TUSD",
+    "FDUSD",
+    "USDP",
+    "DAI",
+)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

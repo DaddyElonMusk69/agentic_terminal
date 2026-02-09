@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app.application.automation.order_queue_service import OrderQueuePolicy
 from app.application.automation import topics
@@ -10,7 +10,7 @@ from app.application.bus.outbox_service import OutboxService
 from app.application.circuit_breaker.service import CircuitBreakerService
 from app.application.trade_executor.service import TradeExecutorService
 from app.application.trade_guard.service import TradeGuardService
-from app.domain.llm_response_worker.models import ExecutionIdea
+from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.infrastructure.repositories.order_queue_repository import OrderQueueRepository, OrderQueueItem
 from app.application.portfolio.service import PortfolioService
 
@@ -41,12 +41,16 @@ class OrderQueueWorker:
 
         payload = item.payload
         session_id = payload.get("session_id")
+        cycle_number = payload.get("cycle_number")
 
         if _is_expired(item, self._policy):
             await self._repository.mark_dropped(item.id, "expired")
             await self._outbox.enqueue_event(
                 topics.ORDER_DROPPED,
-                _with_session({"request_id": item.id, "error": "expired"}, session_id),
+                _with_session(
+                    {"request_id": item.id, "error": "expired", "cycle_number": cycle_number},
+                    session_id,
+                ),
             )
             return True
 
@@ -59,6 +63,7 @@ class OrderQueueWorker:
                     {
                         "request_id": payload.get("source_request_id", item.id),
                         "error": f"execution_mode:{execution_mode.value}",
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -70,7 +75,10 @@ class OrderQueueWorker:
             await self._repository.mark_failed(item.id, "missing execution_idea")
             await self._outbox.enqueue_event(
                 topics.TRADE_FAILED,
-                _with_session({"request_id": item.id, "error": "missing execution_idea"}, session_id),
+                _with_session(
+                    {"request_id": item.id, "error": "missing execution_idea", "cycle_number": cycle_number},
+                    session_id,
+                ),
             )
             return True
 
@@ -80,7 +88,10 @@ class OrderQueueWorker:
             await self._repository.mark_failed(item.id, f"invalid execution_idea: {exc}")
             await self._outbox.enqueue_event(
                 topics.TRADE_FAILED,
-                _with_session({"request_id": item.id, "error": str(exc)}, session_id),
+                _with_session(
+                    {"request_id": item.id, "error": str(exc), "cycle_number": cycle_number},
+                    session_id,
+                ),
             )
             return True
 
@@ -92,16 +103,25 @@ class OrderQueueWorker:
                     "symbol": decision.symbol,
                     "execution_mode": execution_mode.value,
                     "execution_idea": idea_payload,
+                    "cycle_number": cycle_number,
                 },
                 session_id,
             ),
         )
 
         account_state, open_positions = await self._fetch_portfolio()
+        market_data = await self._fetch_market_data(decision)
+        price_fetcher = await self._get_price_fetcher(decision)
+        open_orders = None
+        if decision.action in (ExecutionAction.UPDATE_SL, ExecutionAction.UPDATE_TP):
+            open_orders = await self._fetch_open_orders(decision)
         guard_result = await self._trade_guard.validate(
             decision,
             account_state=account_state,
+            market_data=market_data,
+            open_orders=open_orders,
             open_positions=open_positions,
+            price_fetcher=price_fetcher,
         )
         guard_payload = guard_result.to_dict()
         if not guard_result.is_valid:
@@ -115,6 +135,7 @@ class OrderQueueWorker:
                         "errors": guard_result.errors,
                         "guard": guard_payload,
                         "execution_idea": idea_payload,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -126,6 +147,7 @@ class OrderQueueWorker:
                         "request_id": item.id,
                         "error": "trade_guard_rejected",
                         "details": guard_result.to_dict(),
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -150,6 +172,7 @@ class OrderQueueWorker:
                     "warnings": guard_result.warnings,
                     "guard": guard_payload,
                     "final_order": final_order,
+                    "cycle_number": cycle_number,
                 },
                 session_id,
             ),
@@ -162,6 +185,7 @@ class OrderQueueWorker:
                         "symbol": decision.symbol,
                         "modifications": modified,
                         "execution_mode": execution_mode.value,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -185,6 +209,7 @@ class OrderQueueWorker:
                         "reasons": breaker_result.reasons,
                         "circuit_breaker": circuit_payload,
                         "final_order": final_order,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -196,6 +221,7 @@ class OrderQueueWorker:
                         "request_id": item.id,
                         "error": "circuit_breaker_blocked",
                         "reasons": breaker_result.reasons,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -209,6 +235,7 @@ class OrderQueueWorker:
                     "symbol": decision.symbol,
                     "circuit_breaker": circuit_payload,
                     "final_order": final_order,
+                    "cycle_number": cycle_number,
                 },
                 session_id,
             ),
@@ -228,6 +255,7 @@ class OrderQueueWorker:
                             "reasons": breaker_result.reasons,
                         },
                         "execution_idea": idea_payload,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -247,6 +275,7 @@ class OrderQueueWorker:
                         "result": result_payload,
                         "execution_idea": idea_payload,
                         "final_order": final_order,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -262,6 +291,7 @@ class OrderQueueWorker:
                         "result": result_payload,
                         "execution_idea": idea_payload,
                         "final_order": final_order,
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -308,6 +338,83 @@ class OrderQueueWorker:
             )
 
         return account_state, open_positions
+
+    async def _fetch_market_data(self, decision: ExecutionIdea) -> Optional[dict]:
+        if self._portfolio_service is None or not decision or not decision.symbol:
+            return None
+        try:
+            connector = await self._portfolio_service.get_active_connector()
+        except Exception:
+            return None
+
+        market_data: dict[str, Any] = {}
+
+        limits_fetcher = getattr(connector, "fetch_market_limits", None)
+        if callable(limits_fetcher):
+            try:
+                limits = await limits_fetcher(decision.symbol)
+            except Exception:
+                limits = None
+            if isinstance(limits, dict):
+                market_data.update(limits)
+
+        price_fetcher = getattr(connector, "fetch_ticker_price", None)
+        if callable(price_fetcher):
+            try:
+                price = await price_fetcher(decision.symbol)
+            except Exception:
+                price = None
+            if price:
+                market_data["reference_price"] = price
+
+        if decision.action in (
+            ExecutionAction.OPEN_LONG_LIMIT,
+            ExecutionAction.OPEN_SHORT_LIMIT,
+        ):
+            market_data.setdefault("order_type", "limit")
+        else:
+            market_data.setdefault("order_type", "market")
+
+        if not market_data:
+            return None
+        market_data.setdefault("exchange_name", "exchange")
+        return market_data
+
+    async def _fetch_open_orders(self, decision: ExecutionIdea) -> Optional[list]:
+        if self._portfolio_service is None or not decision or not decision.symbol:
+            return None
+        try:
+            return await self._portfolio_service.get_open_orders([decision.symbol])
+        except Exception:
+            return None
+
+    async def _get_price_fetcher(self, decision: ExecutionIdea) -> Optional[Any]:
+        if self._portfolio_service is None or decision is None or not decision.symbol:
+            return None
+        try:
+            connector = await self._portfolio_service.get_active_connector()
+        except Exception:
+            return None
+
+        price = None
+        fetcher = getattr(connector, "fetch_ticker_price", None)
+        if callable(fetcher):
+            try:
+                price = await fetcher(decision.symbol)
+            except Exception:
+                return None
+
+        if price is None or price <= 0:
+            return None
+
+        symbol = decision.symbol.upper()
+
+        def _fetch(sym: str) -> Optional[float]:
+            if not sym:
+                return None
+            return price if sym.upper() == symbol else None
+
+        return _fetch
 
 
 def _is_expired(item: OrderQueueItem, policy: OrderQueuePolicy) -> bool:

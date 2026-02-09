@@ -85,6 +85,7 @@ class PromptBuilderService:
                 request.chart_requests,
                 template.chart_defaults,
             )
+            _assert_required_charts(request.tickers, request.chart_requests, chart_items)
             if chart_items:
                 data_payload["chart_snapshots"] = chart_items
 
@@ -799,6 +800,56 @@ def _normalize_order_symbol(value: Any) -> str:
     if ":" in symbol:
         return symbol.split(":", 1)[0]
     return symbol
+
+
+def _assert_required_charts(
+    tickers: Sequence[str],
+    chart_requests: Sequence[ChartRequest],
+    chart_items: Sequence[Dict[str, Any]],
+) -> None:
+    expected = _expected_chart_keys(tickers, chart_requests)
+    if not expected:
+        return
+
+    actual = _chart_item_keys(chart_items)
+    missing = [f"{ticker}@{interval}" for ticker, interval in expected if (ticker, interval) not in actual]
+    if missing:
+        raise PromptBuildError(f"missing chart snapshots: {', '.join(missing)}")
+
+
+def _expected_chart_keys(
+    tickers: Sequence[str],
+    chart_requests: Sequence[ChartRequest],
+) -> List[tuple[str, str]]:
+    expected: List[tuple[str, str]] = []
+    seen = set()
+    for ticker in tickers:
+        for request in chart_requests:
+            key = _normalize_chart_key(ticker, request.interval)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            expected.append(key)
+    return expected
+
+
+def _chart_item_keys(chart_items: Sequence[Dict[str, Any]]) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for item in chart_items:
+        if not isinstance(item, dict):
+            continue
+        key = _normalize_chart_key(item.get("ticker"), item.get("interval"))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _normalize_chart_key(ticker: Any, interval: Any) -> Optional[tuple[str, str]]:
+    ticker_key = str(ticker or "").strip().upper()
+    interval_key = str(interval or "").strip()
+    if not ticker_key or not interval_key:
+        return None
+    return ticker_key, interval_key
 
 
 def _extract_sl_tp(orders: List[dict]) -> tuple[Optional[float], Optional[float]]:

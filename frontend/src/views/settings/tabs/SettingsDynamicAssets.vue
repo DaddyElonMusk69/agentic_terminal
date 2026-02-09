@@ -40,33 +40,57 @@
       </p>
     </BaseCard>
 
-    <BaseCard>
-      <div class="flex items-center justify-between">
-        <div>
-          <div class="text-xs uppercase tracking-wide text-muted">Refresh Interval</div>
-          <p class="mt-1 text-xs text-muted">How often to refresh dynamic lists.</p>
+    <!-- 2-column layout for Refresh Interval and Threshold -->
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <BaseCard>
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-muted">Refresh Interval</div>
+            <p class="mt-1 text-xs text-muted">How often to refresh.</p>
+          </div>
+          <BaseBadge>{{ refreshIntervalMinutes }} min</BaseBadge>
         </div>
-        <BaseBadge>{{ refreshIntervalMinutes }} min</BaseBadge>
-      </div>
-      <div class="mt-3 flex items-center gap-2">
-        <input
-          v-model.number="refreshIntervalMinutes"
-          class="w-24 rounded-md border border-border bg-panel px-2 py-1 text-xs"
-          type="number"
-          min="1"
-          max="60"
-        />
-        <span class="text-[11px] text-muted">minutes (1-60)</span>
-      </div>
-    </BaseCard>
+        <div class="mt-3 flex items-center gap-2">
+          <input
+            v-model.number="refreshIntervalMinutes"
+            class="w-24 rounded-md border border-border bg-panel px-2 py-1 text-xs"
+            type="number"
+            min="1"
+            max="60"
+          />
+          <span class="text-[11px] text-muted">min (1-60)</span>
+        </div>
+      </BaseCard>
+
+      <BaseCard>
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-muted">24hr Change Threshold</div>
+            <p class="mt-1 text-xs text-muted">Filter out volatile assets.</p>
+          </div>
+          <BaseBadge>{{ volatilityThresholdPct }}%</BaseBadge>
+        </div>
+        <div class="mt-3 flex items-center gap-3">
+          <input
+            v-model.number="volatilityThresholdPct"
+            class="flex-1 cursor-pointer"
+            type="range"
+            min="5"
+            max="100"
+            step="5"
+          />
+          <span class="w-12 text-right text-xs text-muted">{{ volatilityThresholdPct }}%</span>
+        </div>
+      </BaseCard>
+    </div>
 
     <BaseCard>
       <div class="text-xs uppercase tracking-wide text-muted">Sources</div>
       <p class="mt-1 text-xs text-muted">
         Assets from all enabled sources are merged and deduplicated.
       </p>
-
-      <div class="mt-4 space-y-3">
+      <!-- 2-column grid for source cards -->
+      <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
         <div class="rounded-md border border-border bg-panel/50 p-3">
           <div class="flex items-center justify-between gap-3">
             <label class="flex items-center gap-2 text-sm text-text">
@@ -251,6 +275,7 @@ const statusTone = ref<"info" | "success" | "error">("info");
 const error = ref("");
 const isBinanceActive = ref(false);
 const refreshIntervalMinutes = ref(10);
+const volatilityThresholdPct = ref(20);
 
 const sources = reactive<DynamicSources>(buildDynamicSources());
 
@@ -320,6 +345,7 @@ const loadConfig = async () => {
         1,
         Math.round((dynamicConfig.refresh_interval_seconds || 600) / 60),
       );
+      volatilityThresholdPct.value = dynamicConfig.volatility_threshold_pct ?? 20;
       isBinanceActive.value = Boolean(dynamicConfig.is_binance_active);
       updateMarketCache({
         dynamicEnabled: dynamicEnabled.value,
@@ -342,6 +368,7 @@ const saveConfig = async () => {
       refresh_interval_seconds: Math.round(
         Math.min(60, Math.max(1, refreshIntervalMinutes.value || 10)) * 60,
       ),
+      volatility_threshold_pct: Math.min(100, Math.max(5, volatilityThresholdPct.value || 20)),
       sources: buildDynamicSources(sources),
     };
     const apiKey = apiKeyInput.value.trim();
@@ -366,6 +393,7 @@ const saveConfig = async () => {
         1,
         Math.round((data.data.refresh_interval_seconds || 600) / 60),
       );
+      volatilityThresholdPct.value = data.data.volatility_threshold_pct ?? 20;
       isBinanceActive.value = Boolean(data.data.is_binance_active);
       normalizedSources = applyDynamicSources(data.data.sources);
     }

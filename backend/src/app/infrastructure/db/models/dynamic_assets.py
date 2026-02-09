@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, JSON, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.db.models.base import Base
@@ -18,6 +18,7 @@ class DynamicAssetConfigModel(Base):
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     refresh_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=600)
+    volatility_threshold_pct: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)
     last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_assets: Mapped[list | None] = mapped_column(JSON, nullable=True)

@@ -85,3 +85,55 @@ def test_tier_position_size_uses_portfolio_exposure_pct():
     )
     assert result.is_valid is True
     assert result.decision.position_size_usd == 250.0
+
+
+def test_update_sl_rejects_wider_stop_loss():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_SL,
+        symbol="BTC",
+        stop_loss=100.0,
+        new_stop_loss=90.0,
+    )
+    open_positions = [{"symbol": "BTC", "direction": "long", "size": 1}]
+    result = guard.validate(decision, open_positions=open_positions)
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.HOLD
+
+
+def test_update_sl_allows_tighter_stop_loss():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_SL,
+        symbol="BTC",
+        stop_loss=100.0,
+        new_stop_loss=110.0,
+    )
+    open_positions = [{"symbol": "BTC", "direction": "long", "size": 1}]
+    result = guard.validate(decision, open_positions=open_positions)
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.UPDATE_SL
+
+
+def test_update_sl_uses_open_orders_when_symbol_formats_differ():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_SL,
+        symbol="BTC",
+        new_stop_loss=90.0,
+    )
+    open_positions = [{"symbol": "BTC/USDT:USDT", "direction": "long", "size": 1}]
+    open_orders = [
+        {
+            "symbol": "BTC/USDT:USDT",
+            "type": "STOP_MARKET",
+            "stopPrice": 100.0,
+            "status": "NEW",
+        }
+    ]
+    result = guard.validate(decision, open_positions=open_positions, open_orders=open_orders)
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.HOLD

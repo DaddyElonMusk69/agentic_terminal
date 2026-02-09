@@ -2,8 +2,8 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Set
 
 from app.domain.llm_response_worker.models import ExecutionIdea
-from app.domain.portfolio.interfaces import AccountSetupRepository
-from app.domain.portfolio.models import AccountSetup
+from app.application.risk_management.config_service import RiskManagementConfigService
+from app.domain.risk_management.models import DEFAULT_RISK_MANAGEMENT_CONFIG
 from app.domain.trade_guard.guard import GuardResult
 from app.domain.trade_guard.interfaces import TradeGuardConfigRepository
 from app.domain.trade_guard.models import (
@@ -19,10 +19,10 @@ class TradeGuardService:
     def __init__(
         self,
         config_repository: TradeGuardConfigRepository,
-        account_setup_repository: AccountSetupRepository,
+        risk_config_service: RiskManagementConfigService,
     ) -> None:
         self._config_repository = config_repository
-        self._account_setup_repository = account_setup_repository
+        self._risk_config_service = risk_config_service
 
     async def get_config(self) -> TradeGuardConfig:
         config = await self._config_repository.get_config()
@@ -34,29 +34,34 @@ class TradeGuardService:
         normalized = self._normalize_config(config)
         return await self._config_repository.upsert(normalized)
 
-    async def get_account_setup(self) -> AccountSetup:
-        setup = await self._account_setup_repository.get_setup()
-        return setup or AccountSetup(portfolio_exposure_pct=25.0)
+    async def get_exposure_pct(self) -> float:
+        config = await self._risk_config_service.get_config()
+        try:
+            return float(config.exposure_pct)
+        except (TypeError, ValueError):
+            return float(DEFAULT_RISK_MANAGEMENT_CONFIG.exposure_pct)
 
     async def validate(
         self,
         decision: ExecutionIdea,
         account_state: Optional[Dict[str, Any]] = None,
         market_data: Optional[Dict[str, Any]] = None,
+        open_orders: Optional[List[Dict[str, Any]]] = None,
         open_positions: Optional[List[Dict[str, Any]]] = None,
         price_fetcher: Optional[Any] = None,
         tradeable_symbols: Optional[Set[str]] = None,
     ) -> GuardResult:
         config = await self.get_config()
-        setup = await self.get_account_setup()
+        exposure_pct = await self.get_exposure_pct()
         guard = create_default_guard(config, tradeable_symbols=tradeable_symbols)
         return guard.validate(
             decision=decision,
             account_state=account_state,
             market_data=market_data,
+            open_orders=open_orders,
             open_positions=open_positions,
             price_fetcher=price_fetcher,
-            portfolio_exposure_pct=setup.portfolio_exposure_pct,
+            portfolio_exposure_pct=exposure_pct,
         )
 
     def _normalize_config(self, config: TradeGuardConfig) -> TradeGuardConfig:

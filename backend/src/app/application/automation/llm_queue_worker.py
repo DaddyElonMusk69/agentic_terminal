@@ -49,12 +49,16 @@ class LlmQueueWorker:
 
         payload = item.payload
         session_id = payload.get("session_id")
+        cycle_number = payload.get("cycle_number")
 
         if _is_expired(item, self._policy):
             await self._repository.mark_dropped(item.id, "expired")
             await self._outbox.enqueue_event(
                 topics.LLM_FAILED,
-                _with_session({"request_id": item.id, "error": "expired"}, session_id),
+                _with_session(
+                    {"request_id": item.id, "error": "expired", "cycle_number": cycle_number},
+                    session_id,
+                ),
             )
             return True
 
@@ -64,7 +68,10 @@ class LlmQueueWorker:
             await self._repository.mark_failed(item.id, "missing prompt_text")
             await self._outbox.enqueue_event(
                 topics.LLM_FAILED,
-                _with_session({"request_id": item.id, "error": "missing prompt_text"}, session_id),
+                _with_session(
+                    {"request_id": item.id, "error": "missing prompt_text", "cycle_number": cycle_number},
+                    session_id,
+                ),
             )
             return True
 
@@ -94,6 +101,7 @@ class LlmQueueWorker:
                     "model": request.model,
                     "prompt_chars": len(prompt_text),
                     "execution_mode": execution_mode.value,
+                    "cycle_number": cycle_number,
                 },
                 session_id,
             ),
@@ -111,6 +119,7 @@ class LlmQueueWorker:
                     {
                         "request_id": payload.get("request_id", item.id),
                         "error": f"unsupported_protocol:{protocol}",
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -131,6 +140,7 @@ class LlmQueueWorker:
                     {
                         "request_id": payload.get("request_id", item.id),
                         "error": str(exc),
+                        "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
@@ -149,6 +159,7 @@ class LlmQueueWorker:
                         "error": result.parse_result.error,
                         "parse_result": result.parse_result.to_dict(),
                         "llm_response": result.call_response.content,
+                        "cycle_number": cycle_number,
                         "response_meta": {
                             "model": result.call_response.model,
                             "tokens_used": result.call_response.tokens_used,
@@ -166,6 +177,7 @@ class LlmQueueWorker:
                         "error": result.parse_result.error,
                         "raw_response": result.call_response.content,
                         "llm_response": result.call_response.content,
+                        "cycle_number": cycle_number,
                         "response_meta": {
                             "model": result.call_response.model,
                             "tokens_used": result.call_response.tokens_used,
@@ -193,6 +205,7 @@ class LlmQueueWorker:
                     "parse_result": result.parse_result.to_dict(),
                     "execution_ideas": execution_ideas,
                     "response_meta": response_meta,
+                    "cycle_number": cycle_number,
                 },
                 session_id,
             ),
@@ -208,6 +221,7 @@ class LlmQueueWorker:
                     "llm_response": result.call_response.content,
                     "response_meta": response_meta,
                     "parse_result": result.parse_result.to_dict(),
+                    "cycle_number": cycle_number,
                 },
                 session_id,
             ),
@@ -233,12 +247,17 @@ class LlmQueueWorker:
                     "trace_id": payload.get("trace_id"),
                     "execution_idea": idea,
                     "execution_mode": execution_mode.value,
+                    "cycle_number": cycle_number,
                 }
             )
             await self._outbox.enqueue_event(
                 topics.ORDER_QUEUED,
                 _with_session(
-                    {"execution_idea": idea, "execution_mode": execution_mode.value},
+                    {
+                        "execution_idea": idea,
+                        "execution_mode": execution_mode.value,
+                        "cycle_number": cycle_number,
+                    },
                     session_id,
                 ),
             )

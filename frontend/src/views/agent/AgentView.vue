@@ -145,6 +145,25 @@
                 <div v-else-if="category.id === 'chart_snapshots'" class="space-y-3">
                   <div class="rounded-md border border-border bg-panel/60 p-3">
                     <div class="flex items-center justify-between gap-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Preview Ticker</div>
+                      <span v-if="isLoadingAssets" class="text-[10px] text-muted">Loading...</span>
+                    </div>
+                    <select
+                      v-model="selectedChartTicker"
+                      class="mt-2 w-full rounded-md border border-border bg-panel px-2 py-2 text-xs text-text"
+                      :disabled="!isCategorySelected(category.id) || chartTickerOptions.length === 0"
+                    >
+                      <option v-for="ticker in chartTickerOptions" :key="ticker" :value="ticker">
+                        {{ ticker }}
+                      </option>
+                    </select>
+                    <p class="mt-2 text-[10px] text-muted">
+                      Pulled from Settings → Market → Monitored Assets.
+                    </p>
+                  </div>
+
+                  <div class="rounded-md border border-border bg-panel/60 p-3">
+                    <div class="flex items-center justify-between gap-2">
                       <div class="text-[10px] uppercase tracking-wide text-muted">Candles per Interval</div>
                       <span v-if="isLoadingIntervals" class="text-[10px] text-muted">Loading...</span>
                     </div>
@@ -560,7 +579,7 @@
                 </div>
                 <div v-else-if="previewState === 'success'" class="space-y-3">
                   <div class="text-[11px] text-muted">
-                    BTC @ {{ previewInterval }} | {{ previewCandles }} candles | EMAs:
+                    {{ selectedChartTicker }} @ {{ previewInterval }} | {{ previewCandles }} candles | EMAs:
                     {{ previewEmaList.length ? previewEmaList.join(", ") : "none" }}
                   </div>
                   <div class="overflow-auto rounded-md border border-border bg-panel/30 p-2">
@@ -756,6 +775,9 @@ const DEFAULT_VEGAS_INTERVALS: string[] = [];
 
 const monitoredIntervals = ref<string[]>([]);
 const isLoadingIntervals = ref(false);
+const monitoredAssets = ref<string[]>([]);
+const isLoadingAssets = ref(false);
+const selectedChartTicker = ref("BTC");
 
 const expandedCategories = ref<Record<string, boolean>>({});
 const selectAllRef = ref<HTMLInputElement | null>(null);
@@ -828,6 +850,11 @@ const vegasIntervals = computed(() => {
   });
 });
 
+const chartTickerOptions = computed(() => {
+  const assets = monitoredAssets.value.filter((item) => item && item.trim());
+  return assets.length ? assets : ["BTC"];
+});
+
 const vegasIntervalValue = (interval: string) => {
   const value = store.draft.vegas_interval_configs[interval];
   return typeof value === "number" && Number.isFinite(value) ? value : 50;
@@ -874,6 +901,25 @@ const loadIntervals = async () => {
     // Ignore interval load failures
   } finally {
     isLoadingIntervals.value = false;
+  }
+};
+
+const loadAssets = async () => {
+  if (isLoadingAssets.value) return;
+  isLoadingAssets.value = true;
+  try {
+    const response = await fetch("/api/v1/market/monitored-assets");
+    const data = await response.json();
+    if (Array.isArray(data?.data)) {
+      monitoredAssets.value = data.data;
+      if (!data.data.includes(selectedChartTicker.value) && data.data.length > 0) {
+        selectedChartTicker.value = data.data[0];
+      }
+    }
+  } catch {
+    // Ignore asset load failures
+  } finally {
+    isLoadingAssets.value = false;
   }
 };
 
@@ -1021,7 +1067,7 @@ const previewVegasChart = async (interval: string) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ticker: "BTC",
+        ticker: selectedChartTicker.value || "BTC",
         interval,
         candles: previewCandles.value,
         emas: previewEmaList.value,
@@ -1173,6 +1219,7 @@ onMounted(() => {
     store.loadContextConfigs();
   }
   loadIntervals();
+  loadAssets();
 });
 
 onActivated(() => {

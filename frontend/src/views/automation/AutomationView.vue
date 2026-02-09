@@ -221,6 +221,9 @@
 
           <BaseCard>
             <div class="text-xs uppercase tracking-wide text-muted">Trade Guard</div>
+            <div class="mt-1 text-[10px] text-muted">
+              Exposure (Risk Config): {{ riskExposureLabel }} · Max Margin: {{ formatUsd(riskExposureUsd) }}
+            </div>
             <div class="mt-3 space-y-3 text-[11px] text-muted">
               <label>
                 Min Confidence
@@ -1019,13 +1022,59 @@
                               {{ session.execution_mode || "unknown" }}
                             </span>
                           </div>
-                          <button
-                            class="rounded-md border border-border bg-panel px-2 py-0.5 text-[10px] text-muted hover:text-negative"
-                            type="button"
-                            @click.stop="handleDeleteSession(session.id)"
-                          >
-                            Delete
-                          </button>
+                          <div class="flex items-center gap-2">
+                            <div class="relative" data-export-menu>
+                              <button
+                                class="rounded-md border border-border bg-panel px-2 py-0.5 text-[10px] text-muted hover:text-text disabled:opacity-50"
+                                type="button"
+                                :disabled="exportingSessionId === session.id"
+                                @click.stop="toggleExportMenu(session.id)"
+                              >
+                                {{ exportingSessionId === session.id ? "Exporting..." : "Export" }}
+                              </button>
+                              <div
+                                v-if="exportMenuSessionId === session.id"
+                                class="absolute right-0 z-20 mt-2 w-56 rounded-md border border-border bg-surface p-2 text-[11px] text-text shadow-panel"
+                              >
+                                <div class="mb-1 text-[10px] uppercase tracking-wide text-muted">Export Logs</div>
+                                <button
+                                  class="w-full rounded-md px-2 py-1 text-left text-[11px] text-muted hover:bg-panel/70 hover:text-text"
+                                  type="button"
+                                  @click.stop="handleExportSession(session, 'llm')"
+                                >
+                                  LLM responses only
+                                </button>
+                                <button
+                                  class="mt-1 w-full rounded-md px-2 py-1 text-left text-[11px] text-muted hover:bg-panel/70 hover:text-text"
+                                  type="button"
+                                  @click.stop="handleExportSession(session, 'prompt_llm')"
+                                >
+                                  Prompt + response
+                                </button>
+                                <button
+                                  class="mt-1 w-full rounded-md px-2 py-1 text-left text-[11px] text-muted hover:bg-panel/70 hover:text-text"
+                                  type="button"
+                                  @click.stop="handleExportSession(session, 'llm_trades')"
+                                >
+                                  LLM + trades summary
+                                </button>
+                                <button
+                                  class="mt-1 w-full rounded-md px-2 py-1 text-left text-[11px] text-muted hover:bg-panel/70 hover:text-text"
+                                  type="button"
+                                  @click.stop="handleExportSession(session, 'raw')"
+                                >
+                                  Raw logs (full)
+                                </button>
+                              </div>
+                            </div>
+                            <button
+                              class="rounded-md border border-border bg-panel px-2 py-0.5 text-[10px] text-muted hover:text-negative"
+                              type="button"
+                              @click.stop="handleDeleteSession(session.id)"
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </div>
                         <div class="mt-1 break-words text-[11px] text-muted">
                           {{ session.provider || "--" }}/{{ session.model || "--" }}
@@ -1196,6 +1245,32 @@
                     class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 text-xs scrollbar-hidden"
                     @scroll="handleSessionLogScroll"
                   >
+                    <div
+                      v-if="activeSessionTab === 'logs' && sessionDetail"
+                      class="mb-2 flex items-center justify-between text-[10px] text-muted"
+                    >
+                      <span>
+                        Page {{ sessionLogPage }} · {{ sessionDetail.logs.length }} entries
+                      </span>
+                      <div class="flex items-center gap-2">
+                        <button
+                          class="rounded-md border border-border bg-panel px-2 py-1 text-[10px] text-muted hover:text-text disabled:opacity-50"
+                          type="button"
+                          :disabled="sessionDetailLoading || sessionLogPage === 1"
+                          @click="changeSessionLogPage(sessionLogPage - 1)"
+                        >
+                          Prev
+                        </button>
+                        <button
+                          class="rounded-md border border-border bg-panel px-2 py-1 text-[10px] text-muted hover:text-text disabled:opacity-50"
+                          type="button"
+                          :disabled="sessionDetailLoading || !sessionLogHasMore"
+                          @click="changeSessionLogPage(sessionLogPage + 1)"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
                     <div v-if="sessionDetailLoading" class="text-xs text-muted">
                       Loading details...
                     </div>
@@ -1389,6 +1464,7 @@ import BaseEmptyState from "@/components/BaseEmptyState.vue";
 import AutomationEquityChart from "@/components/AutomationEquityChart.vue";
 import TradingViewWidget from "@/components/TradingViewWidget.vue";
 import { stageMessage, useAutomationStore } from "@/stores/automationStore";
+import { useRiskManagementStore } from "@/stores/riskManagementStore";
 import type { AutomationLog, AutomationPosition, AutomationTrade } from "@/types/automation";
 import {
   readModelCache,
@@ -1402,6 +1478,7 @@ import {
 defineOptions({ name: "AutomationView" });
 
 const store = useAutomationStore();
+const riskStore = useRiskManagementStore();
 const leftPanelRef = ref<HTMLElement | null>(null);
 const leftPanelScrollTop = ref(0);
 const promptRateTick = ref(0);
@@ -1432,6 +1509,13 @@ const promptRateLabel = computed(() => {
   const rate = store.promptSession.promptCount / (elapsedMs / 3600000);
   const formatted = rate >= 10 ? rate.toFixed(0) : rate.toFixed(1);
   return `Prompts/h: ${formatted}`;
+});
+
+const riskExposurePct = computed(() => riskStore.summary?.config?.exposure_pct ?? null);
+const riskExposureUsd = computed(() => riskStore.summary?.exposure_usd ?? null);
+const riskExposureLabel = computed(() => {
+  if (riskExposurePct.value === null || riskExposurePct.value === undefined) return "--";
+  return `${riskExposurePct.value.toFixed(1)}%`;
 });
 
 type AutomationConfig = {
@@ -1667,8 +1751,11 @@ const sessionError = ref("");
 const sessionPage = ref(1);
 const sessionPageSize = ref(20);
 const sessionTotal = ref(0);
+const sessionLogPage = ref(1);
+const sessionLogPageSize = 500;
 let positionPollTimer: ReturnType<typeof setInterval> | null = null;
 let positionGraceTimer: ReturnType<typeof setTimeout> | null = null;
+let promptConfigRefreshTimer: number | null = null;
 const automationLogRef = ref<HTMLElement | null>(null);
 const automationLogAutoScroll = ref(true);
 const sessionLogRef = ref<HTMLElement | null>(null);
@@ -1676,6 +1763,10 @@ const sessionLogAutoScroll = ref(true);
 const showLiveModeConfirm = ref(false);
 const liveModeConfirmed = ref(false);
 const pendingExecutionMode = ref<string | null>(null);
+const exportingSessionId = ref<string | null>(null);
+const exportMenuSessionId = ref<string | null>(null);
+
+type SessionExportMode = "llm" | "llm_trades" | "prompt_llm" | "raw";
 
 const executionModes = [
   { label: "Prompt Test", value: "prompt_test" },
@@ -1716,6 +1807,12 @@ const positionSymbols = computed(() =>
   store.positions.map((position) => position.symbol).filter(Boolean),
 );
 
+const closeExportMenu = (event: MouseEvent) => {
+  const target = event.target as HTMLElement | null;
+  if (target && target.closest("[data-export-menu]")) return;
+  exportMenuSessionId.value = null;
+};
+
 const positionChartAvailable = computed(
   () => store.positions.length > 0 || positionGraceDeadline.value !== null,
 );
@@ -1730,6 +1827,11 @@ const sessionPageRange = computed(() => {
 const hasMoreSessions = computed(
   () => sessionPage.value * sessionPageSize.value < sessionTotal.value,
 );
+
+const sessionLogHasMore = computed(() => {
+  if (!sessionDetail.value) return false;
+  return sessionDetail.value.logs.length >= sessionLogPageSize;
+});
 
 type PaginationItem =
   | { type: "page"; value: number; key: string }
@@ -2797,14 +2899,21 @@ const loadSessions = async () => {
   }
 };
 
-const loadSessionDetail = async (sessionId: string) => {
+const loadSessionDetail = async (sessionId: string, page = 1) => {
   if (!sessionId) return;
+  const isSameSession = selectedSessionId.value === sessionId;
   selectedSessionId.value = sessionId;
   sessionDetailLoading.value = true;
   sessionError.value = "";
-  sessionDetail.value = null;
+  if (!isSameSession) {
+    sessionDetail.value = null;
+  }
+  sessionLogPage.value = Math.max(1, page);
+  const logOffset = (sessionLogPage.value - 1) * sessionLogPageSize;
   try {
-    const response = await fetch(`/api/v1/automation/sessions/${sessionId}`);
+    const response = await fetch(
+      `/api/v1/automation/sessions/${sessionId}?log_limit=${sessionLogPageSize}&log_offset=${logOffset}`,
+    );
     const data = await response.json();
     if (!response.ok || !data?.data) {
       throw new Error(data?.detail || data?.error || "Failed to load session detail.");
@@ -2823,6 +2932,7 @@ const openSessionModal = async () => {
   selectedSessionId.value = null;
   sessionDetail.value = null;
   sessionPage.value = 1;
+  sessionLogPage.value = 1;
   await loadSessions();
 };
 
@@ -2830,6 +2940,12 @@ const changeSessionPage = async (nextPage: number) => {
   if (nextPage < 1) return;
   sessionPage.value = nextPage;
   await loadSessions();
+};
+
+const changeSessionLogPage = async (nextPage: number) => {
+  if (!selectedSessionId.value) return;
+  if (nextPage < 1) return;
+  await loadSessionDetail(selectedSessionId.value, nextPage);
 };
 
 const handleDeleteSession = async (sessionId: string) => {
@@ -2857,6 +2973,233 @@ const handleDeleteSession = async (sessionId: string) => {
   } catch (error) {
     sessionError.value = error instanceof Error ? error.message : "Failed to delete session.";
   }
+};
+
+const toggleExportMenu = (sessionId: string) => {
+  exportMenuSessionId.value = exportMenuSessionId.value === sessionId ? null : sessionId;
+};
+
+const handleExportSession = async (session: SessionItem, mode: SessionExportMode) => {
+  if (!session?.id) return;
+  exportMenuSessionId.value = null;
+  exportingSessionId.value = session.id;
+  try {
+    const detail = await _getSessionDetailForExport(session.id);
+    if (!detail) {
+      throw new Error("Session logs unavailable.");
+    }
+    const payload =
+      mode === "raw"
+        ? _buildRawExport(detail)
+        : mode === "prompt_llm"
+          ? _buildPromptLlmExport(detail)
+          : _buildLlmExport(detail, mode === "llm_trades");
+    const fileName = _buildSessionExportName(detail.session, mode);
+    _downloadJson(payload, fileName);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to export session logs.";
+    window.alert(message);
+  } finally {
+    exportingSessionId.value = null;
+  }
+};
+
+const _getSessionDetailForExport = async (sessionId: string): Promise<SessionDetail | null> => {
+  const response = await fetch(`/api/v1/automation/sessions/${sessionId}/export`);
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.data) {
+    return null;
+  }
+  const payload = data.data as {
+    session: SessionItem;
+    logs: AutomationLog[];
+    trades: AutomationTrade[];
+  };
+  return {
+    session: payload.session,
+    logs: payload.logs,
+    trades: payload.trades,
+  };
+};
+
+const _buildSessionExportName = (session: SessionItem, mode: SessionExportMode) => {
+  const safeId = (session.id || "session").replace(/[^a-zA-Z0-9_-]+/g, "-");
+  const modeLabel =
+    mode === "raw" ? "raw" : mode === "llm_trades" ? "llm-trades" : mode === "prompt_llm" ? "prompt-llm" : "llm";
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${safeId}-${modeLabel}-${stamp}.json`;
+};
+
+const _downloadJson = (payload: unknown, fileName: string) => {
+  const text = JSON.stringify(payload, null, 2);
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+const _buildRawExport = (detail: SessionDetail) => ({
+  exported_at: new Date().toISOString(),
+  session: detail.session,
+  logs: detail.logs,
+});
+
+const _buildLlmExport = (detail: SessionDetail, includeTrades: boolean) => {
+  const responses = _extractLlmResponses(detail.logs);
+  const payload: Record<string, unknown> = {
+    exported_at: new Date().toISOString(),
+    session: _sessionSummary(detail.session),
+    responses,
+  };
+  if (includeTrades) {
+    payload.trades = _simplifyTrades(detail.trades);
+  }
+  return payload;
+};
+
+const _buildPromptLlmExport = (detail: SessionDetail) => {
+  const responses = _extractLlmResponses(detail.logs, true);
+  return {
+    exported_at: new Date().toISOString(),
+    session: _sessionSummary(detail.session),
+    responses,
+  };
+};
+
+const _sessionSummary = (session: SessionItem) => ({
+  id: session.id,
+  started_at: session.started_at ?? null,
+  ended_at: session.ended_at ?? null,
+  execution_mode: session.execution_mode ?? null,
+  provider: session.provider ?? null,
+  model: session.model ?? null,
+});
+
+const _extractLlmResponses = (logs: AutomationLog[], includePrompt = false) => {
+  const contextByRequest = _buildPromptContext(logs);
+  const promptByRequest = includePrompt ? _buildPromptTextMap(logs) : {};
+  return logs
+    .filter((log) => isLlmResponseLog(log))
+    .map((log) => {
+      const data = log.data || {};
+      const requestId = typeof data.request_id === "string" ? data.request_id : null;
+      const context = requestId ? contextByRequest[requestId] : null;
+      const promptText = requestId ? promptByRequest[requestId] : null;
+      const tickers = _mergeStringArrays(
+        context?.tickers,
+        _extractSymbols(data),
+        _normalizeStringArray(data.symbol || data.ticker),
+      );
+      const intervals = _mergeStringArrays(
+        context?.intervals,
+        _normalizeStringArray(data.interval || data.intervals),
+      );
+
+      const entry: Record<string, unknown> = {
+        timestamp: log.created_at,
+        cycle_number: log.cycle_number ?? null,
+        request_id: requestId,
+        tickers,
+        intervals,
+        llm_response: typeof data.llm_response === "string" ? data.llm_response.trim() : "",
+      };
+      if (includePrompt) {
+        entry.prompt_text = promptText || "";
+      }
+      return entry;
+    })
+    .filter((entry) => entry.llm_response);
+};
+
+const _buildPromptContext = (logs: AutomationLog[]) => {
+  const context: Record<string, { tickers?: string[]; intervals?: string[] }> = {};
+  logs.forEach((log) => {
+    const data = log.data;
+    if (!data || typeof data !== "object") return;
+    const requestId = typeof data.request_id === "string" ? data.request_id : null;
+    if (!requestId) return;
+    const tickers = _normalizeStringArray(data.tickers);
+    const intervals = _normalizeStringArray(data.intervals);
+    if (tickers.length || intervals.length) {
+      context[requestId] = {
+        tickers: tickers.length ? tickers : context[requestId]?.tickers,
+        intervals: intervals.length ? intervals : context[requestId]?.intervals,
+      };
+    }
+  });
+  return context;
+};
+
+const _buildPromptTextMap = (logs: AutomationLog[]) => {
+  const promptMap: Record<string, string> = {};
+  logs.forEach((log) => {
+    const data = log.data;
+    if (!data || typeof data !== "object") return;
+    const requestId = typeof data.request_id === "string" ? data.request_id : null;
+    if (!requestId) return;
+    const prompt = data.prompt_text;
+    if (typeof prompt === "string" && prompt.trim()) {
+      promptMap[requestId] = prompt.trim();
+    }
+  });
+  return promptMap;
+};
+
+const _extractSymbols = (data: Record<string, unknown>) => {
+  const ideas = Array.isArray(data.execution_ideas) ? data.execution_ideas : [];
+  const symbols = ideas
+    .map((idea) => (idea && typeof idea === "object" ? (idea as Record<string, unknown>).symbol : null))
+    .filter((symbol) => typeof symbol === "string") as string[];
+  return _uniqueStrings(symbols);
+};
+
+const _simplifyTrades = (trades: AutomationTrade[]) =>
+  trades.map((trade) => ({
+    symbol: trade.symbol,
+    action: trade.action || trade.direction || null,
+    size_usd: trade.size_usd ?? null,
+    entry_price: trade.entry_price ?? null,
+    exit_price: trade.exit_price ?? null,
+    pnl: trade.pnl ?? null,
+    status: trade.status ?? null,
+    created_at: trade.created_at ?? null,
+  }));
+
+const _normalizeStringArray = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return _uniqueStrings(value.map((item) => String(item)));
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return [];
+};
+
+const _mergeStringArrays = (...groups: Array<string[] | undefined>) => {
+  const merged: string[] = [];
+  groups.forEach((group) => {
+    if (!group) return;
+    merged.push(...group);
+  });
+  return _uniqueStrings(merged);
+};
+
+const _uniqueStrings = (values: string[]) => {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  values.forEach((value) => {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    output.push(trimmed);
+  });
+  return output;
 };
 
 const closeSessionModal = () => {
@@ -2913,10 +3256,26 @@ const stopPositionPolling = () => {
   }
 };
 
+const startPromptConfigRefresh = () => {
+  if (promptConfigRefreshTimer) return;
+  promptConfigRefreshTimer = window.setInterval(() => {
+    loadPromptConfigs();
+  }, 60000);
+};
+
+const stopPromptConfigRefresh = () => {
+  if (promptConfigRefreshTimer) {
+    clearInterval(promptConfigRefreshTimer);
+    promptConfigRefreshTimer = null;
+  }
+};
+
 onMounted(async () => {
+  window.addEventListener("click", closeExportMenu);
   await loadAutomationConfig();
   await loadTradeGuardConfig();
   await loadAutomationState();
+  await riskStore.loadSummary();
   await Promise.all([loadProviders(), loadPromptConfigs()]);
 
   const provider = automationConfig.value.provider;
@@ -2937,6 +3296,7 @@ onMounted(async () => {
 
   startPositionPolling();
   startPromptRateTicker();
+  startPromptConfigRefresh();
 });
 
 onActivated(() => {
@@ -2954,8 +3314,10 @@ onDeactivated(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("click", closeExportMenu);
   stopPositionPolling();
   stopPromptRateTicker();
+  stopPromptConfigRefresh();
   if (positionGraceTimer) {
     clearTimeout(positionGraceTimer);
     positionGraceTimer = null;

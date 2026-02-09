@@ -53,21 +53,27 @@ class ChartGenerator:
             fig_ratio = (10, 10)
             xlim = _compute_xlim_padding(df_display)
 
-            fig, axes = mpf.plot(
-                df_display,
+            plot_kwargs = dict(
                 type="candle",
                 style=style,
                 title=title,
                 volume=request.show_volume,
                 addplot=addplots if addplots else None,
-                ylim=ylim,
-                xlim=xlim,
                 panel_ratios=panel_ratios,
                 returnfig=True,
                 figratio=fig_ratio,
                 figscale=request.fig_scale,
                 tight_layout=request.tight_layout,
                 datetime_format="",
+            )
+            if ylim is not None:
+                plot_kwargs["ylim"] = ylim
+            if xlim is not None:
+                plot_kwargs["xlim"] = xlim
+
+            fig, axes = mpf.plot(
+                df_display,
+                **plot_kwargs,
             )
 
             fig.suptitle(

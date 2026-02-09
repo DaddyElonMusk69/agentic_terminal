@@ -23,7 +23,9 @@ _EMA_COLOR_MAP = {
     676: "#42A5F5",
 }
 _DEFAULT_EMA_COLOR = "#FFFFFF"
-_EXTRA_CANDLE_BUFFER = 50
+_EMA_MIN_CANDLES = 20
+_EMA_MULTIPLIER = 3
+_EMA_MAX_CANDLES = 1499
 
 
 class ChartPreviewService:
@@ -154,8 +156,11 @@ def _extract_ema_lengths(overlays: List[object]) -> List[int]:
 
 
 def _compute_fetch_limit(candle_limit: int, ema_lengths: List[int]) -> int:
-    max_ema = max(ema_lengths) if ema_lengths else 0
-    fetch_limit = candle_limit + max_ema + _EXTRA_CANDLE_BUFFER
+    if not ema_lengths:
+        return min(candle_limit, BinanceClient.MAX_KLINES_LIMIT)
+    max_ema = max(ema_lengths)
+    base = max(max_ema, _EMA_MIN_CANDLES)
+    fetch_limit = min(base * _EMA_MULTIPLIER, _EMA_MAX_CANDLES)
     fetch_limit = max(fetch_limit, candle_limit)
     return min(fetch_limit, BinanceClient.MAX_KLINES_LIMIT)
 

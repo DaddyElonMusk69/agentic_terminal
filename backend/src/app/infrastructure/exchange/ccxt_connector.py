@@ -135,6 +135,11 @@ class CCXTConnector(ExchangeConnector):
                 if fetched:
                     orders.extend([item for item in fetched if isinstance(item, dict)])
 
+            if (self._config.exchange_id or "").lower() == "binance":
+                algo_orders = await _fetch_binance_open_algo_orders(client, symbols)
+                if algo_orders:
+                    orders.extend(algo_orders)
+
             return orders
 
     async def fetch_recent_trades(self, limit: int = 10) -> List[dict]:
@@ -235,6 +240,55 @@ class CCXTConnector(ExchangeConnector):
                 quotes[raw] = MarketQuote(price=price, change_percent=change_percent)
 
             return quotes
+
+    async def fetch_market_limits(self, symbol: str) -> Optional[Dict[str, Any]]:
+        raw_symbol = (symbol or "").strip()
+        if not raw_symbol:
+            return None
+        async with self._client() as client:
+            markets = getattr(client, "markets", {}) or {}
+            candidates = _symbol_candidates(client, raw_symbol)
+            market = None
+            chosen = None
+            for candidate in candidates:
+                if candidate in markets:
+                    market = markets.get(candidate)
+                    chosen = candidate
+                    break
+            if market is None and candidates:
+                try:
+                    chosen = candidates[0]
+                    market = client.market(chosen)
+                except Exception:
+                    market = None
+
+            if not isinstance(market, dict):
+                return None
+
+            limits = market.get("limits") if isinstance(market.get("limits"), dict) else {}
+            amount_limits = limits.get("amount") if isinstance(limits.get("amount"), dict) else {}
+            cost_limits = limits.get("cost") if isinstance(limits.get("cost"), dict) else {}
+
+            min_amount = _to_float(amount_limits.get("min"))
+            min_cost = _to_float(cost_limits.get("min"))
+            contract_size = _to_float(market.get("contractSize") or market.get("contract_size")) or 1.0
+
+            info = market.get("info", {}) if isinstance(market.get("info"), dict) else {}
+            if min_cost is None:
+                min_cost = _to_float(info.get("minNotional") or info.get("min_notional"))
+            if min_amount is None:
+                min_amount = _to_float(info.get("minQty") or info.get("min_qty"))
+
+            if min_amount is None and min_cost is None:
+                return None
+
+            return {
+                "symbol": raw_symbol.upper(),
+                "market_symbol": chosen or market.get("symbol"),
+                "min_amount": min_amount,
+                "min_notional": min_cost,
+                "contract_size": contract_size,
+            }
 
     async def fetch_open_interest_history(
         self, symbol: str, timeframe: str, limit: int
@@ -962,6 +1016,94 @@ def _symbol_candidates(client: Any, symbol: str) -> List[str]:
         add(f"{base}/{quote_symbol}:{quote_symbol}")
 
     return candidates
+
+
+async def _fetch_binance_open_algo_orders(client: Any, symbols: Optional[List[str]]) -> List[dict]:
+    if not hasattr(client, "fapiPrivateGetOpenAlgoOrders"):
+        return []
+
+    orders: List[dict] = []
+
+    if symbols:
+        for symbol in symbols:
+            market_id = _resolve_market_id(client, symbol)
+            params = {"symbol": market_id} if market_id else {}
+            try:
+                payload = await client.fapiPrivateGetOpenAlgoOrders(params)
+            except Exception:
+                payload = []
+            orders.extend(_normalize_algo_orders(client, payload, market_id))
+    else:
+        try:
+            payload = await client.fapiPrivateGetOpenAlgoOrders()
+        except Exception:
+            payload = []
+        orders.extend(_normalize_algo_orders(client, payload, None))
+
+    return orders
+
+
+def _resolve_market_id(client: Any, symbol: Optional[str]) -> Optional[str]:
+    if not symbol:
+        return None
+    raw = str(symbol).strip()
+    if not raw:
+        return None
+    markets = getattr(client, "markets", {}) or {}
+    for candidate in _symbol_candidates(client, raw):
+        market = markets.get(candidate)
+        if isinstance(market, dict) and market.get("id"):
+            return str(market.get("id"))
+    try:
+        market = client.market(raw)
+    except Exception:
+        market = None
+    if isinstance(market, dict):
+        market_id = market.get("id")
+        if market_id:
+            return str(market_id)
+    if "/" not in raw:
+        return raw
+    return None
+
+
+def _normalize_algo_orders(client: Any, payload: Any, fallback_symbol: Optional[str]) -> List[dict]:
+    if not payload:
+        return []
+    rows = payload if isinstance(payload, list) else []
+    orders: List[dict] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        raw_symbol = raw.get("symbol") or fallback_symbol
+        symbol = _resolve_market_symbol(client, raw_symbol)
+        orders.append(
+            {
+                "id": raw.get("algoId") or raw.get("orderId"),
+                "symbol": symbol,
+                "type": raw.get("orderType") or raw.get("type"),
+                "stopPrice": raw.get("triggerPrice") or raw.get("stopPrice"),
+                "reduceOnly": raw.get("reduceOnly") or raw.get("closePosition"),
+                "status": raw.get("algoStatus") or raw.get("status") or "NEW",
+                "info": raw,
+            }
+        )
+    return orders
+
+
+def _resolve_market_symbol(client: Any, raw_symbol: Optional[str]) -> str:
+    if not raw_symbol:
+        return ""
+    symbol = str(raw_symbol).strip()
+    if not symbol:
+        return ""
+    markets_by_id = getattr(client, "markets_by_id", {}) or {}
+    market = markets_by_id.get(symbol)
+    if isinstance(market, dict):
+        mapped = market.get("symbol")
+        if mapped:
+            return str(mapped)
+    return symbol
 
 
 def _normalize_position_symbol(value: Any) -> str:

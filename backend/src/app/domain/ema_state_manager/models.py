@@ -34,6 +34,14 @@ class EmaStateManagerConfig:
     position_check_interval_seconds: int
     bb_rejection_min_touches: int
     bb_htf_min_interval_minutes: int
+    emit_new_resonance: bool = True
+    emit_resonance_increase: bool = True
+    emit_structure_shift: bool = True
+    emit_resonance_refresh: bool = True
+    emit_bb_rejection_upper: bool = True
+    emit_bb_rejection_lower: bool = True
+    emit_position_management: bool = True
+    emit_bb_exit_warning: bool = True
 
 
 @dataclass(frozen=True)
@@ -152,4 +160,12 @@ DEFAULT_EMA_STATE_MANAGER_CONFIG = EmaStateManagerConfig(
     position_check_interval_seconds=1800,
     bb_rejection_min_touches=10,
     bb_htf_min_interval_minutes=480,
+    emit_new_resonance=True,
+    emit_resonance_increase=True,
+    emit_structure_shift=True,
+    emit_resonance_refresh=True,
+    emit_bb_rejection_upper=True,
+    emit_bb_rejection_lower=True,
+    emit_position_management=True,
+    emit_bb_exit_warning=True,
 )

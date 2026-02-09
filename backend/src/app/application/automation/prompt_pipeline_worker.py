@@ -44,6 +44,7 @@ class PromptPipelineWorker:
 
         request = PromptBuildRequest.from_payload(item.payload)
         session_id = item.payload.get("session_id")
+        cycle_number = item.payload.get("cycle_number")
         execution_mode = normalize_execution_mode(item.payload.get("execution_mode"))
         deadline = _deadline(item, self._ttl_minutes)
         attempts = 0
@@ -64,6 +65,7 @@ class PromptPipelineWorker:
                     "trigger_reason": request.trigger_reason,
                     "template_id": request.template_id,
                     "execution_mode": execution_mode.value,
+                    "cycle_number": cycle_number,
                 }
             ),
         )
@@ -76,6 +78,7 @@ class PromptPipelineWorker:
                 result_payload["execution_mode"] = execution_mode.value
                 result_payload["queued_for_llm"] = queued_for_llm
                 result_payload["prompt_chars"] = len(result.prompt_text or "")
+                result_payload["cycle_number"] = cycle_number
                 await self._repository.mark_done(item.id, result_payload)
                 await self._outbox.enqueue_event(
                     topics.PROMPT_COMPLETED,
@@ -113,6 +116,7 @@ class PromptPipelineWorker:
                             {
                                 "request_id": request.request_id,
                                 "error": str(exc),
+                                "cycle_number": cycle_number,
                             }
                         ),
                     )
@@ -125,6 +129,7 @@ class PromptPipelineWorker:
                             {
                                 "request_id": request.request_id,
                                 "error": "quant_data_timeout",
+                                "cycle_number": cycle_number,
                             }
                         ),
                     )
@@ -137,6 +142,7 @@ class PromptPipelineWorker:
                             "request_id": request.request_id,
                             "attempt": attempts,
                             "retry_in_seconds": self._quant_retry_seconds,
+                            "cycle_number": cycle_number,
                         }
                     ),
                 )
@@ -149,6 +155,7 @@ class PromptPipelineWorker:
                         {
                             "request_id": request.request_id,
                             "error": f"unexpected_error: {exc}",
+                            "cycle_number": cycle_number,
                         }
                     ),
                 )

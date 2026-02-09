@@ -146,6 +146,10 @@ class CCXTTradeExecutor:
             return ExecutionResult(success=False, status="invalid", error="size_usd required")
 
         try:
+            try:
+                await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_SL_TP)
+            except Exception:
+                pass
             await self._set_margin_mode(symbol)
             await self._client.set_leverage(leverage, symbol)
             ticker = await self._client.fetch_ticker(symbol)
@@ -191,6 +195,10 @@ class CCXTTradeExecutor:
             return ExecutionResult(success=False, status="invalid", error="limit_price required")
 
         try:
+            try:
+                await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_SL_TP)
+            except Exception:
+                pass
             await self._set_margin_mode(symbol)
             await self._client.set_leverage(leverage, symbol)
             amount = size_usd / limit_price
@@ -238,6 +246,11 @@ class CCXTTradeExecutor:
                 amount=amount,
                 params={"reduceOnly": True},
             )
+
+            try:
+                await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_SL_TP)
+            except Exception:
+                pass
 
             return ExecutionResult(
                 success=True,
@@ -339,14 +352,204 @@ class CCXTTradeExecutor:
 
     async def _cancel_conditional_orders(self, symbol: str, action: ExecutionAction) -> ExecutionResult:
         try:
+            exchange_id = self._config.exchange_id.lower()
+            market_id = None
+            if exchange_id == "binance":
+                try:
+                    market = self._client.market(symbol)
+                    if isinstance(market, dict):
+                        market_id = market.get("id")
+                except Exception:
+                    market_id = None
+
+            async def _fetch_binance_open_algo_orders() -> Optional[list[Dict[str, Any]]]:
+                if exchange_id != "binance" or not market_id:
+                    return None
+                params: Dict[str, Any] = {"symbol": market_id, "algoType": "CONDITIONAL"}
+                try:
+                    if hasattr(self._client, "fapiPrivateGetOpenAlgoOrders"):
+                        response = await self._client.fapiPrivateGetOpenAlgoOrders(params)
+                    else:
+                        response = await self._client.request("openAlgoOrders", "fapiPrivate", "GET", params)
+                except Exception:
+                    return None
+                if isinstance(response, list):
+                    return response
+                return None
+
+            async def _cancel_binance_algo_order(algo_id: str) -> None:
+                if exchange_id != "binance" or not market_id:
+                    return None
+                params: Dict[str, Any] = {"symbol": market_id, "algoId": algo_id}
+                if hasattr(self._client, "fapiPrivateDeleteAlgoOrder"):
+                    await self._client.fapiPrivateDeleteAlgoOrder(params)
+                else:
+                    await self._client.request("algoOrder", "fapiPrivate", "DELETE", params)
+
             open_orders = await self._client.fetch_open_orders(symbol)
+            use_binance_algo = False
+            binance_algo_orders = await _fetch_binance_open_algo_orders()
+            if binance_algo_orders is not None:
+                open_orders = binance_algo_orders
+                use_binance_algo = True
+
+            if not open_orders:
+                return ExecutionResult(success=True, status="canceled")
+
+            def _safe_float(value: Any) -> Optional[float]:
+                try:
+                    if value is None or value == "":
+                        return None
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            def _extract_order_type(order: Dict[str, Any]) -> str:
+                order_type = order.get("type")
+                if not order_type and isinstance(order.get("info"), dict):
+                    info = order["info"]
+                    order_type = info.get("type") or info.get("orderType")
+                return str(order_type or "").lower()
+
+            def _extract_stop_price(order: Dict[str, Any]) -> Optional[float]:
+                for key in ("stopPrice", "triggerPrice"):
+                    value = _safe_float(order.get(key))
+                    if value:
+                        return value
+                if isinstance(order.get("info"), dict):
+                    info = order["info"]
+                    for key in ("stopPrice", "triggerPrice", "triggerPx"):
+                        value = _safe_float(info.get(key))
+                        if value:
+                            return value
+                return None
+
+            def _extract_reduce_only(order: Dict[str, Any]) -> bool:
+                value = order.get("reduceOnly")
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    return value.lower() == "true"
+                close_position = order.get("closePosition")
+                if isinstance(close_position, bool):
+                    return close_position
+                if isinstance(close_position, str):
+                    return close_position.lower() == "true"
+                if isinstance(order.get("info"), dict):
+                    info_value = order["info"].get("reduceOnly")
+                    if isinstance(info_value, bool):
+                        return info_value
+                    if isinstance(info_value, str):
+                        return info_value.lower() == "true"
+                    close_info = order["info"].get("closePosition")
+                    if isinstance(close_info, bool):
+                        return close_info
+                    if isinstance(close_info, str):
+                        return close_info.lower() == "true"
+                return False
+
+            def _is_trigger_order(order_type: str, stop_price: Optional[float], reduce_only: bool) -> bool:
+                if stop_price is not None:
+                    return True
+                if "stop" in order_type or "profit" in order_type:
+                    return True
+                return reduce_only
+
+            position_side = None
+            mark_price = None
+            if action in (ExecutionAction.CANCEL_SL, ExecutionAction.CANCEL_TP):
+                try:
+                    positions = await self._client.fetch_positions([symbol])
+                except Exception:
+                    positions = []
+                position = next((p for p in positions if p.get("contracts") or p.get("size")), None)
+                if position:
+                    side = str(position.get("side") or "").lower()
+                    if not side and isinstance(position.get("info"), dict):
+                        info = position["info"]
+                        side = str(info.get("positionSide") or info.get("side") or info.get("posSide") or "").lower()
+                    if side in ("long", "short"):
+                        position_side = side
+                    mark_price = _safe_float(position.get("markPrice"))
+                    if mark_price is None and isinstance(position.get("info"), dict):
+                        mark_price = _safe_float(position["info"].get("markPrice"))
+                if mark_price is None:
+                    try:
+                        ticker = await self._client.fetch_ticker(symbol)
+                        mark_price = _safe_float(ticker.get("last") or ticker.get("close"))
+                    except Exception:
+                        mark_price = None
+
+            if use_binance_algo:
+                for order in open_orders:
+                    status = str(order.get("algoStatus") or "").upper()
+                    if status and status != "NEW":
+                        continue
+                    order_type = str(order.get("orderType") or order.get("type") or "").lower()
+                    stop_price = _safe_float(order.get("triggerPrice")) or _safe_float(order.get("stopPrice"))
+                    reduce_only = bool(order.get("reduceOnly") or order.get("closePosition"))
+                    if order_type not in ("stop", "stop_market", "take_profit", "take_profit_market") and not stop_price:
+                        continue
+                    if not _is_trigger_order(order_type, stop_price, reduce_only):
+                        continue
+
+                    if action in (ExecutionAction.CANCEL_SL, ExecutionAction.CANCEL_TP):
+                        order_kind = None
+                        if "take_profit" in order_type or "profit" in order_type:
+                            order_kind = "tp"
+                        elif "stop" in order_type:
+                            order_kind = "sl"
+                        elif stop_price is not None and mark_price is not None and position_side in ("long", "short"):
+                            if position_side == "long":
+                                order_kind = "sl" if stop_price < mark_price else "tp"
+                            else:
+                                order_kind = "sl" if stop_price > mark_price else "tp"
+
+                        if action == ExecutionAction.CANCEL_SL and order_kind != "sl":
+                            continue
+                        if action == ExecutionAction.CANCEL_TP and order_kind != "tp":
+                            continue
+
+                    algo_id = order.get("algoId") or order.get("orderId")
+                    if not algo_id:
+                        continue
+                    await _cancel_binance_algo_order(str(algo_id))
+
+                return ExecutionResult(success=True, status="canceled")
+
             for order in open_orders:
-                order_type = str(order.get("type") or "").lower()
-                if action == ExecutionAction.CANCEL_SL and "stop" not in order_type:
+                status = str(order.get("status") or "").upper()
+                if status and status != "NEW":
                     continue
-                if action == ExecutionAction.CANCEL_TP and "profit" not in order_type:
+                order_id = order.get("id") or order.get("orderId")
+                if not order_id:
                     continue
-                await self._client.cancel_order(order["id"], symbol)
+                order_type = _extract_order_type(order)
+                stop_price = _extract_stop_price(order)
+                reduce_only = _extract_reduce_only(order)
+                if order_type not in ("stop", "stop_market", "take_profit", "take_profit_market") and not stop_price:
+                    continue
+                if not _is_trigger_order(order_type, stop_price, reduce_only):
+                    continue
+
+                if action in (ExecutionAction.CANCEL_SL, ExecutionAction.CANCEL_TP):
+                    order_kind = None
+                    if "take_profit" in order_type or "profit" in order_type:
+                        order_kind = "tp"
+                    elif "stop" in order_type:
+                        order_kind = "sl"
+                    elif stop_price is not None and mark_price is not None and position_side in ("long", "short"):
+                        if position_side == "long":
+                            order_kind = "sl" if stop_price < mark_price else "tp"
+                        else:
+                            order_kind = "sl" if stop_price > mark_price else "tp"
+
+                    if action == ExecutionAction.CANCEL_SL and order_kind != "sl":
+                        continue
+                    if action == ExecutionAction.CANCEL_TP and order_kind != "tp":
+                        continue
+
+                await self._client.cancel_order(order_id, symbol)
             return ExecutionResult(success=True, status="canceled")
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
@@ -399,4 +602,3 @@ class CCXTTradeExecutor:
             status="sl_tp_set",
             order_id=", ".join(results) if results else None,
         )
-

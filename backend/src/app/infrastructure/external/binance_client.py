@@ -142,6 +142,40 @@ class BinanceClient:
             return None
         return price
 
+    def fetch_24h_change_pct(self, symbols: List[str]) -> dict[str, float]:
+        if not symbols:
+            return {}
+        data = self._get_json(f"{self.BASE_URL}/fapi/v1/ticker/24hr", {})
+        if not isinstance(data, list):
+            if self._last_error is None:
+                self._last_error = "invalid response"
+            return {}
+
+        change_map: dict[str, float] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            raw_symbol = item.get("symbol")
+            if not raw_symbol:
+                continue
+            change = _to_float(item.get("priceChangePercent"))
+            if change is None:
+                continue
+            change_map[str(raw_symbol).upper()] = float(change)
+
+        if not change_map:
+            return {}
+
+        results: dict[str, float] = {}
+        for symbol in symbols:
+            if not symbol:
+                continue
+            binance_symbol = self._to_binance_symbol(symbol)
+            change = change_map.get(binance_symbol)
+            if change is not None:
+                results[symbol] = float(change)
+        return results
+
     def fetch_order_book(self, symbol: str, limit: int = 50) -> Optional[OrderBookSnapshot]:
         depth_limit = _normalize_depth_limit(limit, self.VALID_DEPTH_LIMITS)
         params = {

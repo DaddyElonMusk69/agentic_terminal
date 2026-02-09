@@ -14,6 +14,14 @@ def _config() -> EmaStateManagerConfig:
         position_check_interval_seconds=60,
         bb_rejection_min_touches=2,
         bb_htf_min_interval_minutes=480,
+        emit_new_resonance=True,
+        emit_resonance_increase=True,
+        emit_structure_shift=True,
+        emit_resonance_refresh=True,
+        emit_bb_rejection_upper=True,
+        emit_bb_rejection_lower=True,
+        emit_position_management=True,
+        emit_bb_exit_warning=True,
     )
 
 

@@ -120,6 +120,14 @@ class EmaStateManagerConfigPayload(BaseModel):
     position_check_interval_seconds: int = Field(..., ge=60, le=3600)
     bb_rejection_min_touches: int = Field(..., ge=1, le=30)
     bb_htf_min_interval_minutes: int = Field(..., ge=60)
+    emit_new_resonance: Optional[bool] = None
+    emit_resonance_increase: Optional[bool] = None
+    emit_structure_shift: Optional[bool] = None
+    emit_resonance_refresh: Optional[bool] = None
+    emit_bb_rejection_upper: Optional[bool] = None
+    emit_bb_rejection_lower: Optional[bool] = None
+    emit_position_management: Optional[bool] = None
+    emit_bb_exit_warning: Optional[bool] = None
 
 
 class EmaStateManagerConfigView(BaseModel):
@@ -130,6 +138,14 @@ class EmaStateManagerConfigView(BaseModel):
     position_check_interval_seconds: int
     bb_rejection_min_touches: int
     bb_htf_min_interval_minutes: int
+    emit_new_resonance: bool
+    emit_resonance_increase: bool
+    emit_structure_shift: bool
+    emit_resonance_refresh: bool
+    emit_bb_rejection_upper: bool
+    emit_bb_rejection_lower: bool
+    emit_position_management: bool
+    emit_bb_exit_warning: bool
 
 
 class EmaStateManagerConfigResponse(BaseModel):
@@ -189,6 +205,14 @@ async def get_state_config(request: Request) -> EmaStateManagerConfigResponse:
         position_check_interval_seconds=config.position_check_interval_seconds,
         bb_rejection_min_touches=config.bb_rejection_min_touches,
         bb_htf_min_interval_minutes=config.bb_htf_min_interval_minutes,
+        emit_new_resonance=config.emit_new_resonance,
+        emit_resonance_increase=config.emit_resonance_increase,
+        emit_structure_shift=config.emit_structure_shift,
+        emit_resonance_refresh=config.emit_resonance_refresh,
+        emit_bb_rejection_upper=config.emit_bb_rejection_upper,
+        emit_bb_rejection_lower=config.emit_bb_rejection_lower,
+        emit_position_management=config.emit_position_management,
+        emit_bb_exit_warning=config.emit_bb_exit_warning,
     )
     return EmaStateManagerConfigResponse(data=view, meta=_meta(request))
 
@@ -199,6 +223,7 @@ async def update_state_config(
     request: Request,
 ) -> EmaStateManagerConfigResponse:
     service = get_ema_state_config_service()
+    current = await service.get_config()
     config = await service.update_config(
         min_resonance=payload.min_resonance,
         ema_resonance_cooldown_seconds=payload.ema_resonance_cooldown_seconds,
@@ -207,6 +232,46 @@ async def update_state_config(
         position_check_interval_seconds=payload.position_check_interval_seconds,
         bb_rejection_min_touches=payload.bb_rejection_min_touches,
         bb_htf_min_interval_minutes=payload.bb_htf_min_interval_minutes,
+        emit_new_resonance=(
+            payload.emit_new_resonance
+            if payload.emit_new_resonance is not None
+            else current.emit_new_resonance
+        ),
+        emit_resonance_increase=(
+            payload.emit_resonance_increase
+            if payload.emit_resonance_increase is not None
+            else current.emit_resonance_increase
+        ),
+        emit_structure_shift=(
+            payload.emit_structure_shift
+            if payload.emit_structure_shift is not None
+            else current.emit_structure_shift
+        ),
+        emit_resonance_refresh=(
+            payload.emit_resonance_refresh
+            if payload.emit_resonance_refresh is not None
+            else current.emit_resonance_refresh
+        ),
+        emit_bb_rejection_upper=(
+            payload.emit_bb_rejection_upper
+            if payload.emit_bb_rejection_upper is not None
+            else current.emit_bb_rejection_upper
+        ),
+        emit_bb_rejection_lower=(
+            payload.emit_bb_rejection_lower
+            if payload.emit_bb_rejection_lower is not None
+            else current.emit_bb_rejection_lower
+        ),
+        emit_position_management=(
+            payload.emit_position_management
+            if payload.emit_position_management is not None
+            else current.emit_position_management
+        ),
+        emit_bb_exit_warning=(
+            payload.emit_bb_exit_warning
+            if payload.emit_bb_exit_warning is not None
+            else current.emit_bb_exit_warning
+        ),
     )
     view = EmaStateManagerConfigView(
         min_resonance=config.min_resonance,
@@ -216,6 +281,14 @@ async def update_state_config(
         position_check_interval_seconds=config.position_check_interval_seconds,
         bb_rejection_min_touches=config.bb_rejection_min_touches,
         bb_htf_min_interval_minutes=config.bb_htf_min_interval_minutes,
+        emit_new_resonance=config.emit_new_resonance,
+        emit_resonance_increase=config.emit_resonance_increase,
+        emit_structure_shift=config.emit_structure_shift,
+        emit_resonance_refresh=config.emit_resonance_refresh,
+        emit_bb_rejection_upper=config.emit_bb_rejection_upper,
+        emit_bb_rejection_lower=config.emit_bb_rejection_lower,
+        emit_position_management=config.emit_position_management,
+        emit_bb_exit_warning=config.emit_bb_exit_warning,
     )
     return EmaStateManagerConfigResponse(data=view, meta=_meta(request))
 

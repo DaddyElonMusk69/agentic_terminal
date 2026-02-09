@@ -1,4 +1,5 @@
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -37,6 +38,7 @@ class DynamicSources(BaseModel):
 class DynamicAssetsConfigPayload(BaseModel):
     enabled: bool
     refresh_interval_seconds: int = Field(..., ge=60, le=3600)
+    volatility_threshold_pct: float = Field(20.0, ge=5.0, le=100.0)
     sources: Optional[DynamicSources] = None
     api_key: Optional[str] = None
 
@@ -50,6 +52,7 @@ class DynamicAssetsConfigView(BaseModel):
     enabled: bool
     api_key_present: bool
     refresh_interval_seconds: int
+    volatility_threshold_pct: float
     sources: DynamicSources
     is_binance_active: bool
 
@@ -61,6 +64,16 @@ class DynamicAssetsConfigResponse(BaseModel):
 
 class DynamicAssetsTestResponse(BaseModel):
     data: Dict[str, Any]
+    meta: Optional[ApiMeta] = None
+
+
+class DynamicAssetsVolatilityView(BaseModel):
+    removed_assets: List[str]
+    last_checked_at: Optional[datetime] = None
+
+
+class DynamicAssetsVolatilityResponse(BaseModel):
+    data: DynamicAssetsVolatilityView
     meta: Optional[ApiMeta] = None
 
 
@@ -77,6 +90,7 @@ async def get_dynamic_assets_config(request: Request) -> DynamicAssetsConfigResp
         enabled=config.enabled,
         api_key_present=bool(config.api_key),
         refresh_interval_seconds=config.refresh_interval_seconds,
+        volatility_threshold_pct=config.volatility_threshold_pct,
         sources=DynamicSources.model_validate(config.sources),
         is_binance_active=is_binance_active,
     )
@@ -94,6 +108,7 @@ async def update_dynamic_assets_config(
         enabled=payload.enabled,
         sources=payload.sources.model_dump() if payload.sources is not None else None,
         refresh_interval_seconds=payload.refresh_interval_seconds,
+        volatility_threshold_pct=payload.volatility_threshold_pct,
         api_key=payload.api_key,
         update_api_key=update_api_key,
     )
@@ -102,6 +117,7 @@ async def update_dynamic_assets_config(
         enabled=config.enabled,
         api_key_present=bool(config.api_key),
         refresh_interval_seconds=config.refresh_interval_seconds,
+        volatility_threshold_pct=config.volatility_threshold_pct,
         sources=DynamicSources.model_validate(config.sources),
         is_binance_active=is_binance_active,
     )
@@ -119,3 +135,13 @@ async def test_dynamic_assets(payload: DynamicAssetsTestPayload, request: Reques
         data={"assets": assets, "count": len(assets)},
         meta=_meta(request),
     )
+
+
+@router.get("/dynamic-assets/volatility", response_model=DynamicAssetsVolatilityResponse)
+async def get_dynamic_assets_volatility(request: Request) -> DynamicAssetsVolatilityResponse:
+    service = get_dynamic_assets_service()
+    view = DynamicAssetsVolatilityView(
+        removed_assets=service.get_last_removed_high_volatility(),
+        last_checked_at=service.get_last_volatility_checked_at(),
+    )
+    return DynamicAssetsVolatilityResponse(data=view, meta=_meta(request))

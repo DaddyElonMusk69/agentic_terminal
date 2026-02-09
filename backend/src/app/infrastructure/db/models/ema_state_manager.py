@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, DateTime, Integer
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.db.models.base import Base
@@ -21,6 +21,14 @@ class EmaStateManagerConfigModel(Base):
     position_check_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     bb_rejection_min_touches: Mapped[int] = mapped_column(Integer, nullable=False)
     bb_htf_min_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    emit_new_resonance: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_resonance_increase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_structure_shift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_resonance_refresh: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_bb_rejection_upper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_bb_rejection_lower: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_position_management: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    emit_bb_exit_warning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

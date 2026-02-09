@@ -56,7 +56,7 @@ class AutomationPipelineService:
         cycle_number: int | None = None,
     ) -> dict:
         mode = normalize_execution_mode(execution_mode)
-        positions = await self._fetch_positions()
+        positions = await self._fetch_positions(session_id=session_id, cycle_number=cycle_number)
 
         async def log_event(event: str, data: Optional[dict] = None) -> None:
             payload = {"event": event, "data": data or {}, "cycle_number": cycle_number}
@@ -232,10 +232,24 @@ class AutomationPipelineService:
 
         return {"snapshots": len(snapshots)}
 
-    async def _fetch_positions(self) -> List[PositionSnapshot]:
+    async def _fetch_positions(
+        self,
+        session_id: str | None = None,
+        cycle_number: int | None = None,
+    ) -> List[PositionSnapshot]:
         try:
             snapshot = await self._portfolio_service.get_portfolio_snapshot()
-        except Exception:
+        except Exception as exc:
+            payload = {
+                "message": "Portfolio snapshot unavailable; skipping positions.",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "cycle_number": cycle_number,
+            }
+            await self._outbox.enqueue_event(
+                topics.PIPELINE_POSITIONS_UNAVAILABLE,
+                self._with_session(payload, session_id),
+            )
             return []
 
         positions: List[PositionSnapshot] = []

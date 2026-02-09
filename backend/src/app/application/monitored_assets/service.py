@@ -52,11 +52,13 @@ class MonitoredAssetsService:
         if state.enabled and state.binance_active:
             if state.assets:
                 return _normalize_assets(state.assets)
+            manual = await self._market_settings.list_assets()
+            manual_assets = _normalize_assets(manual)
             if state.is_stale:
-                logger.warning("Dynamic assets stale; using empty list while enabled.")
+                logger.warning("Dynamic assets stale; falling back to manual list.")
             else:
-                logger.warning("Dynamic assets unavailable; using empty list while enabled.")
-            return []
+                logger.warning("Dynamic assets unavailable; falling back to manual list.")
+            return manual_assets
 
         manual = await self._market_settings.list_assets()
         return _normalize_assets(manual)

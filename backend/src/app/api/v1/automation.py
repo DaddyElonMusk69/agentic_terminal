@@ -521,7 +521,7 @@ async def export_session(
     request: Request,
 ) -> AutomationSessionExportResponse:
     history_service = get_automation_history_service()
-    session, logs, trades = await history_service.get_session_detail(session_id=session_id)
+    session, logs, trades = await history_service.get_session_detail_all(session_id=session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     payload = AutomationSessionExport(

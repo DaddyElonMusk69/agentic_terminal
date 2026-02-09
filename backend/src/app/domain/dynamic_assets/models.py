@@ -9,6 +9,7 @@ class DynamicAssetsConfig:
     api_key: Optional[str]
     sources: Dict[str, object]
     refresh_interval_seconds: int
+    volatility_threshold_pct: float = 20.0
     last_success_assets: Optional[List[str]] = None
     last_success_at: Optional[datetime] = None
     last_fetch_at: Optional[datetime] = None

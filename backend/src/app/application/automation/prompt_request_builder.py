@@ -10,6 +10,12 @@ from app.domain.prompt_builder.models import ChartRequest
 
 
 BB_TRIGGERS = {"bb_exit_warning", "bb_rejection_entry"}
+RESONANCE_TRIGGERS = {
+    "new_resonance",
+    "resonance_increase",
+    "structure_shift",
+    "resonance_refresh",
+}
 POSITION_TRIGGER = "position_management"
 
 
@@ -72,6 +78,16 @@ def _select_intervals(event: EmaStateEvent, monitored_intervals: Sequence[str]) 
             combined.extend(_get_interval_and_higher(interval, monitored))
         return _dedupe_preserve(combined)
 
+    if trigger_reason in RESONANCE_TRIGGERS:
+        active_intervals = _dedupe_preserve(event.active_intervals)
+        highest_interval = _highest_interval(active_intervals)
+        if not highest_interval:
+            return active_intervals
+        next_higher = _get_next_higher_interval(highest_interval, monitored)
+        if next_higher:
+            return _dedupe_preserve([*active_intervals, next_higher])
+        return active_intervals
+
     return _dedupe_preserve(event.active_intervals)
 
 
@@ -88,6 +104,26 @@ def _get_interval_and_higher(interval: str, monitored_intervals: Sequence[str]) 
         if minutes >= target_minutes:
             higher.append(candidate)
     return _dedupe_preserve(higher)
+
+
+def _get_next_higher_interval(interval: str, monitored_intervals: Sequence[str]) -> Optional[str]:
+    target_minutes = _timeframe_minutes(interval)
+    if target_minutes is None:
+        return None
+    candidates: List[tuple[int, str]] = []
+    for candidate in monitored_intervals:
+        minutes = _timeframe_minutes(candidate)
+        if minutes is None:
+            continue
+        if minutes > target_minutes:
+            candidates.append((minutes, candidate))
+    if not candidates:
+        return None
+    min_minutes = min(item[0] for item in candidates)
+    for candidate in monitored_intervals:
+        if _timeframe_minutes(candidate) == min_minutes:
+            return candidate
+    return None
 
 
 def _timeframe_minutes(timeframe: str) -> Optional[int]:
@@ -116,6 +152,19 @@ def _select_primary_interval(intervals: Sequence[str]) -> str:
             best = interval
             best_minutes = minutes
     return best or ""
+
+
+def _highest_interval(intervals: Sequence[str]) -> Optional[str]:
+    best: Optional[str] = None
+    best_minutes: Optional[int] = None
+    for interval in intervals:
+        minutes = _timeframe_minutes(interval)
+        if minutes is None:
+            continue
+        if best_minutes is None or minutes > best_minutes:
+            best_minutes = minutes
+            best = interval
+    return best
 
 
 def _dedupe_preserve(values: Sequence[str]) -> List[str]:

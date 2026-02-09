@@ -487,6 +487,12 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
   if (topic === "automation.pipeline.stopped") {
     return "Pipeline stopped";
   }
+  if (topic === "automation.pipeline.positions_unavailable") {
+    const error = typeof data.error === "string" && data.error ? data.error : null;
+    const message =
+      typeof data.message === "string" && data.message ? data.message : "Portfolio snapshot unavailable";
+    return error ? `${message} · ${error}` : message;
+  }
   if (topic === "automation.session.started") {
     const mode = typeof data.execution_mode === "string" ? data.execution_mode : null;
     const ema = typeof data.ema_interval_seconds === "number" ? `${data.ema_interval_seconds}s` : null;

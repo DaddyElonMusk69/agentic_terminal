@@ -162,7 +162,7 @@ class EmaStateManager:
         bb_signal_intervals: List[str] = []
 
         if _has_bb_exit_proximity(bb_signals, direction, config.bb_htf_min_interval_minutes):
-            if _cooldown_elapsed(
+            if config.emit_bb_exit_warning and _cooldown_elapsed(
                 state.last_bb_exit_warning_prompt_at,
                 config.bb_exit_warning_cooldown_seconds,
                 now,
@@ -175,7 +175,10 @@ class EmaStateManager:
                     direction,
                     config.bb_htf_min_interval_minutes,
                 )
-        else:
+            elif not config.emit_bb_exit_warning and config.emit_position_management:
+                trigger_reason = EmaStateTrigger.POSITION_MANAGEMENT
+                state.last_position_prompt_at = now
+        elif config.emit_position_management:
             trigger_reason = EmaStateTrigger.POSITION_MANAGEMENT
             state.last_position_prompt_at = now
 
@@ -242,6 +245,10 @@ class EmaStateManager:
             config.bb_htf_min_interval_minutes,
             state.bb_rejection_direction,
         )
+        if bb_direction == "UPPER" and not config.emit_bb_rejection_upper:
+            bb_direction = None
+        elif bb_direction == "LOWER" and not config.emit_bb_rejection_lower:
+            bb_direction = None
 
         if bb_direction:
             if state.bb_rejection_direction != bb_direction:
@@ -295,6 +302,24 @@ class EmaStateManager:
                     trigger_reason = EmaStateTrigger.STRUCTURE_SHIFT
                 else:
                     trigger_reason = EmaStateTrigger.RESONANCE_REFRESH
+
+        if trigger_reason == EmaStateTrigger.NEW_RESONANCE and not config.emit_new_resonance:
+            trigger_reason = EmaStateTrigger.NONE
+        elif (
+            trigger_reason == EmaStateTrigger.RESONANCE_INCREASE
+            and not config.emit_resonance_increase
+        ):
+            trigger_reason = EmaStateTrigger.NONE
+        elif (
+            trigger_reason == EmaStateTrigger.STRUCTURE_SHIFT
+            and not config.emit_structure_shift
+        ):
+            trigger_reason = EmaStateTrigger.NONE
+        elif (
+            trigger_reason == EmaStateTrigger.RESONANCE_REFRESH
+            and not config.emit_resonance_refresh
+        ):
+            trigger_reason = EmaStateTrigger.NONE
 
         if trigger_reason in (
             EmaStateTrigger.NEW_RESONANCE,
