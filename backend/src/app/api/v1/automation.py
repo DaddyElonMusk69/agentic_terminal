@@ -11,8 +11,10 @@ from app.application.automation.dependencies import (
     get_automation_config_service,
     get_automation_history_service,
 )
+from app.application.trade_executor.dependencies import get_trade_executor_service
 from app.application.bus.outbox_service import OutboxService
 from app.common.api import ApiMeta
+from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.infrastructure.bus.outbox_repository import OutboxRepository
 from app.infrastructure.db import get_sessionmaker
 from app.realtime.hub import hub
@@ -172,6 +174,26 @@ class AutomationSessionDeleteResponse(BaseModel):
     meta: Optional[ApiMeta] = None
 
 
+class AutomationClosePositionRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=50)
+
+
+class AutomationClosePositionPayload(BaseModel):
+    symbol: str
+    success: bool
+    status: str
+    order_id: Optional[str] = None
+    fill_price: Optional[float] = None
+    filled_size: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    error: Optional[str] = None
+
+
+class AutomationClosePositionResponse(BaseModel):
+    data: AutomationClosePositionPayload
+    meta: Optional[ApiMeta] = None
+
+
 def _meta(request: Request) -> ApiMeta:
     return ApiMeta(request_id=getattr(request.state, "request_id", None))
 
@@ -211,6 +233,20 @@ def _prompt_rate_per_hour(
     if hours <= 0:
         return None
     return float(prompt_count) / hours
+
+
+def _normalize_close_symbol(symbol: str) -> str:
+    value = symbol.strip().upper()
+    if not value:
+        return ""
+    if ":" in value:
+        value = value.split(":", 1)[0]
+    if "/" in value:
+        return value.split("/", 1)[0]
+    for suffix in ("USDT", "USDC", "USD", "BUSD"):
+        if value.endswith(suffix) and len(value) > len(suffix):
+            return value[: -len(suffix)]
+    return value
 
 
 def _to_session_summary(session) -> AutomationSessionSummary:
@@ -442,6 +478,35 @@ async def stop_automation(request: Request) -> AutomationStateDataResponse:
         request_id=getattr(request.state, "request_id", None),
     )
     return AutomationStateDataResponse(data=AutomationStateResponse(**state), meta=_meta(request))
+
+
+@router.post("/positions/close", response_model=AutomationClosePositionResponse)
+async def close_position(
+    payload: AutomationClosePositionRequest,
+    request: Request,
+) -> AutomationClosePositionResponse:
+    symbol = _normalize_close_symbol(payload.symbol)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+
+    executor = get_trade_executor_service()
+    result = await executor.execute(
+        ExecutionIdea(action=ExecutionAction.CLOSE, symbol=symbol)
+    )
+
+    return AutomationClosePositionResponse(
+        data=AutomationClosePositionPayload(
+            symbol=symbol,
+            success=result.success,
+            status=result.status,
+            order_id=result.order_id,
+            fill_price=result.fill_price,
+            filled_size=result.filled_size,
+            realized_pnl=result.realized_pnl,
+            error=result.error,
+        ),
+        meta=_meta(request),
+    )
 
 
 @router.post("/outbox/purge", response_model=OutboxPurgeDataResponse)

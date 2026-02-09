@@ -74,14 +74,29 @@ def _build_timers(
             timers["position_mgmt_remaining_sec"] = remaining
             timers["position_mgmt_total_sec"] = config.position_check_interval_seconds
 
-    ema_remaining = _remaining_seconds(
-        state.last_ema_resonance_prompt_at,
-        config.ema_resonance_cooldown_seconds,
-        now,
+    # Determine if we're waiting to accumulate touches for NEW_RESONANCE
+    is_accumulating_touches = (
+        state.resonance_count >= config.min_resonance
+        and config.new_resonance_min_touches > 1
+        and state.new_resonance_touch_count > 0
+        and state.new_resonance_touch_count < config.new_resonance_min_touches
     )
-    if ema_remaining is not None:
-        timers["ema_resonance_remaining_sec"] = ema_remaining
-        timers["ema_resonance_total_sec"] = config.ema_resonance_cooldown_seconds
+
+    # Only show EMA resonance timer when not accumulating touches
+    if not is_accumulating_touches:
+        ema_remaining = _remaining_seconds(
+            state.last_ema_resonance_prompt_at,
+            config.ema_resonance_cooldown_seconds,
+            now,
+        )
+        if ema_remaining is not None:
+            timers["ema_resonance_remaining_sec"] = ema_remaining
+            timers["ema_resonance_total_sec"] = config.ema_resonance_cooldown_seconds
+
+    # Expose new resonance touch count when tracking resonance and min_touches > 1
+    if state.resonance_count >= config.min_resonance and config.new_resonance_min_touches > 1:
+        timers["new_resonance_touch_count"] = state.new_resonance_touch_count
+        timers["new_resonance_touch_required"] = config.new_resonance_min_touches
 
     has_bb_rejection_activity = (
         state.last_bb_rejection_prompt_at is not None

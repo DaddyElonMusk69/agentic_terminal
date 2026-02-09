@@ -14,6 +14,8 @@ export type VegasTimers = {
   bb_touch_required?: number;
   ema_resonance_remaining_sec?: number;
   ema_resonance_total_sec?: number;
+  new_resonance_touch_count?: number;
+  new_resonance_touch_required?: number;
   bb_exit_warning_remaining_sec?: number;
   bb_exit_warning_total_sec?: number;
 };

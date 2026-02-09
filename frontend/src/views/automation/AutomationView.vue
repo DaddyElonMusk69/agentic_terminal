@@ -843,6 +843,7 @@
                       <th class="px-3 py-2 text-right">Liq</th>
                       <th class="px-3 py-2 text-right">PnL</th>
                       <th class="px-3 py-2 text-right">ROE</th>
+                      <th class="px-3 py-2 text-right"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -894,6 +895,16 @@
                       </td>
                       <td class="px-3 py-2 text-right font-mono" :class="pnlClass(position.unrealized_pnl)">
                         {{ formatPercent(positionRoe(position)) }}
+                      </td>
+                      <td class="px-3 py-2 text-right">
+                        <button
+                          class="rounded-md border border-negative/40 bg-negative/10 px-2 py-1 text-[10px] text-negative hover:text-negative/80 disabled:opacity-50"
+                          type="button"
+                          :disabled="closingPositionSymbol === position.symbol"
+                          @click="handleClosePosition(position)"
+                        >
+                          {{ closingPositionSymbol === position.symbol ? "Closing..." : "Close" }}
+                        </button>
                       </td>
                     </tr>
                   </tbody>
@@ -1718,6 +1729,7 @@ const equitySeries = ref<EquityPoint[]>([]);
 const activeChart = ref<"equity" | "position">("equity");
 const positionChartInterval = ref("15m");
 const selectedPositionSymbol = ref<string | null>(null);
+const closingPositionSymbol = ref<string | null>(null);
 const positionGraceDeadline = ref<number | null>(null);
 const dailyPnl = ref(0);
 const dailyTradeCount = ref(0);
@@ -2685,6 +2697,33 @@ const handleEmergencyStop = async () => {
   const confirmed = window.confirm("Emergency stop will halt automation. Continue?");
   if (!confirmed) return;
   await stopAutomation();
+};
+
+const handleClosePosition = async (position: AutomationPosition) => {
+  const symbol = position?.symbol;
+  if (!symbol) return;
+  const confirmed = window.confirm(`Close ${symbol} at market price?`);
+  if (!confirmed) return;
+
+  closingPositionSymbol.value = symbol;
+  try {
+    const response = await fetch("/api/v1/automation/positions/close", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || data?.data?.success === false) {
+      throw new Error(data?.data?.error || data?.error || "Failed to close position.");
+    }
+    await store.refreshPositions();
+  } catch (error) {
+    console.error(error);
+  } finally {
+    if (closingPositionSymbol.value === symbol) {
+      closingPositionSymbol.value = null;
+    }
+  }
 };
 
 const loadAutomationState = async () => {

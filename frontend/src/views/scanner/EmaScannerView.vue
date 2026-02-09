@@ -251,6 +251,20 @@
               </label>
               <label class="block space-y-1">
                 <div class="flex items-center justify-between">
+                  <span>New Resonance Min Touches</span>
+                  <span class="font-mono text-text">{{ stateConfig.new_resonance_min_touches }}</span>
+                </div>
+                <input
+                  v-model.number="stateConfig.new_resonance_min_touches"
+                  class="w-full"
+                  type="range"
+                  min="1"
+                  max="30"
+                  step="1"
+                />
+              </label>
+              <label class="block space-y-1">
+                <div class="flex items-center justify-between">
                   <span>Minimum BB Timeframe</span>
                   <span class="font-mono text-text">{{ htfMinHours }}h</span>
                 </div>
@@ -680,6 +694,7 @@ type StateManagerConfig = {
   position_check_interval_seconds: number;
   bb_rejection_min_touches: number;
   bb_htf_min_interval_minutes: number;
+  new_resonance_min_touches: number;
   emit_new_resonance: boolean;
   emit_resonance_increase: boolean;
   emit_structure_shift: boolean;
@@ -711,6 +726,7 @@ const stateConfig = ref<StateManagerConfig>({
   position_check_interval_seconds: 1800,
   bb_rejection_min_touches: 10,
   bb_htf_min_interval_minutes: 480,
+  new_resonance_min_touches: 1,
   emit_new_resonance: true,
   emit_resonance_increase: true,
   emit_structure_shift: true,
@@ -1151,7 +1167,16 @@ const timerRows = (state: VegasTickerState): TimerRow[] => {
     });
   }
 
+  const touchCount = timers.new_resonance_touch_count ?? 0;
+  const touchRequired = timers.new_resonance_touch_required ?? 0;
+  const isAccumulatingTouches = touchRequired > 1 && touchCount > 0 && touchCount < touchRequired;
+
   if (typeof timers.ema_resonance_remaining_sec === "number") {
+    // Timer is active (cooldown after event)
+    const noteParts = [];
+    if (touchRequired > 1) {
+      noteParts.push(`Touches ${touchCount}/${touchRequired}`);
+    }
     const remaining = Math.max(0, timers.ema_resonance_remaining_sec - elapsed);
     rows.push({
       key: "ema_resonance",
@@ -1162,6 +1187,18 @@ const timerRows = (state: VegasTickerState): TimerRow[] => {
         timers.ema_resonance_total_sec,
       ),
       tone: "state",
+      note: noteParts.length ? noteParts.join(" • ") : undefined,
+    });
+  } else if (isAccumulatingTouches) {
+    // Accumulating touches, no timer yet - show touch progress only
+    rows.push({
+      key: "ema_resonance",
+      label: "EMA Resonance",
+      remaining: 0,
+      progress: 0,
+      tone: "state",
+      note: `Touches ${touchCount}/${touchRequired}`,
+      display: "Waiting for confirmation",
     });
   }
 
@@ -1302,6 +1339,8 @@ const loadStateConfig = async () => {
       bb_htf_min_interval_minutes:
         Number(payload.bb_htf_min_interval_minutes) ||
         stateConfig.value.bb_htf_min_interval_minutes,
+      new_resonance_min_touches:
+        Number(payload.new_resonance_min_touches) || stateConfig.value.new_resonance_min_touches,
       emit_new_resonance: resolveBool(
         payload.emit_new_resonance,
         stateConfig.value.emit_new_resonance,

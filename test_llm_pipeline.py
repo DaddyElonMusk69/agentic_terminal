@@ -36,13 +36,13 @@ LLM_RESPONSE = """
 ## Step 2. JSON Server Actions:
 JSON_ARRAY
 [{
-  "action": "OPEN_LONG",
-  "symbol": "我踏马来了",
+  "action": "OPEN_SHORT",
+  "symbol": "AXS",
   "tier": 3,
   "position_pct": 0.03,
   "new_stop_loss": 29.8,
   "stop_loss_roe": 0.12,
-  "leverage": 2,
+  "leverage": 1,
   "take_profit_roe": 0.25,
   "confidence": 62,
   "reasoning": "12h price is accepting/expanding above the upper Bollinger Band (no sharp snapback inside), consistent with band-walk behavior. 8h/12h EMA tunnel structure is bullish (price above tunnels), so direction does not conflict. Due to extreme extension, use probe sizing with invalidation below the breakout/upper-band area.",

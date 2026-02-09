@@ -21,6 +21,7 @@ class EmaStateManagerConfigModel(Base):
     position_check_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     bb_rejection_min_touches: Mapped[int] = mapped_column(Integer, nullable=False)
     bb_htf_min_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    new_resonance_min_touches: Mapped[int] = mapped_column(Integer, nullable=False)
     emit_new_resonance: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     emit_resonance_increase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     emit_structure_shift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -78,5 +79,13 @@ class EmaStateManagerConfigModel(Base):
         CheckConstraint(
             "bb_htf_min_interval_minutes >= 60",
             name="ck_ema_state_bb_htf_min",
+        ),
+        CheckConstraint(
+            "new_resonance_min_touches >= 1",
+            name="ck_ema_state_new_res_touches_min",
+        ),
+        CheckConstraint(
+            "new_resonance_min_touches <= 30",
+            name="ck_ema_state_new_res_touches_max",
         ),
     )

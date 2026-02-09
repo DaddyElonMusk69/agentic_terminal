@@ -34,6 +34,7 @@ class EmaStateManagerConfig:
     position_check_interval_seconds: int
     bb_rejection_min_touches: int
     bb_htf_min_interval_minutes: int
+    new_resonance_min_touches: int
     emit_new_resonance: bool = True
     emit_resonance_increase: bool = True
     emit_structure_shift: bool = True
@@ -84,6 +85,7 @@ class EmaTickerState:
     bb_upper_touch_count: int = 0
     bb_lower_touch_count: int = 0
     bb_rejection_direction: Optional[str] = None
+    new_resonance_touch_count: int = 0
 
     last_position_prompt_at: Optional[datetime] = None
     last_ema_resonance_prompt_at: Optional[datetime] = None
@@ -109,6 +111,7 @@ class EmaTickerState:
             "bb_upper_touch_count": self.bb_upper_touch_count,
             "bb_lower_touch_count": self.bb_lower_touch_count,
             "bb_rejection_direction": self.bb_rejection_direction,
+            "new_resonance_touch_count": self.new_resonance_touch_count,
             "last_position_prompt_at": self.last_position_prompt_at.isoformat() if self.last_position_prompt_at else None,
             "last_ema_resonance_prompt_at": self.last_ema_resonance_prompt_at.isoformat()
             if self.last_ema_resonance_prompt_at
@@ -160,6 +163,7 @@ DEFAULT_EMA_STATE_MANAGER_CONFIG = EmaStateManagerConfig(
     position_check_interval_seconds=1800,
     bb_rejection_min_touches=10,
     bb_htf_min_interval_minutes=480,
+    new_resonance_min_touches=1,
     emit_new_resonance=True,
     emit_resonance_increase=True,
     emit_structure_shift=True,

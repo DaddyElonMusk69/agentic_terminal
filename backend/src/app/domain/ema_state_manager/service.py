@@ -140,6 +140,7 @@ class EmaStateManager:
         state.bb_upper_touch_count = 0
         state.bb_lower_touch_count = 0
         state.bb_rejection_direction = None
+        state.new_resonance_touch_count = 0
 
         direction = _normalize_direction(position.direction)
         state.position_direction = direction
@@ -294,14 +295,28 @@ class EmaStateManager:
                 config.ema_resonance_cooldown_seconds,
                 now,
             ):
-                if previous_resonance < config.min_resonance:
-                    trigger_reason = EmaStateTrigger.NEW_RESONANCE
-                elif resonance_count > previous_resonance:
-                    trigger_reason = EmaStateTrigger.RESONANCE_INCREASE
-                elif active_intervals != previous_intervals:
-                    trigger_reason = EmaStateTrigger.STRUCTURE_SHIFT
+                # Determine if we should count this as a touch for NEW_RESONANCE
+                is_first_resonance = previous_resonance < config.min_resonance
+                is_accumulating = state.new_resonance_touch_count > 0
+
+                if is_first_resonance or is_accumulating:
+                    # First detection or still accumulating
+                    state.new_resonance_touch_count += 1
+                    if state.new_resonance_touch_count >= config.new_resonance_min_touches:
+                        trigger_reason = EmaStateTrigger.NEW_RESONANCE
+                        state.new_resonance_touch_count = 0
+                    # else: still accumulating, no event
                 else:
-                    trigger_reason = EmaStateTrigger.RESONANCE_REFRESH
+                    # NEW_RESONANCE already fired, allow other triggers
+                    if resonance_count > previous_resonance:
+                        trigger_reason = EmaStateTrigger.RESONANCE_INCREASE
+                    elif active_intervals != previous_intervals:
+                        trigger_reason = EmaStateTrigger.STRUCTURE_SHIFT
+                    else:
+                        trigger_reason = EmaStateTrigger.RESONANCE_REFRESH
+        else:
+            # Reset touch count when resonance drops below threshold or BB triggered
+            state.new_resonance_touch_count = 0
 
         if trigger_reason == EmaStateTrigger.NEW_RESONANCE and not config.emit_new_resonance:
             trigger_reason = EmaStateTrigger.NONE

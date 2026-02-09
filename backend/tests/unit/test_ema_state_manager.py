@@ -14,6 +14,7 @@ def _config() -> EmaStateManagerConfig:
         position_check_interval_seconds=60,
         bb_rejection_min_touches=2,
         bb_htf_min_interval_minutes=480,
+        new_resonance_min_touches=1,
         emit_new_resonance=True,
         emit_resonance_increase=True,
         emit_structure_shift=True,
@@ -110,3 +111,39 @@ def test_state_manager_prunes_removed_symbols():
 
     manager.update([], monitored_symbols=["ETH/USDT"], config=config)
     assert manager.get_state("BTC/USDT") is None
+
+
+def test_state_manager_new_resonance_requires_consecutive_touches():
+    manager = EmaStateManager()
+    config = EmaStateManagerConfig(
+        min_resonance=2,
+        ema_resonance_cooldown_seconds=60,
+        bb_rejection_cooldown_seconds=60,
+        bb_exit_warning_cooldown_seconds=60,
+        position_check_interval_seconds=60,
+        bb_rejection_min_touches=2,
+        bb_htf_min_interval_minutes=480,
+        new_resonance_min_touches=3,
+        emit_new_resonance=True,
+        emit_resonance_increase=True,
+        emit_structure_shift=True,
+        emit_resonance_refresh=True,
+        emit_bb_rejection_upper=True,
+        emit_bb_rejection_lower=True,
+        emit_position_management=True,
+        emit_bb_exit_warning=True,
+    )
+
+    signals = [_ema_signal("BTC/USDT", "2h"), _ema_signal("BTC/USDT", "4h")]
+
+    # First two updates should not emit (need 3 touches)
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert events == []
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert events == []
+
+    # Third update should emit NEW_RESONANCE
+    events = manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert len(events) == 1
+    assert events[0].trigger_reason == EmaStateTrigger.NEW_RESONANCE
+

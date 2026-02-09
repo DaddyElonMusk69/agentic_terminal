@@ -28,6 +28,9 @@ class SqlEmaStateManagerRepository(EmaStateManagerConfigRepository):
                 position_check_interval_seconds=model.position_check_interval_seconds,
                 bb_rejection_min_touches=model.bb_rejection_min_touches,
                 bb_htf_min_interval_minutes=model.bb_htf_min_interval_minutes,
+                new_resonance_min_touches=(
+                    model.new_resonance_min_touches if model.new_resonance_min_touches is not None else 1
+                ),
                 emit_new_resonance=(
                     model.emit_new_resonance if model.emit_new_resonance is not None else True
                 ),
@@ -69,6 +72,7 @@ class SqlEmaStateManagerRepository(EmaStateManagerConfigRepository):
                     position_check_interval_seconds=config.position_check_interval_seconds,
                     bb_rejection_min_touches=config.bb_rejection_min_touches,
                     bb_htf_min_interval_minutes=config.bb_htf_min_interval_minutes,
+                    new_resonance_min_touches=config.new_resonance_min_touches,
                     emit_new_resonance=config.emit_new_resonance,
                     emit_resonance_increase=config.emit_resonance_increase,
                     emit_structure_shift=config.emit_structure_shift,
@@ -87,6 +91,7 @@ class SqlEmaStateManagerRepository(EmaStateManagerConfigRepository):
                 model.position_check_interval_seconds = config.position_check_interval_seconds
                 model.bb_rejection_min_touches = config.bb_rejection_min_touches
                 model.bb_htf_min_interval_minutes = config.bb_htf_min_interval_minutes
+                model.new_resonance_min_touches = config.new_resonance_min_touches
                 model.emit_new_resonance = config.emit_new_resonance
                 model.emit_resonance_increase = config.emit_resonance_increase
                 model.emit_structure_shift = config.emit_structure_shift
@@ -105,6 +110,7 @@ class SqlEmaStateManagerRepository(EmaStateManagerConfigRepository):
                 position_check_interval_seconds=model.position_check_interval_seconds,
                 bb_rejection_min_touches=model.bb_rejection_min_touches,
                 bb_htf_min_interval_minutes=model.bb_htf_min_interval_minutes,
+                new_resonance_min_touches=model.new_resonance_min_touches,
                 emit_new_resonance=model.emit_new_resonance,
                 emit_resonance_increase=model.emit_resonance_increase,
                 emit_structure_shift=model.emit_structure_shift,

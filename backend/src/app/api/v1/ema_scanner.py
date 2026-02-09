@@ -120,6 +120,7 @@ class EmaStateManagerConfigPayload(BaseModel):
     position_check_interval_seconds: int = Field(..., ge=60, le=3600)
     bb_rejection_min_touches: int = Field(..., ge=1, le=30)
     bb_htf_min_interval_minutes: int = Field(..., ge=60)
+    new_resonance_min_touches: int = Field(..., ge=1, le=30)
     emit_new_resonance: Optional[bool] = None
     emit_resonance_increase: Optional[bool] = None
     emit_structure_shift: Optional[bool] = None
@@ -138,6 +139,7 @@ class EmaStateManagerConfigView(BaseModel):
     position_check_interval_seconds: int
     bb_rejection_min_touches: int
     bb_htf_min_interval_minutes: int
+    new_resonance_min_touches: int
     emit_new_resonance: bool
     emit_resonance_increase: bool
     emit_structure_shift: bool
@@ -205,6 +207,7 @@ async def get_state_config(request: Request) -> EmaStateManagerConfigResponse:
         position_check_interval_seconds=config.position_check_interval_seconds,
         bb_rejection_min_touches=config.bb_rejection_min_touches,
         bb_htf_min_interval_minutes=config.bb_htf_min_interval_minutes,
+        new_resonance_min_touches=config.new_resonance_min_touches,
         emit_new_resonance=config.emit_new_resonance,
         emit_resonance_increase=config.emit_resonance_increase,
         emit_structure_shift=config.emit_structure_shift,
@@ -232,6 +235,7 @@ async def update_state_config(
         position_check_interval_seconds=payload.position_check_interval_seconds,
         bb_rejection_min_touches=payload.bb_rejection_min_touches,
         bb_htf_min_interval_minutes=payload.bb_htf_min_interval_minutes,
+        new_resonance_min_touches=payload.new_resonance_min_touches,
         emit_new_resonance=(
             payload.emit_new_resonance
             if payload.emit_new_resonance is not None
@@ -281,6 +285,7 @@ async def update_state_config(
         position_check_interval_seconds=config.position_check_interval_seconds,
         bb_rejection_min_touches=config.bb_rejection_min_touches,
         bb_htf_min_interval_minutes=config.bb_htf_min_interval_minutes,
+        new_resonance_min_touches=config.new_resonance_min_touches,
         emit_new_resonance=config.emit_new_resonance,
         emit_resonance_increase=config.emit_resonance_increase,
         emit_structure_shift=config.emit_structure_shift,

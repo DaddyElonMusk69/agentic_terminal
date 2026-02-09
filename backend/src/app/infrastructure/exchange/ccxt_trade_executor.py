@@ -158,11 +158,13 @@ class CCXTTradeExecutor:
                 return ExecutionResult(success=False, status="invalid", error="invalid price")
 
             amount = size_usd / price
-            order = await self._client.create_order(
+            hedge_side = "LONG" if side == "buy" else "SHORT"
+            order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
                 type="market",
                 side=side,
                 amount=amount,
+                hedge_position_side=hedge_side,
             )
 
             result = ExecutionResult(
@@ -205,13 +207,15 @@ class CCXTTradeExecutor:
             tif_map = {"Gtc": "GTC", "Ioc": "IOC", "Alo": "PO"}
             ccxt_tif = tif_map.get(time_in_force, "GTC")
 
-            order = await self._client.create_order(
+            hedge_side = "LONG" if side == "buy" else "SHORT"
+            order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
                 type="limit",
                 side=side,
                 amount=amount,
                 price=limit_price,
                 params={"timeInForce": ccxt_tif},
+                hedge_position_side=hedge_side,
             )
 
             status = "filled" if order.get("status") == "closed" else "resting"
@@ -237,14 +241,17 @@ class CCXTTradeExecutor:
             if not position:
                 return ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}")
 
-            side = "sell" if position.get("side") == "long" else "buy"
+            direction = self._resolve_position_direction(position)
+            if direction is None:
+                return ExecutionResult(success=False, status="invalid", error="Unable to resolve position side")
+            side = "sell" if direction == "long" else "buy"
             amount = abs(float(position.get("contracts") or position.get("size") or 0))
-            order = await self._client.create_order(
+            order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
                 type="market",
                 side=side,
                 amount=amount,
-                params={"reduceOnly": True},
+                params=self._reduce_only_params(position),
             )
 
             try:
@@ -274,15 +281,18 @@ class CCXTTradeExecutor:
             if not position:
                 return ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}")
 
-            side = "sell" if position.get("side") == "long" else "buy"
+            direction = self._resolve_position_direction(position)
+            if direction is None:
+                return ExecutionResult(success=False, status="invalid", error="Unable to resolve position side")
+            side = "sell" if direction == "long" else "buy"
             contracts = abs(float(position.get("contracts") or position.get("size") or 0))
             reduce_amount = contracts * (reduce_pct / 100.0)
-            order = await self._client.create_order(
+            order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
                 type="market",
                 side=side,
                 amount=reduce_amount,
-                params={"reduceOnly": True},
+                params=self._reduce_only_params(position),
             )
 
             return ExecutionResult(
@@ -304,14 +314,17 @@ class CCXTTradeExecutor:
             if not position:
                 return ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}")
 
-            side = "sell" if position.get("side") == "long" else "buy"
+            direction = self._resolve_position_direction(position)
+            if direction is None:
+                return ExecutionResult(success=False, status="invalid", error="Unable to resolve position side")
+            side = "sell" if direction == "long" else "buy"
             amount = abs(float(position.get("contracts") or position.get("size") or 0))
-            order = await self._client.create_order(
+            order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
                 type="stop_market",
                 side=side,
                 amount=amount,
-                params={"stopPrice": trigger_price, "reduceOnly": True},
+                params=self._reduce_only_params(position, {"stopPrice": trigger_price}),
             )
 
             return ExecutionResult(
@@ -331,14 +344,17 @@ class CCXTTradeExecutor:
             if not position:
                 return ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}")
 
-            side = "sell" if position.get("side") == "long" else "buy"
+            direction = self._resolve_position_direction(position)
+            if direction is None:
+                return ExecutionResult(success=False, status="invalid", error="Unable to resolve position side")
+            side = "sell" if direction == "long" else "buy"
             amount = abs(float(position.get("contracts") or position.get("size") or 0))
-            order = await self._client.create_order(
+            order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
                 type="take_profit_market",
                 side=side,
                 amount=amount,
-                params={"stopPrice": trigger_price, "reduceOnly": True},
+                params=self._reduce_only_params(position, {"stopPrice": trigger_price}),
             )
 
             return ExecutionResult(
@@ -546,13 +562,77 @@ class CCXTTradeExecutor:
 
                     if action == ExecutionAction.CANCEL_SL and order_kind != "sl":
                         continue
-                    if action == ExecutionAction.CANCEL_TP and order_kind != "tp":
-                        continue
+                if action == ExecutionAction.CANCEL_TP and order_kind != "tp":
+                    continue
 
                 await self._client.cancel_order(order_id, symbol)
             return ExecutionResult(success=True, status="canceled")
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
+
+    def _resolve_position_direction(self, position: Dict[str, Any]) -> Optional[str]:
+        raw = str(position.get("side") or position.get("direction") or "").lower()
+        info = position.get("info") if isinstance(position.get("info"), dict) else {}
+        if raw not in ("long", "short") and info:
+            raw = str(info.get("positionSide") or info.get("side") or info.get("posSide") or "").lower()
+        if raw in ("long", "short"):
+            return raw
+        return None
+
+    def _resolve_binance_position_side(self, position: Dict[str, Any]) -> Optional[str]:
+        info = position.get("info") if isinstance(position.get("info"), dict) else {}
+        raw = info.get("positionSide") or info.get("posSide") or position.get("positionSide") or position.get("posSide")
+        if not raw:
+            return None
+        raw_upper = str(raw).upper()
+        if raw_upper in ("LONG", "SHORT"):
+            return raw_upper
+        return None
+
+    def _reduce_only_params(self, position: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"reduceOnly": True}
+        if extra:
+            params.update(extra)
+        if (self._config.exchange_id or "").lower() == "binance":
+            position_side = self._resolve_binance_position_side(position)
+            if position_side:
+                params["positionSide"] = position_side
+        return params
+
+    async def _create_order_with_reduce_only_fallback(self, **kwargs: Any) -> Dict[str, Any]:
+        hedge_position_side = kwargs.pop("hedge_position_side", None)
+        params = dict(kwargs.get("params") or {})
+        for _ in range(3):
+            kwargs["params"] = params
+            try:
+                return await self._client.create_order(**kwargs)
+            except Exception as exc:
+                if self._should_retry_without_reduce_only(exc) and "reduceOnly" in params:
+                    params = dict(params)
+                    params.pop("reduceOnly", None)
+                    continue
+                if self._should_retry_position_side(exc):
+                    params = dict(params)
+                    if "positionSide" in params:
+                        params.pop("positionSide", None)
+                        continue
+                    if hedge_position_side:
+                        params["positionSide"] = hedge_position_side
+                        continue
+                raise
+        raise RuntimeError("create_order retries exhausted")
+
+    def _should_retry_without_reduce_only(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        if "reduceonly" not in message:
+            return False
+        return "not required" in message or "not needed" in message
+
+    def _should_retry_position_side(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        if "position side" in message or "positionside" in message:
+            return True
+        return "-4061" in message
 
     async def _set_margin_mode(self, symbol: str) -> None:
         try:
