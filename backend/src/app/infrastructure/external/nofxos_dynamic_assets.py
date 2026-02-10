@@ -74,7 +74,7 @@ class NofXOSDynamicAssetsClient:
                 continue
             assets.extend(result)
 
-        return sorted(set(assets))
+        return _dedup_preserve_order(assets)
 
     async def _fetch_ai500(
         self,
@@ -120,15 +120,18 @@ class NofXOSDynamicAssetsClient:
             return []
         payload = data.get("data", {}) if isinstance(data, dict) else {}
         positions = payload.get("positions", []) if isinstance(payload, dict) else []
-        assets: List[str] = []
+        # Sort by explicit rank field if present, otherwise preserve API order
+        ranked = []
         for item in positions:
             if not isinstance(item, dict):
                 continue
             symbol = item.get("symbol", "")
             cleaned = self._clean_symbol(symbol)
             if cleaned:
-                assets.append(cleaned)
-        return sorted(set(assets))
+                rank = item.get("rank")
+                ranked.append((rank if isinstance(rank, (int, float)) else float("inf"), cleaned))
+        ranked.sort(key=lambda x: x[0])
+        return _dedup_preserve_order([symbol for _, symbol in ranked])
 
     async def _get_json(
         self,
@@ -174,7 +177,8 @@ class NofXOSDynamicAssetsClient:
                             assets.append(str(item[key]))
                             break
 
-        return sorted({self._clean_symbol(asset) for asset in assets if asset})
+        cleaned = [self._clean_symbol(a) for a in assets if a]
+        return _dedup_preserve_order(cleaned)
 
     def _clean_symbol(self, symbol: str) -> str:
         value = symbol.upper().strip()
@@ -188,3 +192,14 @@ class NofXOSDynamicAssetsClient:
         if api_key and api_key.strip():
             return {"auth": api_key.strip()}
         return {}
+
+
+def _dedup_preserve_order(items: List[str]) -> List[str]:
+    """Remove duplicates while preserving insertion order."""
+    seen: set[str] = set()
+    result: List[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
