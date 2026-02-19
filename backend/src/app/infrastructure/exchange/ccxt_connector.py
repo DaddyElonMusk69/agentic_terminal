@@ -1015,6 +1015,18 @@ def _symbol_candidates(client: Any, symbol: str) -> List[str]:
         add(f"{base}/{quote_symbol}")
         add(f"{base}/{quote_symbol}:{quote_symbol}")
 
+    if "-" in raw:
+        parts = raw.split("-")
+        base = parts[0]
+        # Common PERP formats
+        add(raw.replace("-", "/"))
+        add(raw.replace("-", "/").replace("PERP", "USDT:USDT"))
+        add(f"{base}/USDT:USDC")  # Hyperliquid
+        add(f"{base}/USDC:USDC")  # Hyperliquid (USDC quote)
+        add(f"{base}/USD:USD")    # Generic USD
+        if len(parts) > 1:
+            add(f"{parts[0]}/{parts[1]}")
+
     return candidates
 
 
