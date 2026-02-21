@@ -1,17 +1,35 @@
 <template>
   <div class="flex min-h-0 flex-1 flex-col gap-4">
     <BaseCard>
-      <div class="flex items-center justify-between">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-xs uppercase tracking-wide text-muted">Dynamic Assets</div>
           <p class="mt-1 text-xs text-muted">
             Configure multi-source feeds for automated asset lists.
           </p>
         </div>
+        <div class="flex items-center gap-2">
+          <button
+            class="rounded-md border border-border px-3 py-2 text-xs font-medium"
+            :class="oiSource === 'nofx' ? 'bg-accent text-base' : 'bg-panel text-muted hover:text-text'"
+            type="button"
+            @click="oiSource = 'nofx'"
+          >
+            Nofx
+          </button>
+          <button
+            class="rounded-md border border-border px-3 py-2 text-xs font-medium"
+            :class="oiSource === 'custom' ? 'bg-accent text-base' : 'bg-panel text-muted hover:text-text'"
+            type="button"
+            @click="oiSource = 'custom'"
+          >
+            Custom OI
+          </button>
+        </div>
       </div>
     </BaseCard>
 
-    <BaseCard>
+    <BaseCard v-if="oiSource === 'nofx'">
       <div class="flex items-center justify-between">
         <div>
           <div class="text-xs uppercase tracking-wide text-muted">API Key</div>
@@ -39,14 +57,40 @@
         Leave blank to keep the existing key.
       </p>
     </BaseCard>
+    <BaseCard v-else>
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wide text-muted">OI Source Refresh</div>
+          <p class="mt-1 text-xs text-muted">
+            Refresh cadence for the custom OI ranking lists.
+          </p>
+        </div>
+        <div class="text-right">
+          <BaseBadge>{{ oiRefreshMinutes }} min</BaseBadge>
+          <p class="mt-1 text-[11px]" :class="oiStatusToneClass">
+            {{ oiStatusLabel }}
+          </p>
+        </div>
+      </div>
+      <div class="mt-3 flex items-center gap-2">
+        <input
+          v-model.number="oiRefreshMinutes"
+          class="w-24 rounded-md border border-border bg-panel px-2 py-1 text-xs"
+          type="number"
+          min="10"
+          max="720"
+        />
+        <span class="text-[11px] text-muted">min (10-720)</span>
+      </div>
+    </BaseCard>
 
     <!-- 2-column layout for Refresh Interval and Threshold -->
     <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
       <BaseCard>
         <div class="flex items-center justify-between">
           <div>
-            <div class="text-xs uppercase tracking-wide text-muted">Refresh Interval</div>
-            <p class="mt-1 text-xs text-muted">How often to refresh.</p>
+            <div class="text-xs uppercase tracking-wide text-muted">Dynamic Assets Refresh</div>
+            <p class="mt-1 text-xs text-muted">How often to refresh dynamic assets.</p>
           </div>
           <BaseBadge>{{ refreshIntervalMinutes }} min</BaseBadge>
         </div>
@@ -91,7 +135,7 @@
       </p>
       <!-- 2-column grid for source cards -->
       <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-        <div class="rounded-md border border-border bg-panel/50 p-3">
+        <div v-if="oiSource === 'nofx'" class="rounded-md border border-border bg-panel/50 p-3">
           <div class="flex items-center justify-between gap-3">
             <label class="flex items-center gap-2 text-sm text-text">
               <input v-model="sources.ai500.enabled" type="checkbox" />
@@ -111,7 +155,7 @@
           </div>
         </div>
 
-        <div class="rounded-md border border-border bg-panel/50 p-3">
+        <div v-if="oiSource === 'nofx'" class="rounded-md border border-border bg-panel/50 p-3">
           <div class="flex items-center justify-between gap-3">
             <label class="flex items-center gap-2 text-sm text-text">
               <input v-model="sources.ai300.enabled" type="checkbox" />
@@ -170,7 +214,11 @@
                 v-model="sources.oi_top.duration"
                 class="rounded-md border border-border bg-panel px-2 py-1 text-xs"
               >
-                <option v-for="duration in durations" :key="duration" :value="duration">
+                <option
+                  v-for="duration in oiDurationOptions"
+                  :key="duration"
+                  :value="duration"
+                >
                   {{ duration }}
                 </option>
               </select>
@@ -203,7 +251,11 @@
                 v-model="sources.oi_low.duration"
                 class="rounded-md border border-border bg-panel px-2 py-1 text-xs"
               >
-                <option v-for="duration in durations" :key="duration" :value="duration">
+                <option
+                  v-for="duration in oiDurationOptions"
+                  :key="duration"
+                  :value="duration"
+                >
                   {{ duration }}
                 </option>
               </select>
@@ -243,13 +295,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import BaseBadge from "@/components/BaseBadge.vue";
 import BaseCard from "@/components/BaseCard.vue";
 import type { DynamicSources, MarketCacheData } from "@/services/settingsCache";
 import { readMarketCache, writeMarketCache } from "@/services/settingsCache";
 
-const durations = ["5m", "15m", "30m", "1h", "4h", "8h", "12h", "24h"];
+const nofxDurations = ["5m", "15m", "30m", "1h", "4h", "8h", "12h", "24h"];
+const customDurations = ["1h", "4h", "12h"];
 const defaultSources: DynamicSources = {
   ai500: { enabled: false, limit: 10 },
   ai300: { enabled: false, limit: 20, level: "" },
@@ -276,8 +329,33 @@ const error = ref("");
 const isBinanceActive = ref(false);
 const refreshIntervalMinutes = ref(10);
 const volatilityThresholdPct = ref(20);
+const oiSource = ref<"nofx" | "custom">("nofx");
+const oiRefreshMinutes = ref(30);
+const oiStaleMinutes = ref(90);
+const oiStatus = ref<"unknown" | "warming" | "ready" | "stale" | "error">("unknown");
+const oiStatusLoading = ref(false);
 
 const sources = reactive<DynamicSources>(buildDynamicSources());
+
+const oiDurationOptions = computed(() =>
+  oiSource.value === "custom" ? customDurations : nofxDurations,
+);
+
+const oiStatusLabel = computed(() => {
+  if (oiSource.value !== "custom") return "";
+  if (oiStatusLoading.value) return "Checking...";
+  if (oiStatus.value === "ready") return "Up to date";
+  if (oiStatus.value === "warming") return "Refreshing";
+  if (oiStatus.value === "stale") return "Stale";
+  if (oiStatus.value === "error") return "Error";
+  return "Unknown";
+});
+
+const oiStatusToneClass = computed(() => {
+  if (oiStatus.value === "ready") return "text-positive";
+  if (oiStatus.value === "error" || oiStatus.value === "stale") return "text-negative";
+  return "text-muted";
+});
 
 const applyDynamicSources = (value?: Partial<DynamicSources> | null) => {
   const normalized = buildDynamicSources(value);
@@ -295,9 +373,13 @@ const updateMarketCache = (patch: Partial<MarketCacheData>) => {
     ...cached,
     ...patch,
     dynamicSources: cached.dynamicSources,
+    dynamicOiSource: cached.dynamicOiSource || "nofx",
   };
   if (patch.dynamicSources) {
     next.dynamicSources = buildDynamicSources(patch.dynamicSources);
+  }
+  if (patch.dynamicOiSource) {
+    next.dynamicOiSource = patch.dynamicOiSource;
   }
   writeMarketCache(next);
 };
@@ -330,6 +412,104 @@ const setStatus = (message: string, tone: "info" | "success" | "error" = "info")
   }, 4000);
 };
 
+const normalizeOiDurations = () => {
+  if (oiSource.value !== "custom") return;
+  if (!customDurations.includes(sources.oi_top.duration)) {
+    sources.oi_top.duration = "1h";
+  }
+  if (!customDurations.includes(sources.oi_low.duration)) {
+    sources.oi_low.duration = "1h";
+  }
+};
+
+const loadOiConfig = async () => {
+  try {
+    const response = await fetch("/api/v1/oi-rank/config");
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "Failed to load OI config.");
+    }
+    if (data?.data) {
+      oiRefreshMinutes.value = data.data.refresh_interval_minutes ?? oiRefreshMinutes.value;
+      oiStaleMinutes.value = data.data.stale_ttl_minutes ?? oiStaleMinutes.value;
+    }
+  } catch {
+    // Ignore OI config errors; we will show status as unknown.
+  }
+};
+
+const updateOiConfig = async () => {
+  if (oiSource.value !== "custom") return true;
+  const refreshMinutes = Math.max(10, Math.min(720, Math.round(oiRefreshMinutes.value || 30)));
+  const staleMinutes = Math.max(refreshMinutes, Math.round(oiStaleMinutes.value || 90));
+  try {
+    const response = await fetch("/api/v1/oi-rank/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        refresh_interval_minutes: refreshMinutes,
+        stale_ttl_minutes: staleMinutes,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "Failed to update OI refresh interval.");
+    }
+    if (data?.data) {
+      oiRefreshMinutes.value = data.data.refresh_interval_minutes ?? refreshMinutes;
+      oiStaleMinutes.value = data.data.stale_ttl_minutes ?? staleMinutes;
+    } else {
+      oiRefreshMinutes.value = refreshMinutes;
+      oiStaleMinutes.value = staleMinutes;
+    }
+    return true;
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : "Failed to update OI refresh interval.", "error");
+    return false;
+  }
+};
+
+const resolveOiStatus = async () => {
+  if (oiSource.value !== "custom") {
+    oiStatus.value = "unknown";
+    return;
+  }
+  const intervals = new Set<string>();
+  if (sources.oi_top.enabled) intervals.add(sources.oi_top.duration);
+  if (sources.oi_low.enabled) intervals.add(sources.oi_low.duration);
+  if (intervals.size === 0) intervals.add("1h");
+  oiStatusLoading.value = true;
+  try {
+    const statuses = await Promise.all(
+      Array.from(intervals).map(async (interval) => {
+        const response = await fetch(
+          `/api/v1/oi-rank/top?interval=${encodeURIComponent(interval)}&limit=1`,
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          return "error";
+        }
+        return data?.data?.status || "unknown";
+      }),
+    );
+    if (statuses.includes("error")) {
+      oiStatus.value = "error";
+    } else if (statuses.includes("stale")) {
+      oiStatus.value = "stale";
+    } else if (statuses.includes("warming")) {
+      oiStatus.value = "warming";
+    } else if (statuses.includes("ready")) {
+      oiStatus.value = "ready";
+    } else {
+      oiStatus.value = "unknown";
+    }
+  } catch {
+    oiStatus.value = "error";
+  } finally {
+    oiStatusLoading.value = false;
+  }
+};
+
 const loadConfig = async () => {
   error.value = "";
   try {
@@ -341,6 +521,7 @@ const loadConfig = async () => {
       dynamicEnabled.value = Boolean(dynamicConfig.enabled);
       hasApiKey.value = Boolean(dynamicConfig.api_key_present);
       const normalizedSources = applyDynamicSources(dynamicConfig.sources);
+      oiSource.value = dynamicConfig.oi_source === "custom" ? "custom" : "nofx";
       refreshIntervalMinutes.value = Math.max(
         1,
         Math.round((dynamicConfig.refresh_interval_seconds || 600) / 60),
@@ -353,6 +534,7 @@ const loadConfig = async () => {
         isBinanceActive: isBinanceActive.value,
         dynamicSources: normalizedSources,
         dynamicRefreshMinutes: refreshIntervalMinutes.value,
+        dynamicOiSource: oiSource.value,
       });
     }
   } catch (err) {
@@ -363,6 +545,11 @@ const loadConfig = async () => {
 const saveConfig = async () => {
   isSaving.value = true;
   try {
+    if (oiSource.value === "custom") {
+      sources.ai500.enabled = false;
+      sources.ai300.enabled = false;
+      normalizeOiDurations();
+    }
     const payload: Record<string, unknown> = {
       enabled: dynamicEnabled.value,
       refresh_interval_seconds: Math.round(
@@ -370,6 +557,7 @@ const saveConfig = async () => {
       ),
       volatility_threshold_pct: Math.min(100, Math.max(5, volatilityThresholdPct.value || 20)),
       sources: buildDynamicSources(sources),
+      oi_source: oiSource.value,
     };
     const apiKey = apiKeyInput.value.trim();
     if (apiKey) {
@@ -389,6 +577,7 @@ const saveConfig = async () => {
     if (data?.data) {
       dynamicEnabled.value = Boolean(data.data.enabled);
       hasApiKey.value = Boolean(data.data.api_key_present);
+      oiSource.value = data.data.oi_source === "custom" ? "custom" : "nofx";
       refreshIntervalMinutes.value = Math.max(
         1,
         Math.round((data.data.refresh_interval_seconds || 600) / 60),
@@ -407,12 +596,18 @@ const saveConfig = async () => {
       isBinanceActive: isBinanceActive.value,
       dynamicSources: normalizedSources,
       dynamicRefreshMinutes: refreshIntervalMinutes.value,
+      dynamicOiSource: oiSource.value,
     });
+    const oiOk = await updateOiConfig();
     const refreshed = await refreshMonitoredAssets();
-    setStatus(
-      refreshed ? "Configuration saved. Asset list refreshed." : "Configuration saved.",
-      "success",
-    );
+    if (oiOk) {
+      setStatus(
+        refreshed ? "Configuration saved. Asset list refreshed." : "Configuration saved.",
+        "success",
+      );
+    } else {
+      setStatus("Dynamic assets saved, but OI refresh interval update failed.", "error");
+    }
     return true;
   } catch (err) {
     setStatus(err instanceof Error ? err.message : "Failed to save configuration.", "error");
@@ -452,7 +647,32 @@ const testFetch = async () => {
   }
 };
 
+watch(
+  () => oiSource.value,
+  (next) => {
+    if (next === "custom") {
+      sources.ai500.enabled = false;
+      sources.ai300.enabled = false;
+      normalizeOiDurations();
+      loadOiConfig();
+      apiKeyInput.value = "";
+      showKey.value = false;
+    }
+    updateMarketCache({ dynamicOiSource: next });
+    resolveOiStatus();
+  },
+);
+
+watch(
+  () => [sources.oi_top.duration, sources.oi_low.duration, sources.oi_top.enabled, sources.oi_low.enabled],
+  () => {
+    resolveOiStatus();
+  },
+);
+
 onMounted(() => {
   loadConfig();
+  loadOiConfig();
+  resolveOiStatus();
 });
 </script>

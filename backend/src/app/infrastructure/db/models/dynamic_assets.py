@@ -16,6 +16,7 @@ class DynamicAssetConfigModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    oi_source: Mapped[str] = mapped_column(Text, nullable=False, default="nofx")
     sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     refresh_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=600)
     volatility_threshold_pct: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)

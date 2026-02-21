@@ -105,7 +105,10 @@
               <p v-if="dynamicEnabled && !isBinanceActive" class="text-[11px] text-warning">
                 Dynamic mode requires an active Binance account.
               </p>
-              <p v-if="dynamicEnabled && !hasApiKey" class="text-[11px] text-warning">
+              <p
+                v-if="dynamicEnabled && apiKeyRequired && !hasApiKey"
+                class="text-[11px] text-warning"
+              >
                 API key not configured in Dynamic Assets.
               </p>
             </div>
@@ -285,6 +288,7 @@ const hasLoaded = ref(false);
 const dynamicEnabled = ref(false);
 const hasApiKey = ref(false);
 const isBinanceActive = ref(false);
+const dynamicOiSource = ref("nofx");
 const dynamicSources = ref<DynamicSources>(buildDynamicSources());
 const dynamicRefreshMinutes = ref(10);
 let unsubscribeMarketCache: (() => void) | null = null;
@@ -301,12 +305,19 @@ const dynamicSourcesEnabled = computed(() =>
   Object.values(dynamicSources.value).some((source) => source.enabled),
 );
 
+const apiKeyRequired = computed(() => {
+  if (dynamicOiSource.value === "custom") {
+    return dynamicSources.value.ai500.enabled || dynamicSources.value.ai300.enabled;
+  }
+  return true;
+});
+
 const dynamicActive = computed(
   () =>
     dynamicEnabled.value &&
     isBinanceActive.value &&
-    hasApiKey.value &&
-    dynamicSourcesEnabled.value,
+    dynamicSourcesEnabled.value &&
+    (!apiKeyRequired.value || hasApiKey.value),
 );
 
 const dynamicStatusLabel = computed(() => {
@@ -351,6 +362,7 @@ const applyMarketCache = (data: MarketCacheData) => {
   hasApiKey.value = Boolean(data.hasApiKey);
   isBinanceActive.value = Boolean(data.isBinanceActive);
   dynamicSources.value = buildDynamicSources(data.dynamicSources);
+  dynamicOiSource.value = data.dynamicOiSource || "nofx";
   dynamicRefreshMinutes.value = Number.isFinite(data.dynamicRefreshMinutes)
     ? data.dynamicRefreshMinutes
     : 10;
@@ -365,6 +377,7 @@ const persistMarketCache = () => {
     isBinanceActive: isBinanceActive.value,
     dynamicSources: buildDynamicSources(dynamicSources.value),
     dynamicRefreshMinutes: dynamicRefreshMinutes.value,
+    dynamicOiSource: dynamicOiSource.value,
   });
 };
 
@@ -448,6 +461,7 @@ const loadMarketSettings = async (force = false) => {
       const dynamicConfig = dynamicData.data;
       dynamicEnabled.value = Boolean(dynamicConfig.enabled);
       hasApiKey.value = Boolean(dynamicConfig.api_key_present);
+      dynamicOiSource.value = dynamicConfig.oi_source === "custom" ? "custom" : "nofx";
       dynamicSources.value = buildDynamicSources(dynamicConfig.sources);
       dynamicRefreshMinutes.value = Math.max(
         1,
@@ -489,6 +503,7 @@ const handleDynamicToggle = async (event: Event) => {
     if (config) {
       dynamicEnabled.value = Boolean(config.enabled);
       hasApiKey.value = Boolean(config.api_key_present);
+      dynamicOiSource.value = config.oi_source === "custom" ? "custom" : "nofx";
       dynamicSources.value = buildDynamicSources(config.sources);
       dynamicRefreshMinutes.value = Math.max(
         1,

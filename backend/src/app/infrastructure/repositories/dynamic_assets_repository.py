@@ -46,6 +46,7 @@ class SqlDynamicAssetsConfigRepository(DynamicAssetsConfigRepository):
             model.api_key_encrypted = (
                 self._cipher.encrypt(config.api_key) if config.api_key is not None else None
             )
+            model.oi_source = config.oi_source
             model.sources = config.sources or None
             model.refresh_interval_seconds = config.refresh_interval_seconds
             model.volatility_threshold_pct = config.volatility_threshold_pct
@@ -64,6 +65,7 @@ class SqlDynamicAssetsConfigRepository(DynamicAssetsConfigRepository):
         return DynamicAssetsConfig(
             enabled=model.enabled,
             api_key=api_key,
+            oi_source=model.oi_source,
             sources=model.sources or {},
             refresh_interval_seconds=model.refresh_interval_seconds,
             volatility_threshold_pct=model.volatility_threshold_pct,

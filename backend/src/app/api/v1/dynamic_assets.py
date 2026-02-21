@@ -41,6 +41,7 @@ class DynamicAssetsConfigPayload(BaseModel):
     volatility_threshold_pct: float = Field(20.0, ge=5.0, le=100.0)
     sources: Optional[DynamicSources] = None
     api_key: Optional[str] = None
+    oi_source: Optional[str] = None
 
 
 class DynamicAssetsTestPayload(BaseModel):
@@ -51,6 +52,7 @@ class DynamicAssetsTestPayload(BaseModel):
 class DynamicAssetsConfigView(BaseModel):
     enabled: bool
     api_key_present: bool
+    oi_source: str
     refresh_interval_seconds: int
     volatility_threshold_pct: float
     sources: DynamicSources
@@ -89,6 +91,7 @@ async def get_dynamic_assets_config(request: Request) -> DynamicAssetsConfigResp
     view = DynamicAssetsConfigView(
         enabled=config.enabled,
         api_key_present=bool(config.api_key),
+        oi_source=config.oi_source,
         refresh_interval_seconds=config.refresh_interval_seconds,
         volatility_threshold_pct=config.volatility_threshold_pct,
         sources=DynamicSources.model_validate(config.sources),
@@ -111,11 +114,13 @@ async def update_dynamic_assets_config(
         volatility_threshold_pct=payload.volatility_threshold_pct,
         api_key=payload.api_key,
         update_api_key=update_api_key,
+        oi_source=payload.oi_source,
     )
     is_binance_active = await service.is_binance_active()
     view = DynamicAssetsConfigView(
         enabled=config.enabled,
         api_key_present=bool(config.api_key),
+        oi_source=config.oi_source,
         refresh_interval_seconds=config.refresh_interval_seconds,
         volatility_threshold_pct=config.volatility_threshold_pct,
         sources=DynamicSources.model_validate(config.sources),

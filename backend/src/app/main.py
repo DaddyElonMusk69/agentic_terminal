@@ -19,6 +19,7 @@ from app.api.v1 import (
     trade_guard_router,
     risk_management_router,
     observability_router,
+    oi_rank_router,
 )
 from app.common.logging import setup_logging
 from app.realtime.server import create_socketio_app, create_socketio_server
@@ -51,6 +52,7 @@ def _create_api() -> FastAPI:
     api.include_router(trade_guard_router, prefix="/api/v1")
     api.include_router(risk_management_router, prefix="/api/v1")
     api.include_router(observability_router, prefix="/api/v1")
+    api.include_router(oi_rank_router, prefix="/api/v1")
 
     @api.get("/")
     async def root() -> dict:

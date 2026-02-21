@@ -176,6 +176,29 @@ class BinanceClient:
                 results[symbol] = float(change)
         return results
 
+    def fetch_usdt_perp_symbols(self) -> List[str]:
+        data = self._get_json(f"{self.BASE_URL}/fapi/v1/exchangeInfo", {})
+        if not isinstance(data, dict):
+            if self._last_error is None:
+                self._last_error = "invalid response"
+            return []
+        symbols: List[str] = []
+        for item in data.get("symbols", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("contractType") != "PERPETUAL":
+                continue
+            if item.get("quoteAsset") != "USDT":
+                continue
+            if item.get("status") != "TRADING":
+                continue
+            symbol = item.get("symbol")
+            if isinstance(symbol, str) and symbol:
+                symbols.append(symbol)
+        if not symbols and self._last_error is None:
+            self._last_error = "empty response"
+        return symbols
+
     def fetch_order_book(self, symbol: str, limit: int = 50) -> Optional[OrderBookSnapshot]:
         depth_limit = _normalize_depth_limit(limit, self.VALID_DEPTH_LIMITS)
         params = {

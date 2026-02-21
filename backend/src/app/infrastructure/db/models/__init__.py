@@ -28,6 +28,7 @@ from app.infrastructure.db.models.automation import (
     AutomationTradeModel,
 )
 from app.infrastructure.db.models.risk_management import RiskManagementConfigModel
+from app.infrastructure.db.models.oi_rank import OiRankConfigModel, OiRankCacheModel
 
 __all__ = [
     "Base",
@@ -57,4 +58,6 @@ __all__ = [
     "AutomationLogModel",
     "AutomationTradeModel",
     "RiskManagementConfigModel",
+    "OiRankConfigModel",
+    "OiRankCacheModel",
 ]

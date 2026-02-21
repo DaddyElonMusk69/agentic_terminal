@@ -13,6 +13,7 @@ export type MarketCacheData = {
   isBinanceActive: boolean;
   dynamicSources: DynamicSources;
   dynamicRefreshMinutes: number;
+  dynamicOiSource: string;
 };
 
 export type ProviderSettings = {
@@ -105,6 +106,7 @@ const cloneMarketCache = (data: MarketCacheData): MarketCacheData => ({
   isBinanceActive: data.isBinanceActive,
   dynamicSources: cloneDynamicSources(data.dynamicSources),
   dynamicRefreshMinutes: data.dynamicRefreshMinutes,
+  dynamicOiSource: data.dynamicOiSource || "nofx",
 });
 
 export const readMarketCache = () => {

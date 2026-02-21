@@ -15,6 +15,7 @@ from app.api.v1.automation import router as automation_router
 from app.api.v1.trade_guard import router as trade_guard_router
 from app.api.v1.risk_management import router as risk_management_router
 from app.api.v1.observability import router as observability_router
+from app.api.v1.oi_rank import router as oi_rank_router
 
 __all__ = [
     "health_router",
@@ -34,4 +35,5 @@ __all__ = [
     "trade_guard_router",
     "risk_management_router",
     "observability_router",
+    "oi_rank_router",
 ]

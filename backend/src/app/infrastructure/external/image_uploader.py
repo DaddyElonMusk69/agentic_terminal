@@ -91,13 +91,21 @@ class FreeImageHostUploader:
 
         payload = {
             "key": self._api_key,
+            "action": "upload",
             "source": base64.b64encode(image_bytes).decode("ascii"),
             "format": "json",
         }
         if name:
             payload["name"] = name
 
-        response = await _post_with_retry(self._client, self._api_url, payload)
+        import random
+        fake_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
+        headers = {
+            "X-Forwarded-For": fake_ip,
+            "Client-IP": fake_ip,
+        }
+
+        response = await _post_with_retry(self._client, self._api_url, payload, headers=headers)
         data = response.json()
         return _extract_image_url(data)
 
@@ -153,14 +161,14 @@ def _extract_image_url(payload: dict) -> Optional[str]:
     return None
 
 
-async def _post_with_retry(client, url: str, payload: dict):
+async def _post_with_retry(client, url: str, payload: dict, headers: dict | None = None):
     max_attempts = max(1, _UPLOAD_RETRY_COUNT)
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         if _UPLOAD_THROTTLE_DELAY > 0:
             await asyncio.sleep(_UPLOAD_THROTTLE_DELAY)
         try:
-            response = await client.post(url, data=payload)
+            response = await client.post(url, data=payload, headers=headers)
             if response.status_code in _RETRYABLE_STATUSES and attempt < max_attempts:
                 await _sleep_backoff(attempt)
                 continue

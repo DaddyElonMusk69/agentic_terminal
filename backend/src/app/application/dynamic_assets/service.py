@@ -11,6 +11,7 @@ from app.domain.dynamic_assets.models import DynamicAssetsConfig, DynamicAssetsS
 from app.domain.dynamic_assets.interfaces import DynamicAssetsConfigRepository
 from app.infrastructure.external.binance_client import BinanceClient
 from app.infrastructure.external.nofxos_dynamic_assets import NofXOSDynamicAssetsClient
+from app.infrastructure.external.oi_rank_dynamic_assets import OiRankDynamicAssetsClient
 from app.application.portfolio.service import PortfolioService
 
 
@@ -23,6 +24,8 @@ MAX_STALE_SECONDS = 1800
 DEFAULT_24H_CHANGE_PCT = 20.0
 MIN_24H_CHANGE_PCT = 5.0
 MAX_24H_CHANGE_PCT = 100.0
+DEFAULT_OI_SOURCE = "nofx"
+SUPPORTED_OI_SOURCES = {"nofx", "custom"}
 
 DEFAULT_SOURCES: Dict[str, Dict[str, Any]] = {
     "ai500": {"enabled": False, "limit": 10},
@@ -37,12 +40,16 @@ class DynamicAssetsService:
         self,
         repository: DynamicAssetsConfigRepository,
         portfolio_service: PortfolioService,
-        client: Optional[NofXOSDynamicAssetsClient] = None,
+        nofx_client: Optional[NofXOSDynamicAssetsClient] = None,
+        oi_rank_client: Optional[OiRankDynamicAssetsClient] = None,
+        default_oi_source: str = DEFAULT_OI_SOURCE,
         binance_client: Optional[BinanceClient] = None,
     ) -> None:
         self._repository = repository
         self._portfolio_service = portfolio_service
-        self._client = client or NofXOSDynamicAssetsClient()
+        self._nofx_client = nofx_client or NofXOSDynamicAssetsClient()
+        self._oi_rank_client = oi_rank_client or self._nofx_client
+        self._default_oi_source = _normalize_oi_source(default_oi_source, DEFAULT_OI_SOURCE)
         self._binance_client = binance_client or BinanceClient()
         self._last_removed_high_volatility: list[str] = []
         self._last_volatility_checked_at: Optional[datetime] = None
@@ -61,6 +68,7 @@ class DynamicAssetsService:
         volatility_threshold_pct: Optional[float] = None,
         api_key: Optional[str] = None,
         update_api_key: bool = False,
+        oi_source: Optional[str] = None,
     ) -> DynamicAssetsConfig:
         if refresh_interval_seconds < MIN_REFRESH_INTERVAL_SECONDS:
             raise AppError(
@@ -85,11 +93,15 @@ class DynamicAssetsService:
         next_api_key = current.api_key
         if update_api_key:
             next_api_key = api_key.strip() if api_key and api_key.strip() else None
+        next_oi_source = current.oi_source
+        if oi_source is not None:
+            next_oi_source = _normalize_oi_source(oi_source, DEFAULT_OI_SOURCE, strict=True)
 
         updated = replace(
             current,
             enabled=enabled,
             api_key=next_api_key,
+            oi_source=next_oi_source,
             sources=normalized_sources,
             refresh_interval_seconds=refresh_interval_seconds,
             volatility_threshold_pct=volatility_threshold_pct if volatility_threshold_pct is not None else current.volatility_threshold_pct,
@@ -141,10 +153,12 @@ class DynamicAssetsService:
     ) -> list[str]:
         config = await self.get_config()
         key = api_key if api_key is not None else config.api_key
-        if not key:
-            return []
         normalized_sources = _normalize_sources(sources)
-        return await self._client.fetch_multi_source_assets(normalized_sources, key)
+        normalized_sources = _strip_ai_sources_if_custom(normalized_sources, config.oi_source)
+        client = self._select_client(config.oi_source)
+        if client is self._nofx_client and not key:
+            return []
+        return await client.fetch_multi_source_assets(normalized_sources, key)
 
     async def is_binance_active(self) -> bool:
         return await self._is_binance_active()
@@ -163,7 +177,9 @@ class DynamicAssetsService:
 
         assets: list[str] = []
         try:
-            assets = await self._client.fetch_multi_source_assets(config.sources, config.api_key)
+            client = self._select_client(config.oi_source)
+            sources = _strip_ai_sources_if_custom(config.sources, config.oi_source)
+            assets = await client.fetch_multi_source_assets(sources, config.api_key)
         except Exception as exc:
             logger.warning("Dynamic assets fetch failed: %s", exc)
 
@@ -260,6 +276,7 @@ class DynamicAssetsService:
         return DynamicAssetsConfig(
             enabled=False,
             api_key=None,
+            oi_source=self._default_oi_source,
             sources=_normalize_sources({}),
             refresh_interval_seconds=DEFAULT_REFRESH_INTERVAL_SECONDS,
             volatility_threshold_pct=DEFAULT_24H_CHANGE_PCT,
@@ -268,11 +285,18 @@ class DynamicAssetsService:
     def _normalize_config(self, config: DynamicAssetsConfig) -> DynamicAssetsConfig:
         sources = _normalize_sources(config.sources or {})
         refresh_interval = config.refresh_interval_seconds or DEFAULT_REFRESH_INTERVAL_SECONDS
+        oi_source = _normalize_oi_source(config.oi_source, self._default_oi_source)
         return replace(
             config,
+            oi_source=oi_source,
             sources=sources,
             refresh_interval_seconds=refresh_interval,
         )
+
+    def _select_client(self, oi_source: str) -> NofXOSDynamicAssetsClient | OiRankDynamicAssetsClient:
+        if oi_source == "custom":
+            return self._oi_rank_client
+        return self._nofx_client
 
 
 def _normalize_sources(sources: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -289,6 +313,33 @@ def _normalize_sources(sources: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             except (TypeError, ValueError):
                 value["limit"] = DEFAULT_SOURCES[key]["limit"]
     return normalized
+
+
+def _strip_ai_sources_if_custom(
+    sources: Dict[str, Dict[str, Any]],
+    oi_source: str,
+) -> Dict[str, Dict[str, Any]]:
+    if oi_source != "custom":
+        return sources
+    stripped = {key: dict(value) for key, value in sources.items()}
+    for key in ("ai500", "ai300"):
+        if key in stripped:
+            stripped[key]["enabled"] = False
+    return stripped
+
+
+def _normalize_oi_source(value: Optional[str], default: str, strict: bool = False) -> str:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in SUPPORTED_OI_SOURCES:
+        return normalized
+    if strict:
+        raise AppError(
+            code="dynamic_assets_invalid_oi_source",
+            message="OI source must be either nofx or custom.",
+        )
+    return default
 
 
 def _normalize_assets(assets: Iterable[str]) -> list[str]:

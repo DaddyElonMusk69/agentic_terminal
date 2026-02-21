@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 class DynamicAssetsConfig:
     enabled: bool
     api_key: Optional[str]
+    oi_source: str
     sources: Dict[str, object]
     refresh_interval_seconds: int
     volatility_threshold_pct: float = 20.0
