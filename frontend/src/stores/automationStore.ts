@@ -315,12 +315,14 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
   if (topic === "automation.llm.requested") {
     const symbol = extractSymbol(data);
     const provider = typeof data.provider === "string" ? data.provider : null;
+    const protocol = typeof data.protocol === "string" ? data.protocol : null;
     const model = typeof data.model === "string" ? data.model : null;
     const promptChars =
       typeof data.prompt_chars === "number" ? `${data.prompt_chars} chars` : null;
     const parts = [
       symbol ? `ticker=${symbol}` : null,
       provider ? `provider=${provider}` : null,
+      protocol ? `protocol=${protocol}` : null,
       model ? `model=${model}` : null,
       promptChars,
     ]
@@ -330,6 +332,7 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
   }
   if (topic === "automation.llm.completed") {
     const symbol = extractSymbol(data);
+    const protocol = typeof data.protocol === "string" ? data.protocol : null;
     const ideas = Array.isArray(data.execution_ideas) ? data.execution_ideas.length : null;
     const responseMeta =
       data.response_meta && typeof data.response_meta === "object"
@@ -362,6 +365,7 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
         : null;
     const parts = [
       symbol ? `ticker=${symbol}` : null,
+      protocol ? `protocol=${protocol}` : null,
       ideas !== null ? `${ideas} idea(s)` : null,
       tokens,
       latency,
@@ -373,10 +377,10 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
   }
   if (topic === "automation.llm.failed") {
     const symbol = extractSymbol(data);
+    const protocol = typeof data.protocol === "string" ? data.protocol : null;
     const error = typeof data.error === "string" ? data.error : null;
-    if (symbol && error) return `LLM failed · ${symbol} · ${error}`;
-    if (symbol) return `LLM failed · ${symbol}`;
-    return error ? `LLM failed · ${error}` : "LLM failed";
+    const parts = [symbol, protocol ? `protocol=${protocol}` : null, error].filter(Boolean);
+    return parts.length ? `LLM failed · ${parts.join(" · ")}` : "LLM failed";
   }
   if (topic === "automation.parser.completed") {
     const symbol = extractSymbol(data);
@@ -587,6 +591,18 @@ const buildStageLogEntry = (topic: string, payload: unknown, ts?: string): Autom
     typeof payload === "object"
   ) {
     const record = payload as Record<string, unknown>;
+    if (typeof record.protocol === "string" && record.protocol.trim()) {
+      data.protocol = record.protocol;
+    }
+    if (typeof record.provider === "string" && record.provider.trim()) {
+      data.provider = record.provider;
+    }
+    if (typeof record.model === "string" && record.model.trim()) {
+      data.model = record.model;
+    }
+    if (typeof record.error === "string" && record.error.trim()) {
+      data.error = record.error;
+    }
     const response =
       typeof record.llm_response === "string"
         ? record.llm_response
@@ -601,6 +617,18 @@ const buildStageLogEntry = (topic: string, payload: unknown, ts?: string): Autom
     }
     if (record.parse_result && typeof record.parse_result === "object") {
       data.parse_result = record.parse_result as Record<string, unknown>;
+    }
+  }
+  if (topic === "automation.llm.requested" && payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.protocol === "string" && record.protocol.trim()) {
+      data.protocol = record.protocol;
+    }
+    if (typeof record.provider === "string" && record.provider.trim()) {
+      data.provider = record.provider;
+    }
+    if (typeof record.model === "string" && record.model.trim()) {
+      data.model = record.model;
     }
   }
   if (

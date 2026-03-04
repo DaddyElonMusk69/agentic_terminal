@@ -1,13 +1,17 @@
 import { io, type Socket } from "socket.io-client";
 
 const resolveSocketBase = () => {
+  if (import.meta.env.DEV) {
+    // Keep this dev frontend pinned to the dedicated backend instance.
+    return "http://127.0.0.1:8101";
+  }
   if (import.meta.env.VITE_SOCKET_BASE) {
     return import.meta.env.VITE_SOCKET_BASE as string;
   }
   if (typeof window !== "undefined") {
     return window.location.origin;
   }
-  return "http://127.0.0.1:5000";
+  return "http://127.0.0.1:8101";
 };
 
 type SocketConfig = {

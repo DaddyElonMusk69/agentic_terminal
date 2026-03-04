@@ -272,7 +272,7 @@ class StubUploaderService:
 
 
 class FakeLlmExecutionService:
-    async def execute(self, request) -> LlmExecutionResult:
+    async def execute(self, request, **kwargs) -> LlmExecutionResult:
         idea = ExecutionIdea(
             action=ExecutionAction.OPEN_LONG,
             symbol="BTC",

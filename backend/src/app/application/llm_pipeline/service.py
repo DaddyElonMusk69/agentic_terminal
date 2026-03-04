@@ -14,7 +14,15 @@ class LlmExecutionService:
         request: LlmCallRequest,
         api_key: str | None = None,
         base_url: str | None = None,
+        protocol: str | None = None,
+        provider: str | None = None,
     ) -> LlmExecutionResult:
-        call_response = await self._caller.call(request, api_key=api_key, base_url=base_url)
+        call_response = await self._caller.call(
+            request,
+            api_key=api_key,
+            base_url=base_url,
+            protocol=protocol,
+            provider=provider,
+        )
         parse_result = self._response_worker.parse(call_response.content)
         return LlmExecutionResult(call_response=call_response, parse_result=parse_result)

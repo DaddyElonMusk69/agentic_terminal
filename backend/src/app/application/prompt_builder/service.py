@@ -24,6 +24,7 @@ from app.domain.prompt_builder.models import (
     PromptBuildResult,
     PromptTemplate,
 )
+from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 
 
 class PromptBuildError(RuntimeError):
@@ -39,6 +40,7 @@ class PromptBuilderService:
         uploader_service: ImageUploaderService,
         portfolio_service: PortfolioService,
         risk_config_service: RiskManagementConfigService,
+        codex_temp_images: CodexTempImageStore | None = None,
         upload_concurrency: int = 4,
         recent_trades_limit: int = 10,
     ) -> None:
@@ -46,6 +48,7 @@ class PromptBuilderService:
         self._quant = quant_provider
         self._chart_preview = chart_preview_service
         self._uploader_service = uploader_service
+        self._codex_temp_images = codex_temp_images
         self._upload_concurrency = max(1, int(upload_concurrency))
         self._portfolio_service = portfolio_service
         self._risk_config_service = risk_config_service
@@ -84,6 +87,7 @@ class PromptBuilderService:
                 request.tickers,
                 request.chart_requests,
                 template.chart_defaults,
+                provider=request.provider,
             )
             _assert_required_charts(request.tickers, request.chart_requests, chart_items)
             if chart_items:
@@ -332,6 +336,7 @@ class PromptBuilderService:
         tickers: Sequence[str],
         chart_requests: Sequence[ChartRequest],
         chart_defaults: Optional[Dict[str, Any]],
+        provider: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         if not chart_requests:
             return []
@@ -367,6 +372,23 @@ class PromptBuilderService:
 
         if not upload_jobs:
             return []
+
+        provider_id = (provider or "").strip().lower()
+        if provider_id == "codex":
+            if self._codex_temp_images is None:
+                raise PromptBuildError("codex temp image store is not configured")
+            for ticker_key, interval, candle_limit, image_bytes in upload_jobs:
+                name = f"{ticker_key}_{interval}_{candle_limit}_{int(datetime.now(timezone.utc).timestamp())}"
+                local_path = self._codex_temp_images.save_png(image_bytes, name)
+                chart_items.append(
+                    {
+                        "type": "input_image",
+                        "image_url": local_path,
+                        "ticker": ticker_key,
+                        "interval": interval,
+                    }
+                )
+            return chart_items
 
         uploader = await self._uploader_service.get_uploader()
         semaphore = asyncio.Semaphore(self._upload_concurrency)

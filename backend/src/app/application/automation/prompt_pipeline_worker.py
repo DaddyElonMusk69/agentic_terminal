@@ -77,6 +77,7 @@ class PromptPipelineWorker:
                 queued_for_llm = should_enqueue_llm(execution_mode)
                 result_payload["execution_mode"] = execution_mode.value
                 result_payload["queued_for_llm"] = queued_for_llm
+                result_payload["provider"] = item.payload.get("provider")
                 result_payload["prompt_chars"] = len(result.prompt_text or "")
                 result_payload["cycle_number"] = cycle_number
                 await self._repository.mark_done(item.id, result_payload)

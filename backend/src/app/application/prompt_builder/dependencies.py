@@ -7,6 +7,7 @@ from app.application.chart_preview.dependencies import get_chart_preview_service
 from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.risk_management.dependencies import get_risk_management_config_service
 from app.infrastructure.db import get_sessionmaker
+from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 from app.infrastructure.repositories.prompt_template_repository import SqlPromptTemplateRepository
 from app.settings import get_settings
 
@@ -20,6 +21,7 @@ def get_prompt_builder_service() -> PromptBuilderService:
     chart_preview_service = get_chart_preview_service()
     portfolio_service = get_portfolio_service()
     risk_config_service = get_risk_management_config_service()
+    codex_temp_images = CodexTempImageStore(settings.codex_temp_image_path)
 
     return PromptBuilderService(
         template_repository=template_repo,
@@ -28,5 +30,6 @@ def get_prompt_builder_service() -> PromptBuilderService:
         uploader_service=uploader_service,
         portfolio_service=portfolio_service,
         risk_config_service=risk_config_service,
+        codex_temp_images=codex_temp_images,
         upload_concurrency=settings.prompt_image_upload_concurrency,
     )

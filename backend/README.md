@@ -33,12 +33,12 @@ PYTHONPATH=backend/src BACKEND_DATABASE_URL=postgresql+asyncpg://localhost/tradi
 5) Start the server:
 
 ```bash
-PYTHONPATH=backend/src uvicorn app.main:app --reload --port 8001
+PYTHONPATH=backend/src uvicorn app.main:app --reload --port 8101
 ```
 
 6) Run the server without sleep(backend/ path):
 ```bash
-caffeinate -dimsu uvicorn --env-file .env --app-dir src app.main:app --reload --port 8001
+caffeinate -dimsu uvicorn --env-file .env --app-dir src app.main:app --reload --port 8101
 ```
 
 7) Start the frontend(frontend/ path):

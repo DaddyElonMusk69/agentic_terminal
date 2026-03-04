@@ -3,8 +3,8 @@
 New Vue 3 + Tailwind + Headless UI app that runs alongside the legacy Flask UI.
 
 ## Overview
-- Separate frontend app served by Vite (default: http://127.0.0.1:5173).
-- Backend remains Flask on http://127.0.0.1:5000.
+- Separate frontend app served by Vite (default: http://127.0.0.1:5174).
+- Backend API is expected at http://127.0.0.1:8101 in local development.
 - Legacy UI remains intact; this app is for the new UI migration.
 
 ## Tech Stack
@@ -32,7 +32,7 @@ npm run preview
 ## Environment Variables
 - `VITE_SOCKET_BASE` (optional)
   - Default: window origin (uses Vite proxy during dev).
-  - Example: `VITE_SOCKET_BASE=http://127.0.0.1:5000`
+  - Example: `VITE_SOCKET_BASE=http://127.0.0.1:8101`
 
 ## Project Structure
 ```

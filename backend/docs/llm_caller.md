@@ -1,12 +1,13 @@
 # LLM Caller
 
 The LLM caller is a thin adapter that sends the finished prompt to a model
-provider using an OpenAI-compatible `chat/completions` endpoint. It is built
-to be replaceable, with the simplest possible contract for now.
+provider. It supports:
+- OpenAI-compatible `chat/completions` endpoints
+- Local Codex CLI bridge (`codex exec`)
 
 ## Responsibilities
 - Accept a prompt string and optional image URLs.
-- Format the request payload for OpenAI-compatible APIs.
+- Format payloads for OpenAI-compatible APIs or Codex CLI.
 - Return the raw response and extracted content to the caller.
 
 ## Request/Response Shape
@@ -25,7 +26,7 @@ The application layer uses these dataclasses:
   - `raw_response`: optional dict
 
 ## Image Handling
-Images are passed in the OpenAI multi-part content format:
+OpenAI-compatible providers receive image URLs in multi-part content format:
 
 ```json
 {
@@ -51,6 +52,11 @@ in `chart_snapshots` must look like this:
 
 Legacy fields such as `chart_snapshots_*_interval` are not supported.
 
+For `codex_cli`:
+- Local image paths are passed directly to `codex exec --image`.
+- Remote image URLs are downloaded to the local Codex temp image directory before execution.
+- Raw response metadata includes `image_paths` used by the call, which downstream workers use for cleanup.
+
 ## Configuration
 Environment variables (see `.env.example`):
 - `BACKEND_LLM_BASE_URL` (default `https://api.openai.com/v1`)
@@ -58,6 +64,11 @@ Environment variables (see `.env.example`):
 - `BACKEND_LLM_MODEL`
 - `BACKEND_LLM_TEMPERATURE`
 - `BACKEND_LLM_MAX_TOKENS`
+- `BACKEND_CODEX_CLI_PATH` (default `codex`)
+- `BACKEND_CODEX_CLI_TIMEOUT_SECONDS` (default `180`)
+- `BACKEND_CODEX_TEMP_IMAGE_PATH` (default `backend/tmp/codex_images`)
+- `BACKEND_CODEX_TEMP_IMAGE_TTL_MINUTES` (default `60`)
+- `BACKEND_CODEX_TEMP_IMAGE_SWEEP_INTERVAL_SECONDS` (default `600`)
 
 ## CLI Usage
 Call the model with a prompt file:

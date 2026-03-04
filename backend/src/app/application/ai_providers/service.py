@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from app.domain.ai_providers.interfaces import ProviderConfigRepository
 from app.domain.ai_providers.models import ProviderConfig, ProviderInfo, ProviderValidationResult
+from app.infrastructure.external.codex_cli import CodexCliError, execute_codex_cli
+
+
+CODEX_LAST_SUCCESS_MODEL_KEY = "codex_last_success_model"
+CODEX_DISCOVERED_MODELS_KEY = "codex_discovered_models"
+CODEX_DISCOVERED_MODELS_MAX = 20
+CODEX_FALLBACK_MODELS = [
+    "gpt-5.3-codex",
+    "gpt-5-codex",
+    "gpt-5.1-codex",
+]
 
 
 @dataclass(frozen=True)
@@ -51,12 +62,25 @@ DEFAULT_PROVIDERS: Dict[str, ProviderDefaults] = {
         models=["deepseek-chat", "deepseek-reasoner"],
         base_url="https://api.deepseek.com",
     ),
+    "codex": ProviderDefaults(
+        name="codex",
+        display_name="Codex CLI",
+        protocol="codex_cli",
+        models=CODEX_FALLBACK_MODELS,
+    ),
 }
 
 
 class AiProviderService:
-    def __init__(self, repository: ProviderConfigRepository) -> None:
+    def __init__(
+        self,
+        repository: ProviderConfigRepository,
+        codex_cli_path: str = "codex",
+        codex_cli_timeout_seconds: int = 180,
+    ) -> None:
         self._repository = repository
+        self._codex_cli_path = codex_cli_path
+        self._codex_cli_timeout_seconds = codex_cli_timeout_seconds
 
     async def list_providers(self) -> List[ProviderInfo]:
         configs = await self._repository.list_configs()
@@ -154,6 +178,9 @@ class AiProviderService:
         api_key = config.api_key if config else None
         default_models = defaults.models if defaults else []
 
+        if protocol == "codex_cli":
+            return _list_codex_models(defaults, config)
+
         if protocol == "openai" and base_url:
             fetched = await _fetch_openai_models(base_url, api_key)
             if fetched:
@@ -175,13 +202,14 @@ class AiProviderService:
         defaults = DEFAULT_PROVIDERS.get(provider_id)
         config = await self._repository.get_config(provider_id)
 
-        resolved_key = config.api_key if config and not api_key_provided else _normalize_key(api_key)
-        if not resolved_key:
-            raise ValueError("API key is required for validation")
-
         protocol = _resolve_protocol(defaults, config)
         base_url = _resolve_base_url(defaults, config)
+        resolved_key = config.api_key if config and not api_key_provided else _normalize_key(api_key)
         resolved_model = model or (config.default_model if config else None)
+        if not resolved_model:
+            codex_models = _list_codex_models(defaults, config) if protocol == "codex_cli" else []
+            if codex_models:
+                resolved_model = codex_models[0]
         if not resolved_model and defaults and defaults.models:
             resolved_model = defaults.models[0]
         if not resolved_model:
@@ -189,13 +217,31 @@ class AiProviderService:
 
         start = time.time()
         if protocol == "openai":
+            if not resolved_key:
+                raise ValueError("API key is required for validation")
             if not base_url:
                 raise ValueError("base_url is required for OpenAI-compatible providers")
             await _validate_openai(base_url, resolved_key, resolved_model)
         elif protocol == "gemini":
+            if not resolved_key:
+                raise ValueError("API key is required for validation")
             await _validate_gemini(resolved_key, resolved_model)
         elif protocol == "claude":
+            if not resolved_key:
+                raise ValueError("API key is required for validation")
             await _validate_claude(resolved_key, resolved_model)
+        elif protocol == "codex_cli":
+            await _validate_codex_cli(
+                cli_path=self._codex_cli_path,
+                timeout_seconds=self._codex_cli_timeout_seconds,
+                model=resolved_model,
+            )
+            await self._persist_codex_discovery(
+                provider=provider_id,
+                model=resolved_model,
+                defaults=defaults,
+                existing=config,
+            )
         else:
             raise ValueError(f"unsupported protocol: {protocol}")
 
@@ -219,8 +265,9 @@ class AiProviderService:
             settings.update(config.settings)
 
         name = defaults.name if defaults else (config.provider if config else "")
-        models = defaults.models if defaults else []
-        configured = bool(config and config.api_key)
+        protocol = _resolve_protocol(defaults, config)
+        models = _list_codex_models(defaults, config) if protocol == "codex_cli" else (defaults.models if defaults else [])
+        configured = _is_provider_configured(protocol, config)
         is_enabled = config.is_enabled if config else True
         default_model = config.default_model if config else None
 
@@ -235,6 +282,38 @@ class AiProviderService:
             default_model=default_model,
             settings=settings,
         )
+
+    async def _persist_codex_discovery(
+        self,
+        *,
+        provider: str,
+        model: Optional[str],
+        defaults: Optional[ProviderDefaults],
+        existing: Optional[ProviderConfig],
+    ) -> None:
+        if not provider:
+            return
+
+        current_settings = dict(existing.settings or {}) if existing else {}
+        merged_settings = merge_codex_discovered_models(
+            current_settings,
+            model=model,
+            default_model=existing.default_model if existing else None,
+            default_models=(defaults.models if defaults else []),
+        )
+        resolved_default_model = existing.default_model if existing else None
+        if not resolved_default_model:
+            resolved_default_model = model or None
+        config = ProviderConfig(
+            provider=provider,
+            api_key=existing.api_key if existing else None,
+            default_model=resolved_default_model,
+            is_enabled=existing.is_enabled if existing else True,
+            settings=merged_settings or None,
+            created_at=existing.created_at if existing else None,
+            updated_at=existing.updated_at if existing else None,
+        )
+        await self._repository.upsert(config)
 
 
 def _normalize_provider(provider: str) -> str:
@@ -262,6 +341,76 @@ def _resolve_base_url(defaults: Optional[ProviderDefaults], config: Optional[Pro
     if defaults and defaults.base_url:
         return defaults.base_url.rstrip("/")
     return None
+
+
+def _is_provider_configured(protocol: str, config: Optional[ProviderConfig]) -> bool:
+    if protocol == "codex_cli":
+        return True
+    return bool(config and config.api_key)
+
+
+def _list_codex_models(defaults: Optional[ProviderDefaults], config: Optional[ProviderConfig]) -> List[str]:
+    settings = config.settings if config else None
+    discovered = _as_model_list(settings.get(CODEX_DISCOVERED_MODELS_KEY) if settings else None)
+    last_success = str(settings.get(CODEX_LAST_SUCCESS_MODEL_KEY)).strip() if settings and settings.get(CODEX_LAST_SUCCESS_MODEL_KEY) else None
+
+    candidates: List[str] = []
+    if config and config.default_model:
+        candidates.append(config.default_model)
+    if last_success:
+        candidates.append(last_success)
+    candidates.extend(discovered)
+    if defaults:
+        candidates.extend(defaults.models)
+    if not candidates:
+        candidates.extend(CODEX_FALLBACK_MODELS)
+    return _dedupe(candidates)
+
+
+def merge_codex_discovered_models(
+    settings: Optional[dict],
+    *,
+    model: Optional[str],
+    default_model: Optional[str],
+    default_models: Sequence[str],
+) -> dict:
+    merged = dict(settings or {})
+    discovered = _as_model_list(merged.get(CODEX_DISCOVERED_MODELS_KEY))
+    last_success = merged.get(CODEX_LAST_SUCCESS_MODEL_KEY)
+
+    candidates: List[str] = []
+    if model:
+        candidates.append(str(model).strip())
+    if default_model:
+        candidates.append(str(default_model).strip())
+    if last_success:
+        candidates.append(str(last_success).strip())
+    candidates.extend(discovered)
+    candidates.extend([str(item).strip() for item in default_models if str(item).strip()])
+
+    deduped = _dedupe([item for item in candidates if item])
+    if deduped:
+        merged[CODEX_DISCOVERED_MODELS_KEY] = deduped[:CODEX_DISCOVERED_MODELS_MAX]
+    else:
+        merged.pop(CODEX_DISCOVERED_MODELS_KEY, None)
+
+    if model and str(model).strip():
+        merged[CODEX_LAST_SUCCESS_MODEL_KEY] = str(model).strip()
+
+    return merged
+
+
+def _as_model_list(value: object) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    models: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip()
+        if cleaned:
+            models.append(cleaned)
+    return models
 
 
 def _dedupe(items: List[str]) -> List[str]:
@@ -354,3 +503,16 @@ async def _validate_claude(api_key: str, model: str) -> None:
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload)
         response.raise_for_status()
+
+
+async def _validate_codex_cli(cli_path: str, timeout_seconds: int, model: str) -> None:
+    try:
+        await execute_codex_cli(
+            prompt_text='Reply with exactly "OK".',
+            model=model,
+            images=[],
+            cli_path=cli_path,
+            timeout_seconds=timeout_seconds,
+        )
+    except CodexCliError as exc:
+        raise ValueError(str(exc)) from exc

@@ -10,4 +10,7 @@ def get_llm_caller_service() -> LlmCallerService:
     return LlmCallerService(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
+        codex_cli_path=settings.codex_cli_path,
+        codex_cli_timeout_seconds=settings.codex_cli_timeout_seconds,
+        codex_temp_image_path=settings.codex_temp_image_path,
     )

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class NofXOSClient:
     DEFAULT_BASE_URL = "https://nofxos.ai/api"
-    DEFAULT_TIMEOUT = 10
+    DEFAULT_TIMEOUT = 20
     DEFAULT_MAX_RPS = 2
     DEFAULT_RETRY_COUNT = 2
     DEFAULT_RETRY_BASE_DELAY = 0.5
@@ -43,7 +43,7 @@ class NofXOSClient:
     ) -> None:
         self._api_key = api_key or os.environ.get("NOFXOS_API_KEY")
         self._base_url = base_url or os.environ.get("NOFXOS_API_URL") or self.DEFAULT_BASE_URL
-        self._timeout = timeout or self.DEFAULT_TIMEOUT
+        self._timeout = _resolve_timeout(timeout, self.DEFAULT_TIMEOUT)
         verify = False if _allow_insecure_ssl() else certifi.where()
         self._client = httpx.Client(
             timeout=self._timeout,
@@ -95,14 +95,21 @@ class NofXOSClient:
                         continue
                     return None
                 return json.loads(payload)
-            except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError, httpx.RequestError) as exc:
-                logger.warning("NofXOS API network error for %s error=%s", url, exc)
-                if attempt < max_attempts:
-                    time.sleep(self._retry_delay(attempt))
-                    continue
-                return None
-            except (RemoteDisconnected, IncompleteRead, TimeoutError) as exc:
-                logger.warning("NofXOS API network error for %s error=%s", url, exc)
+            except (
+                httpx.TimeoutException,
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.RequestError,
+                RemoteDisconnected,
+                IncompleteRead,
+                TimeoutError,
+            ) as exc:
+                logger.warning(
+                    "NofXOS API network error for %s error_type=%s error=%r",
+                    url,
+                    type(exc).__name__,
+                    exc,
+                )
                 if attempt < max_attempts:
                     time.sleep(self._retry_delay(attempt))
                     continue
@@ -193,3 +200,18 @@ def _allow_insecure_ssl() -> bool:
 def _get_env_flag(name: str) -> bool:
     value = (os.environ.get(name) or "").strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _resolve_timeout(timeout: Optional[int], default: int) -> float:
+    if timeout is not None:
+        try:
+            return max(1.0, float(timeout))
+        except (TypeError, ValueError):
+            return float(default)
+    raw = (os.environ.get("NOFXOS_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return float(default)

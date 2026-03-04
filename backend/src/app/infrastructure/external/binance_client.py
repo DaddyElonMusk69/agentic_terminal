@@ -145,35 +145,54 @@ class BinanceClient:
     def fetch_24h_change_pct(self, symbols: List[str]) -> dict[str, float]:
         if not symbols:
             return {}
-        data = self._get_json(f"{self.BASE_URL}/fapi/v1/ticker/24hr", {})
-        if not isinstance(data, list):
-            if self._last_error is None:
-                self._last_error = "invalid response"
-            return {}
-
-        change_map: dict[str, float] = {}
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            raw_symbol = item.get("symbol")
-            if not raw_symbol:
-                continue
-            change = _to_float(item.get("priceChangePercent"))
-            if change is None:
-                continue
-            change_map[str(raw_symbol).upper()] = float(change)
-
-        if not change_map:
-            return {}
-
-        results: dict[str, float] = {}
+        symbol_map: dict[str, list[str]] = {}
+        ordered_symbols: list[str] = []
         for symbol in symbols:
             if not symbol:
                 continue
-            binance_symbol = self._to_binance_symbol(symbol)
-            change = change_map.get(binance_symbol)
-            if change is not None:
-                results[symbol] = float(change)
+            original = str(symbol).strip().upper()
+            if not original:
+                continue
+            binance_symbol = self._to_binance_symbol(original)
+            aliases = symbol_map.get(binance_symbol)
+            if aliases is None:
+                symbol_map[binance_symbol] = [original]
+                ordered_symbols.append(binance_symbol)
+                continue
+            aliases.append(original)
+
+        if not ordered_symbols:
+            return {}
+
+        results: dict[str, float] = {}
+        consecutive_network_failures = 0
+        for binance_symbol in ordered_symbols:
+            payload = self._get_json(
+                f"{self.BASE_URL}/fapi/v1/ticker/24hr",
+                {"symbol": binance_symbol},
+            )
+            entry: Optional[dict[str, Any]] = None
+            if isinstance(payload, dict):
+                entry = payload
+            elif isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                entry = payload[0]
+
+            if entry is None:
+                if (self._last_error or "").startswith("network error"):
+                    consecutive_network_failures += 1
+                    if not results and consecutive_network_failures >= 2:
+                        break
+                else:
+                    consecutive_network_failures = 0
+                continue
+
+            consecutive_network_failures = 0
+            change = _to_float(entry.get("priceChangePercent"))
+            if change is None:
+                continue
+            for original in symbol_map.get(binance_symbol, []):
+                results[original] = float(change)
+
         return results
 
     def fetch_usdt_perp_symbols(self) -> List[str]:
@@ -362,8 +381,19 @@ class BinanceClient:
                     return None
                 return data
             except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError, httpx.RequestError, IncompleteRead, TimeoutError) as exc:
-                self._last_error = f"network error: {exc}"
-                logger.warning("Binance API network error for %s params=%s error=%s", url, params, exc)
+                details = str(exc).strip()
+                if details:
+                    details = f"{type(exc).__name__}: {details}"
+                else:
+                    details = type(exc).__name__
+                self._last_error = f"network error: {details}"
+                logger.warning(
+                    "Binance API network error for %s params=%s error_type=%s error=%r",
+                    url,
+                    params,
+                    type(exc).__name__,
+                    exc,
+                )
                 if attempt < max_attempts:
                     time.sleep(self._retry_delay(attempt))
                     continue

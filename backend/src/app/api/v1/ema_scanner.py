@@ -195,6 +195,19 @@ async def get_state(request: Request) -> EmaStateResponse:
     )
 
 
+@router.post("/state/clear", response_model=EmaStateResponse)
+async def clear_state(request: Request) -> EmaStateResponse:
+    service = get_ema_state_manager_service()
+    service.clear_all_states()
+    config = await service.get_config()
+    payload = build_vegas_state_payload(service.get_all_states(), config)
+    await _emit_state(request, payload)
+    return EmaStateResponse(
+        data=EmaStatePayload(states=payload.get("states", [])),
+        meta=_meta(request),
+    )
+
+
 @router.get("/state/config", response_model=EmaStateManagerConfigResponse)
 async def get_state_config(request: Request) -> EmaStateManagerConfigResponse:
     service = get_ema_state_config_service()

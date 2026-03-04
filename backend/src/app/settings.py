@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 1024
+    codex_cli_path: str = "codex"
+    codex_cli_timeout_seconds: int = 180
+    codex_temp_image_path: str = "backend/tmp/codex_images"
+    codex_temp_image_ttl_minutes: int = 60
+    codex_temp_image_sweep_interval_seconds: int = 600
     binance_max_requests_per_second: int = 5
     binance_max_concurrency: int = 2
     binance_retry_count: int = 2

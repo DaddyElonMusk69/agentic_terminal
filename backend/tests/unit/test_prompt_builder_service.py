@@ -6,6 +6,7 @@ from app.application.prompt_builder.service import PromptBuilderService, PromptB
 from app.domain.prompt_builder.models import ChartRequest, PromptBuildRequest, PromptTemplate
 from app.domain.quant_scanner.models import QuantSnapshot
 from app.domain.portfolio.models import MarketCandle, MarketDataPoint, FundingRateSnapshot
+from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 
 
 class StubTemplateRepo:
@@ -160,8 +161,12 @@ async def test_prompt_builder_builds_prompt_with_filtered_fields():
 
     result = await service.build(request)
     assert "Hello BTC" in result.prompt_text
-    assert result.data["quant_data"]["BTC"]["2h"]["price_current"] == 1.1
-    assert "funding_rate" in result.data["quant_data"]["BTC"]["2h"]
+    assert isinstance(result.data["quant_data"], list)
+    row = result.data["quant_data"][0]
+    assert row["ticker"] == "BTC"
+    assert row["interval"] == "2h"
+    assert row["price_current"] == "$1.10"
+    assert "funding_rate" in row
     assert result.chart_items
 
 
@@ -230,3 +235,40 @@ async def test_prompt_builder_raises_on_missing_charts():
     with pytest.raises(PromptBuildError) as exc:
         await service.build(request)
     assert "missing chart snapshots" in str(exc.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_uses_local_codex_temp_images(tmp_path):
+    template = PromptTemplate(
+        id=1,
+        name="default",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        is_default=True,
+    )
+    snapshot = _build_snapshot()
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioService(),
+        risk_config_service=StubRiskConfigService(),
+        codex_temp_images=CodexTempImageStore(tmp_path),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-codex",
+        template_id=1,
+        trigger_reason="new_resonance",
+        tickers=["BTC"],
+        intervals=["2h"],
+        provider="codex",
+        chart_requests=[ChartRequest(interval="2h")],
+    )
+
+    result = await service.build(request)
+    assert result.chart_items
+    image_url = result.chart_items[0]["image_url"]
+    assert image_url.startswith(str(tmp_path))

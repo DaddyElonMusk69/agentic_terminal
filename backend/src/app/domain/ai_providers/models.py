@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -9,7 +9,7 @@ class ProviderConfig:
     api_key: Optional[str]
     default_model: Optional[str]
     is_enabled: bool
-    settings: Optional[Dict[str, str]] = None
+    settings: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -21,7 +21,7 @@ class ProviderInfo:
     configured: bool
     is_enabled: bool
     default_model: Optional[str]
-    settings: Optional[Dict[str, str]] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)

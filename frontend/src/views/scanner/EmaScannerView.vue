@@ -493,6 +493,14 @@
                   {{ vegasStatusLabel }}
                 </span>
               </div>
+              <button
+                class="rounded-md border border-negative/50 bg-negative/10 px-2 py-1 text-[10px] uppercase tracking-wide text-negative transition-colors hover:border-negative hover:bg-negative/20 disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                :disabled="isClearingVegasState"
+                @click="handleClearVegasState"
+              >
+                {{ isClearingVegasState ? "Clearing..." : "Clear Managed States" }}
+              </button>
             </div>
             <div
               class="mt-2 flex items-center justify-between gap-4 text-[10px] uppercase tracking-wide text-muted"
@@ -527,6 +535,9 @@
             <div class="text-right">
               {{ vegasLastUpdatedLabel }}
             </div>
+          </div>
+          <div v-if="vegasStateError" class="mt-2 text-[11px] text-negative">
+            {{ vegasStateError }}
           </div>
           </BaseCard>
         </div>
@@ -738,6 +749,8 @@ const stateConfig = ref<StateManagerConfig>({
 });
 const isSavingStateConfig = ref(false);
 const stateConfigError = ref("");
+const isClearingVegasState = ref(false);
+const vegasStateError = ref("");
 const leftPanelRef = ref<HTMLElement | null>(null);
 const leftPanelScrollTop = ref(0);
 const logListRef = ref<HTMLElement | null>(null);
@@ -786,6 +799,23 @@ const handleImportChange = async (event: Event) => {
 
 const handleExport = () => {
   void store.exportScanResults();
+};
+
+const handleClearVegasState = async () => {
+  if (isClearingVegasState.value) return;
+  const confirmed = window.confirm(
+    "Clear all managed Vegas states now? This is the manual reset control for managed states.",
+  );
+  if (!confirmed) return;
+  isClearingVegasState.value = true;
+  vegasStateError.value = "";
+  try {
+    await store.clearVegasState();
+  } catch (err) {
+    vegasStateError.value = err instanceof Error ? err.message : "Failed to clear managed states.";
+  } finally {
+    isClearingVegasState.value = false;
+  }
 };
 
 const handleDeleteResult = async (result: ScannerResult) => {

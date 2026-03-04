@@ -303,6 +303,14 @@ export const useScannerEmaStore = defineStore("scannerEma", {
       if (!data.data) return;
       this.applyVegasState(data.data);
     },
+    async clearVegasState() {
+      const res = await fetch("/api/v1/scanner/ema/state/clear", { method: "POST" });
+      const data = await parseResponse<VegasStateUpdate>(res);
+      if (!res.ok) {
+        throw new Error(resolveError(data, `Failed to clear managed states (${res.status}).`));
+      }
+      this.applyVegasState(data.data || { states: [] });
+    },
     async updateTolerance(value: number) {
       this.tolerancePct = value;
       await fetch("/api/v1/scanner/ema/config", {

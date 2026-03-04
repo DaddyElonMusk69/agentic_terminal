@@ -19,7 +19,7 @@ and stores it in an in-memory cache for other modules to consume later.
 - CVD series calculated from candle shape (no taker volume available via CCXT OHLCV).
 - Funding rate via `ExchangeConnector.fetch_funding_rate` (if supported by the exchange).
 - Order book snapshot via `ExchangeConnector.fetch_order_book` (if supported by the exchange).
-- Netflow data via NofXOS (optional, requires `NOFXOS_API_KEY`).
+- Netflow data via NofXOS (optional, requires `NOFXOS_API_KEY`; timeout tunable via `NOFXOS_TIMEOUT_SECONDS`).
 
 ## Output Snapshot
 Each scan builds a `QuantSnapshot` containing:

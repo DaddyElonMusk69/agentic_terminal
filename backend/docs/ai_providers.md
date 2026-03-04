@@ -11,6 +11,7 @@ Built-in providers are always listed, even if not configured:
 - `claude`
 - `xai`
 - `deepseek`
+- `codex`
 
 Custom providers can be added as OpenAI-compatible endpoints.
 
@@ -45,6 +46,8 @@ Validation request:
 ```
 
 ## Notes
-- `protocol` controls validation behavior (`openai`, `gemini`, `claude`).
+- `protocol` controls validation behavior (`openai`, `gemini`, `claude`, `codex_cli`).
 - Custom providers default to `openai` protocol.
 - `base_url` is required for custom OpenAI-compatible providers.
+- `codex` uses local Codex CLI and does not require an API key.
+- `codex` model discovery is hybrid: configured default + latest successful runtime model + discovered history + fallback list.

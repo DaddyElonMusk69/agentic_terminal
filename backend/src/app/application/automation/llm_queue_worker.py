@@ -4,6 +4,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from app.application.ai_providers.service import (
+    CODEX_LAST_SUCCESS_MODEL_KEY,
+    DEFAULT_PROVIDERS,
+    merge_codex_discovered_models,
+)
 from app.application.automation.llm_queue_service import LlmQueuePolicy
 from app.application.automation.order_queue_service import OrderQueueService
 from app.application.automation import topics
@@ -13,13 +18,13 @@ from app.application.llm_pipeline.service import LlmExecutionService
 from app.application.automation.execution_mode import (
     normalize_execution_mode,
     should_enqueue_orders,
-    should_execute_trades,
 )
 from app.application.telegram.notifications_service import TelegramNotificationService
+from app.domain.ai_providers.models import ProviderConfig
 from app.domain.llm_caller.models import LlmCallRequest
 from app.domain.ai_providers.interfaces import ProviderConfigRepository
+from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 from app.infrastructure.repositories.llm_queue_repository import LlmQueueRepository, LlmQueueItem
-from app.application.ai_providers.service import DEFAULT_PROVIDERS
 from app.settings import get_settings
 
 
@@ -30,10 +35,11 @@ class LlmQueueWorker:
         llm_pipeline: LlmExecutionService,
         order_queue: OrderQueueService,
         outbox: OutboxService,
-        provider_repository: ProviderConfigRepository,
+        provider_repository: ProviderConfigRepository | None = None,
         policy: Optional[LlmQueuePolicy] = None,
         telegram_notifier: TelegramNotificationService | None = None,
     ) -> None:
+        settings = get_settings()
         self._repository = repository
         self._llm_pipeline = llm_pipeline
         self._order_queue = order_queue
@@ -41,8 +47,14 @@ class LlmQueueWorker:
         self._provider_repository = provider_repository
         self._policy = policy or LlmQueuePolicy()
         self._telegram_notifier = telegram_notifier
+        self._codex_temp_images = CodexTempImageStore(settings.codex_temp_image_path)
+        self._codex_temp_ttl_minutes = max(1, int(settings.codex_temp_image_ttl_minutes))
+        self._codex_sweep_interval_seconds = max(1, int(settings.codex_temp_image_sweep_interval_seconds))
+        self._last_codex_sweep_at: datetime | None = None
 
     async def process_next(self) -> bool:
+        await self._maybe_sweep_codex_images()
+
         item = await self._repository.claim_next()
         if item is None:
             return False
@@ -92,12 +104,23 @@ class LlmQueueWorker:
             max_tokens=max_tokens,
         )
 
+        resolved_provider = _normalize_provider(payload.get("provider"))
+        api_key, base_url, protocol = await _resolve_provider_overrides(
+            self._provider_repository,
+            resolved_provider,
+        )
+        if not protocol:
+            protocol = _infer_protocol_from_model(request.model)
+        if not resolved_provider and protocol == "codex_cli":
+            resolved_provider = "codex"
+
         await self._outbox.enqueue_event(
             topics.LLM_REQUESTED,
             _with_session(
                 {
                     "request_id": payload.get("request_id", item.id),
-                    "provider": payload.get("provider") or None,
+                    "provider": resolved_provider,
+                    "protocol": protocol,
                     "model": request.model,
                     "prompt_chars": len(prompt_text),
                     "execution_mode": execution_mode.value,
@@ -107,18 +130,26 @@ class LlmQueueWorker:
             ),
         )
 
-        api_key, base_url, protocol = await _resolve_provider_overrides(
-            self._provider_repository,
-            payload.get("provider"),
-        )
-        if protocol and protocol != "openai":
-            await self._repository.mark_failed(item.id, f"unsupported_protocol:{protocol}")
+        try:
+            result = await self._llm_pipeline.execute(
+                request,
+                api_key=api_key,
+                base_url=base_url,
+                protocol=protocol,
+                provider=resolved_provider,
+            )
+        except Exception as exc:
+            error_text = str(exc).strip() or f"{exc.__class__.__name__}"
+            await self._repository.mark_failed(item.id, error_text)
             await self._outbox.enqueue_event(
                 topics.LLM_FAILED,
                 _with_session(
                     {
                         "request_id": payload.get("request_id", item.id),
-                        "error": f"unsupported_protocol:{protocol}",
+                        "error": error_text,
+                        "provider": resolved_provider,
+                        "model": request.model,
+                        "protocol": protocol,
                         "cycle_number": cycle_number,
                     },
                     session_id,
@@ -126,26 +157,11 @@ class LlmQueueWorker:
             )
             return True
 
-        try:
-            result = await self._llm_pipeline.execute(
-                request,
-                api_key=api_key,
-                base_url=base_url,
+        if protocol == "codex_cli":
+            await self._persist_codex_provider_discovery(
+                provider=resolved_provider,
+                model=result.call_response.model,
             )
-        except Exception as exc:
-            await self._repository.mark_failed(item.id, str(exc))
-            await self._outbox.enqueue_event(
-                topics.LLM_FAILED,
-                _with_session(
-                    {
-                        "request_id": payload.get("request_id", item.id),
-                        "error": str(exc),
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
-            )
-            return True
 
         result_payload = result.to_dict()
 
@@ -159,6 +175,7 @@ class LlmQueueWorker:
                         "error": result.parse_result.error,
                         "parse_result": result.parse_result.to_dict(),
                         "llm_response": result.call_response.content,
+                        "protocol": protocol,
                         "cycle_number": cycle_number,
                         "response_meta": {
                             "model": result.call_response.model,
@@ -177,6 +194,7 @@ class LlmQueueWorker:
                         "error": result.parse_result.error,
                         "raw_response": result.call_response.content,
                         "llm_response": result.call_response.content,
+                        "protocol": protocol,
                         "cycle_number": cycle_number,
                         "response_meta": {
                             "model": result.call_response.model,
@@ -190,6 +208,7 @@ class LlmQueueWorker:
             return True
 
         await self._repository.mark_done(item.id, result_payload)
+        self._delete_codex_images_from_response(result.call_response.raw_response)
 
         execution_ideas = [idea.to_dict() for idea in result.parse_result.ideas]
         response_meta = {
@@ -204,6 +223,7 @@ class LlmQueueWorker:
                     "request_id": payload.get("request_id", item.id),
                     "parse_result": result.parse_result.to_dict(),
                     "execution_ideas": execution_ideas,
+                    "protocol": protocol,
                     "response_meta": response_meta,
                     "cycle_number": cycle_number,
                 },
@@ -219,6 +239,7 @@ class LlmQueueWorker:
                     "considerations": result.parse_result.considerations,
                     "execution_mode": execution_mode.value,
                     "llm_response": result.call_response.content,
+                    "protocol": protocol,
                     "response_meta": response_meta,
                     "parse_result": result.parse_result.to_dict(),
                     "cycle_number": cycle_number,
@@ -264,6 +285,57 @@ class LlmQueueWorker:
 
         return True
 
+    async def _maybe_sweep_codex_images(self) -> None:
+        now = datetime.now(timezone.utc)
+        if self._last_codex_sweep_at is not None:
+            elapsed = (now - self._last_codex_sweep_at).total_seconds()
+            if elapsed < self._codex_sweep_interval_seconds:
+                return
+        self._codex_temp_images.sweep_expired(self._codex_temp_ttl_minutes)
+        self._last_codex_sweep_at = now
+
+    def _delete_codex_images_from_response(self, raw_response: Optional[dict]) -> None:
+        if not isinstance(raw_response, dict):
+            return
+        if str(raw_response.get("protocol")).lower() != "codex_cli":
+            return
+        image_paths = raw_response.get("image_paths")
+        if not isinstance(image_paths, list):
+            return
+        self._codex_temp_images.delete_paths([str(path) for path in image_paths if path])
+
+    async def _persist_codex_provider_discovery(self, provider: Optional[str], model: Optional[str]) -> None:
+        if self._provider_repository is None:
+            return
+        provider_id = _normalize_provider(provider)
+        if not provider_id:
+            return
+
+        defaults = DEFAULT_PROVIDERS.get(provider_id)
+        existing = await self._provider_repository.get_config(provider_id)
+        settings = dict(existing.settings or {}) if existing else {}
+        merged = merge_codex_discovered_models(
+            settings,
+            model=model,
+            default_model=existing.default_model if existing else None,
+            default_models=(defaults.models if defaults else []),
+        )
+
+        resolved_default_model = existing.default_model if existing else None
+        if not resolved_default_model:
+            resolved_default_model = str(merged.get(CODEX_LAST_SUCCESS_MODEL_KEY)).strip() if merged.get(CODEX_LAST_SUCCESS_MODEL_KEY) else None
+
+        config = ProviderConfig(
+            provider=provider_id,
+            api_key=existing.api_key if existing else None,
+            default_model=resolved_default_model,
+            is_enabled=existing.is_enabled if existing else True,
+            settings=merged or None,
+            created_at=existing.created_at if existing else None,
+            updated_at=existing.updated_at if existing else None,
+        )
+        await self._provider_repository.upsert(config)
+
 
 def _is_expired(item: LlmQueueItem, policy: LlmQueuePolicy) -> bool:
     now = datetime.now(timezone.utc)
@@ -305,24 +377,34 @@ def _resolve_protocol(provider: str, settings: Optional[dict]) -> str:
     return "openai"
 
 
+def _infer_protocol_from_model(model: Optional[str]) -> Optional[str]:
+    if not isinstance(model, str):
+        return None
+    normalized = model.strip().lower()
+    if not normalized:
+        return None
+    if "codex" in normalized:
+        return "codex_cli"
+    return None
+
+
 async def _resolve_provider_config(
-    repository: ProviderConfigRepository,
+    repository: ProviderConfigRepository | None,
     provider: Optional[str],
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     normalized = _normalize_provider(provider)
     if not normalized:
         return None, None, None
-    config = await repository.get_config(normalized)
-    if not config:
-        return None, None, None
-    api_key = config.api_key
-    base_url = _resolve_base_url(normalized, config.settings)
-    protocol = _resolve_protocol(normalized, config.settings)
+    config = await repository.get_config(normalized) if repository else None
+    api_key = config.api_key if config else None
+    settings = config.settings if config else None
+    base_url = _resolve_base_url(normalized, settings)
+    protocol = _resolve_protocol(normalized, settings)
     return api_key, base_url, protocol
 
 
 async def _resolve_provider_overrides(
-    repository: ProviderConfigRepository,
+    repository: ProviderConfigRepository | None,
     provider: Optional[str],
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     return await _resolve_provider_config(repository, provider)

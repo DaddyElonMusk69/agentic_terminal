@@ -36,6 +36,7 @@ class PromptBuildRequest:
     trigger_reason: str
     tickers: List[str]
     intervals: List[str]
+    provider: Optional[str] = None
     chart_requests: List[ChartRequest] = field(default_factory=list)
     quant_fields: Optional[List[str]] = None
     template_context: Dict[str, Any] = field(default_factory=dict)
@@ -60,6 +61,7 @@ class PromptBuildRequest:
             trigger_reason=str(payload.get("trigger_reason", "")),
             tickers=[str(item) for item in payload.get("tickers") or []],
             intervals=[str(item) for item in payload.get("intervals") or []],
+            provider=str(payload.get("provider")).strip() if payload.get("provider") else None,
             chart_requests=chart_requests,
             quant_fields=payload.get("quant_fields"),
             template_context=payload.get("template_context") or {},
