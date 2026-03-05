@@ -6,8 +6,13 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from app.application.automation.prompt_request_builder import build_prompt_request
-from app.application.automation.execution_mode import ExecutionMode, normalize_execution_mode
+from app.application.automation.execution_mode import (
+    ExecutionMode,
+    normalize_execution_mode,
+    should_execute_trades,
+)
 from app.application.automation import topics
+from app.application.automation.history_service import AutomationHistoryService
 from app.application.bus.outbox_service import OutboxService
 from app.application.ema_scanner.config_service import EmaScannerConfigService
 from app.application.ema_scanner.presenter import build_scan_results
@@ -35,6 +40,7 @@ class AutomationPipelineService:
         outbox: OutboxService,
         portfolio_service: PortfolioService,
         telegram_notifier: TelegramNotificationService | None = None,
+        history_service: AutomationHistoryService | None = None,
     ) -> None:
         self._ema_scanner = ema_scanner
         self._ema_config = ema_config
@@ -45,6 +51,7 @@ class AutomationPipelineService:
         self._outbox = outbox
         self._portfolio_service = portfolio_service
         self._telegram_notifier = telegram_notifier
+        self._history_service = history_service
 
     async def run_ema_cycle(
         self,
@@ -181,7 +188,21 @@ class AutomationPipelineService:
             )
             queued += 1
 
-        return {"signals": len(signals), "events": len(events), "queued": queued}
+        synced_external_trades = 0
+        if should_execute_trades(mode):
+            synced_external_trades = await self._sync_external_trades(
+                session_id=session_id,
+                cycle_number=cycle_number,
+            )
+            if synced_external_trades > 0:
+                await log_event("exchange_trades_synced", {"count": synced_external_trades})
+
+        return {
+            "signals": len(signals),
+            "events": len(events),
+            "queued": queued,
+            "synced_external_trades": synced_external_trades,
+        }
 
     async def run_quant_cycle(self, limit: int = 200, session_id: str | None = None) -> dict:
         config = await self._quant_config.build_config()
@@ -263,6 +284,28 @@ class AutomationPipelineService:
             )
         return positions
 
+    async def _sync_external_trades(
+        self,
+        session_id: str | None,
+        cycle_number: int | None,
+    ) -> int:
+        if not session_id or self._history_service is None:
+            return 0
+        try:
+            recent_trades = await self._portfolio_service.get_recent_trades(limit=50)
+        except Exception:
+            return 0
+        if not isinstance(recent_trades, list) or not recent_trades:
+            return 0
+        try:
+            return await self._history_service.sync_external_trades(
+                session_id=session_id,
+                trades=recent_trades,
+                cycle_number=cycle_number or 0,
+            )
+        except Exception:
+            return 0
+
     def _with_session(self, payload: dict, session_id: Optional[str]) -> dict:
         if session_id:
             payload = dict(payload)
@@ -274,6 +317,8 @@ def _resolve_template_id(trigger_reason: str, template_map: dict[str, int] | Non
     if not template_map:
         return None
     value = template_map.get(trigger_reason)
+    if value is None and trigger_reason == "resonance_refresh":
+        value = template_map.get("new_resonance")
     if isinstance(value, int) and value > 0:
         return value
     return None

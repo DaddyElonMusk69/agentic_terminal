@@ -72,6 +72,63 @@ class SqlAutomationTradeRepository(AutomationTradeRepository):
             )
             return [_to_record(model) for model in result.scalars().all()]
 
+    async def list_order_ids_by_session(self, session_id: str) -> set[str]:
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(AutomationTradeModel.order_id).where(
+                    AutomationTradeModel.session_id == session_id,
+                    AutomationTradeModel.order_id.is_not(None),
+                )
+            )
+            return {
+                str(order_id)
+                for order_id in result.scalars().all()
+                if isinstance(order_id, str) and order_id.strip()
+            }
+
+    async def update_trade(self, trade_id: int, updates: dict) -> Optional[AutomationTradeRecord]:
+        if not isinstance(updates, dict) or not updates:
+            return None
+        allowed_fields = {
+            "entry_price",
+            "exit_price",
+            "size_usd",
+            "pnl",
+            "pnl_pct",
+            "status",
+            "closed_at",
+            "signal_data",
+            "llm_reasoning",
+            "llm_response_full",
+            "order_id",
+            "fill_price",
+        }
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(AutomationTradeModel).where(AutomationTradeModel.id == int(trade_id))
+            )
+            record = result.scalars().first()
+            if record is None:
+                return None
+
+            changed = False
+            for key, value in updates.items():
+                if key not in allowed_fields:
+                    continue
+                if value is None:
+                    continue
+                if getattr(record, key) == value:
+                    continue
+                setattr(record, key, value)
+                changed = True
+
+            if not changed:
+                return _to_record(record)
+
+            await session.commit()
+            await session.refresh(record)
+            return _to_record(record)
+
     async def count_by_session(self, session_id: str) -> int:
         async with self._sessionmaker() as session:
             result = await session.execute(

@@ -98,6 +98,133 @@ class AutomationHistoryService:
                     **trade_payload,
                 )
 
+    async def sync_external_trades(
+        self,
+        session_id: str,
+        trades: list[dict],
+        cycle_number: int = 0,
+    ) -> int:
+        if not session_id or not isinstance(trades, list) or not trades:
+            return 0
+
+        existing_order_ids = await self._trades.list_order_ids_by_session(session_id)
+        created = 0
+
+        for trade in trades:
+            payload = _build_external_trade_payload(trade, cycle_number=cycle_number)
+            if payload is None:
+                continue
+            order_id = payload.get("order_id")
+            if not isinstance(order_id, str) or not order_id.strip():
+                continue
+            if order_id in existing_order_ids:
+                continue
+            await self._trades.create_trade(session_id=session_id, **payload)
+            existing_order_ids.add(order_id)
+            created += 1
+
+        return created
+
+    async def reconcile_external_trades(
+        self,
+        session_id: str,
+        trades: list[dict],
+        cycle_number: int = 0,
+        started_at: Optional[datetime] = None,
+        ended_at: Optional[datetime] = None,
+        match_window_seconds: int = 300,
+    ) -> dict[str, int]:
+        summary = {
+            "scanned": 0,
+            "in_window": 0,
+            "matched": 0,
+            "updated": 0,
+            "created": 0,
+        }
+        if not session_id or not isinstance(trades, list) or not trades:
+            return summary
+
+        session = await self._sessions.get_by_id(session_id)
+        window_start = _to_utc(started_at) or (session.started_at if session else None)
+        window_end = _to_utc(ended_at) or _utcnow()
+        if window_start and window_end and window_end < window_start:
+            window_start, window_end = window_end, window_start
+
+        session_trades = await self._trades.list_by_session(session_id)
+        known_order_ids = {
+            canonical
+            for canonical in (
+                _canonical_order_id(order_id)
+                for order_id in await self._trades.list_order_ids_by_session(session_id)
+            )
+            if canonical
+        }
+
+        local_by_order: dict[str, list[AutomationTradeRecord]] = {}
+        local_close_by_symbol: dict[str, list[AutomationTradeRecord]] = {}
+        for trade in session_trades:
+            canonical = _canonical_order_id(trade.order_id)
+            if canonical:
+                local_by_order.setdefault(canonical, []).append(trade)
+            symbol = (trade.symbol or "").upper()
+            if symbol and _is_close_action(trade.action):
+                local_close_by_symbol.setdefault(symbol, []).append(trade)
+
+        matched_trade_ids: set[int] = set()
+
+        for trade in trades:
+            summary["scanned"] += 1
+            payload = _build_external_trade_payload(trade, cycle_number=cycle_number)
+            if payload is None:
+                continue
+
+            closed_at = payload.get("closed_at")
+            if not _is_within_bounds(closed_at, start=window_start, end=window_end):
+                continue
+            summary["in_window"] += 1
+
+            order_id = payload.get("order_id")
+            canonical_order = _canonical_order_id(order_id)
+
+            matched = None
+            if canonical_order:
+                matched = _pick_unmatched_trade(
+                    local_by_order.get(canonical_order, []),
+                    matched_trade_ids,
+                )
+
+            if matched is None:
+                symbol = str(payload.get("symbol") or "").upper()
+                matched = _match_local_close_trade(
+                    local_close_by_symbol.get(symbol, []),
+                    external_closed_at=closed_at,
+                    matched_trade_ids=matched_trade_ids,
+                    window_seconds=match_window_seconds,
+                )
+
+            if matched is not None:
+                summary["matched"] += 1
+                matched_trade_ids.add(matched.id)
+                updates = _build_reconciliation_updates(matched, payload)
+                if updates:
+                    await self._trades.update_trade(matched.id, updates)
+                    summary["updated"] += 1
+                    updated_order = updates.get("order_id")
+                    updated_canonical = _canonical_order_id(updated_order)
+                    if updated_canonical:
+                        known_order_ids.add(updated_canonical)
+                continue
+
+            if canonical_order and canonical_order in known_order_ids:
+                continue
+
+            await self._trades.create_trade(session_id=session_id, **payload)
+            summary["created"] += 1
+            if canonical_order:
+                known_order_ids.add(canonical_order)
+
+        return summary
+
     async def list_sessions(
         self,
         limit: int,
@@ -106,6 +233,9 @@ class AutomationHistoryService:
         sessions = await self._sessions.list_all(limit=limit, offset=offset)
         total = await self._sessions.count_all()
         return sessions, total
+
+    async def get_session(self, session_id: str) -> Optional[AutomationSessionRecord]:
+        return await self._sessions.get_by_id(session_id)
 
     async def get_session_detail(
         self,
@@ -242,21 +372,40 @@ def _build_trade_payload(topic: str, payload: dict) -> Optional[dict]:
     action_str = str(action).upper() if action is not None else None
     direction = _action_direction(action_str)
 
-    size_usd = _safe_float(idea.get("position_size_usd") or idea.get("size_usd"))
+    raw_response = result.get("raw_response") if isinstance(result.get("raw_response"), dict) else {}
+    raw_info = raw_response.get("info") if isinstance(raw_response.get("info"), dict) else {}
+
+    size_usd = _first_float(idea.get("position_size_usd"), idea.get("size_usd"))
     entry_price = _safe_float(idea.get("entry_price"))
     fill_price = _safe_float(result.get("fill_price"))
-    pnl = _safe_float(result.get("realized_pnl") or result.get("pnl"))
+    pnl = _first_float(
+        result.get("realized_pnl"),
+        result.get("pnl"),
+        raw_info.get("realizedPnl"),
+        raw_info.get("closedPnl"),
+        raw_response.get("realizedPnl"),
+        raw_response.get("closedPnl"),
+    )
     pnl_pct = _safe_float(result.get("pnl_pct"))
     status = result.get("status") or ("filled" if topic == topics.TRADE_EXECUTED else "failed")
-    order_id = result.get("order_id")
+    order_id = (
+        result.get("order_id")
+        or raw_response.get("id")
+        or raw_info.get("orderId")
+        or raw_info.get("order_id")
+    )
 
     is_close = action_str in {"CLOSE", "REDUCE"} if action_str else False
     if is_close:
-        exit_price = fill_price or _safe_float(idea.get("exit_price"))
+        exit_price = fill_price if fill_price is not None else _safe_float(idea.get("exit_price"))
         final_entry = entry_price
     else:
-        final_entry = fill_price or entry_price
+        final_entry = fill_price if fill_price is not None else entry_price
         exit_price = None
+
+    closed_at = None
+    if topic == topics.TRADE_EXECUTED and is_close and str(status).lower() in {"filled", "closed", "done"}:
+        closed_at = _utcnow()
 
     return {
         "symbol": symbol,
@@ -268,7 +417,7 @@ def _build_trade_payload(topic: str, payload: dict) -> Optional[dict]:
         "pnl": pnl,
         "pnl_pct": pnl_pct,
         "status": str(status) if status is not None else None,
-        "closed_at": None,
+        "closed_at": closed_at,
         "signal_data": idea or None,
         "llm_reasoning": idea.get("reasoning") if isinstance(idea, dict) else None,
         "llm_response_full": None,
@@ -295,3 +444,281 @@ def _safe_float(value) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_float(*values) -> Optional[float]:
+    for value in values:
+        parsed = _safe_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _build_external_trade_payload(trade: dict, cycle_number: int = 0) -> Optional[dict]:
+    if not isinstance(trade, dict):
+        return None
+
+    symbol = _normalize_trade_symbol(trade.get("symbol"))
+    if not symbol:
+        return None
+
+    pnl = _safe_float(trade.get("pnl"))
+    pnl_pct = _first_float(trade.get("pnl_pct"), trade.get("roi_pct"))
+    entry_price = _safe_float(trade.get("entry_price"))
+    exit_price = _safe_float(trade.get("exit_price"))
+    size_usd = _first_float(trade.get("size_usd"), trade.get("position_size_usd"))
+    closed_at = _parse_trade_time(trade.get("exit_time"))
+    direction = _normalize_direction(trade.get("direction"))
+    order_id = _build_external_order_id(trade, symbol, closed_at, pnl, exit_price)
+
+    if order_id is None:
+        return None
+
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "action": "CLOSE_SYNC",
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "size_usd": size_usd,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+        "status": "filled",
+        "closed_at": closed_at,
+        "signal_data": {
+            "source": "exchange_sync",
+            "trade": {
+                "symbol": symbol,
+                "direction": direction,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "size_usd": size_usd,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "exit_time": trade.get("exit_time"),
+            },
+        },
+        "llm_reasoning": "exchange_sync",
+        "llm_response_full": None,
+        "order_id": order_id,
+        "fill_price": exit_price,
+        "cycle_number": int(cycle_number),
+    }
+
+
+def _normalize_trade_symbol(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    symbol = value.strip().upper()
+    if not symbol:
+        return None
+    if ":" in symbol:
+        symbol = symbol.split(":", 1)[0]
+    if "/" in symbol:
+        symbol = symbol.split("/", 1)[0]
+    for suffix in ("USDT", "USDC", "BUSD", "USD"):
+        if symbol.endswith(suffix) and len(symbol) > len(suffix):
+            symbol = symbol[: -len(suffix)]
+            break
+    return symbol or None
+
+
+def _normalize_direction(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    direction = value.strip().upper()
+    if direction in {"LONG", "SHORT"}:
+        return direction
+    return None
+
+
+def _parse_trade_time(value) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        # Heuristic: milliseconds if very large.
+        if timestamp > 1_000_000_000_000:
+            timestamp /= 1000.0
+        try:
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            try:
+                numeric = float(raw)
+                return _parse_trade_time(numeric)
+            except ValueError:
+                return None
+    return None
+
+
+def _build_external_order_id(
+    trade: dict,
+    symbol: str,
+    closed_at: Optional[datetime],
+    pnl: Optional[float],
+    exit_price: Optional[float],
+) -> Optional[str]:
+    direct = (
+        trade.get("order_id")
+        or trade.get("id")
+        or trade.get("trade_id")
+        or trade.get("tradeId")
+    )
+    if direct is not None and str(direct).strip():
+        return f"external:{str(direct).strip()}"
+
+    close_marker = int(closed_at.timestamp()) if closed_at is not None else 0
+    pnl_marker = "na" if pnl is None else f"{pnl:.10g}"
+    price_marker = "na" if exit_price is None else f"{exit_price:.10g}"
+    if not symbol:
+        return None
+    return f"external:auto:{symbol}:{close_marker}:{pnl_marker}:{price_marker}"
+
+
+def _to_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_within_bounds(
+    value: Optional[datetime],
+    start: Optional[datetime],
+    end: Optional[datetime],
+) -> bool:
+    if start is None and end is None:
+        return True
+    if value is None:
+        return False
+    value_utc = _to_utc(value)
+    start_utc = _to_utc(start)
+    end_utc = _to_utc(end)
+    if start_utc is not None and value_utc < start_utc:
+        return False
+    if end_utc is not None and value_utc > end_utc:
+        return False
+    return True
+
+
+def _canonical_order_id(order_id: Optional[str]) -> Optional[str]:
+    if not isinstance(order_id, str):
+        return None
+    value = order_id.strip()
+    if not value:
+        return None
+    lowered = value.lower()
+    if lowered.startswith("external:"):
+        value = value.split(":", 1)[1].strip()
+    return value.lower() if value else None
+
+
+def _is_close_action(action: Optional[str]) -> bool:
+    if not isinstance(action, str):
+        return False
+    return action.upper() in {"CLOSE", "REDUCE", "CLOSE_SYNC"}
+
+
+def _pick_unmatched_trade(
+    candidates: list[AutomationTradeRecord],
+    matched_trade_ids: set[int],
+) -> Optional[AutomationTradeRecord]:
+    for trade in candidates:
+        if trade.id in matched_trade_ids:
+            continue
+        if _is_close_action(trade.action):
+            return trade
+    for trade in candidates:
+        if trade.id in matched_trade_ids:
+            continue
+        return trade
+    return None
+
+
+def _match_local_close_trade(
+    candidates: list[AutomationTradeRecord],
+    external_closed_at: Optional[datetime],
+    matched_trade_ids: set[int],
+    window_seconds: int,
+) -> Optional[AutomationTradeRecord]:
+    if external_closed_at is None or not candidates:
+        return None
+    external_time = _to_utc(external_closed_at)
+    ranked: list[tuple[float, AutomationTradeRecord]] = []
+    for trade in candidates:
+        if trade.id in matched_trade_ids:
+            continue
+        if trade.pnl is not None and trade.closed_at is not None and trade.exit_price is not None:
+            continue
+        trade_time = _to_utc(trade.closed_at or trade.created_at)
+        if trade_time is None:
+            continue
+        delta = abs((trade_time - external_time).total_seconds())
+        if delta <= max(60, int(window_seconds)):
+            ranked.append((delta, trade))
+
+    if not ranked:
+        return None
+
+    ranked.sort(key=lambda item: item[0])
+    if len(ranked) > 1 and abs(ranked[1][0] - ranked[0][0]) < 30:
+        return None
+    return ranked[0][1]
+
+
+def _build_reconciliation_updates(
+    local_trade: AutomationTradeRecord,
+    external_payload: dict,
+) -> dict:
+    updates: dict = {}
+
+    order_id = external_payload.get("order_id")
+    if (
+        isinstance(order_id, str)
+        and order_id.strip()
+        and (not isinstance(local_trade.order_id, str) or not local_trade.order_id.strip())
+    ):
+        updates["order_id"] = order_id
+
+    pnl = external_payload.get("pnl")
+    if local_trade.pnl is None and pnl is not None:
+        updates["pnl"] = pnl
+
+    pnl_pct = external_payload.get("pnl_pct")
+    if local_trade.pnl_pct is None and pnl_pct is not None:
+        updates["pnl_pct"] = pnl_pct
+
+    exit_price = external_payload.get("exit_price")
+    if local_trade.exit_price is None and exit_price is not None:
+        updates["exit_price"] = exit_price
+
+    fill_price = external_payload.get("fill_price")
+    if local_trade.fill_price is None and fill_price is not None:
+        updates["fill_price"] = fill_price
+
+    closed_at = external_payload.get("closed_at")
+    if local_trade.closed_at is None and closed_at is not None:
+        updates["closed_at"] = closed_at
+
+    status = external_payload.get("status")
+    if (
+        isinstance(status, str)
+        and status.strip()
+        and (not isinstance(local_trade.status, str) or not local_trade.status.strip())
+    ):
+        updates["status"] = status
+
+    return updates

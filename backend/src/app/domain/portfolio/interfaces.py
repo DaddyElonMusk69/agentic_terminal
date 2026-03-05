@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Protocol, Any, Dict, List, Optional
 
 from app.domain.portfolio.models import (
@@ -66,7 +67,12 @@ class ExchangeConnector(Protocol):
     async def fetch_open_orders(self, symbols: Optional[List[str]] = None) -> List[dict]:
         ...
 
-    async def fetch_recent_trades(self, limit: int = 10) -> List[dict]:
+    async def fetch_recent_trades(
+        self,
+        limit: int = 10,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> List[dict]:
         ...
 
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> List[MarketCandle]:

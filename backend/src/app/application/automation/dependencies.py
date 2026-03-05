@@ -90,6 +90,7 @@ def get_automation_pipeline_service() -> AutomationPipelineService:
         outbox=get_outbox_service(),
         portfolio_service=get_portfolio_service(),
         telegram_notifier=get_telegram_notification_service(),
+        history_service=get_automation_history_service(),
     )
 
 

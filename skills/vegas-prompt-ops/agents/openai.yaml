@@ -1,0 +1,3 @@
+interface:
+  display_name: "Vegas Prompt Ops"
+  short_description: "Analyze sessions + prompt rollback"

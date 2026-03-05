@@ -142,19 +142,38 @@ class CCXTConnector(ExchangeConnector):
 
             return orders
 
-    async def fetch_recent_trades(self, limit: int = 10) -> List[dict]:
-        limit = max(1, min(int(limit or 10), 100))
+    async def fetch_recent_trades(
+        self,
+        limit: int = 10,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> List[dict]:
+        limit = max(1, min(int(limit or 10), 1000))
         async with self._client() as client:
             now = datetime.now(timezone.utc)
             seven_days_ms = int((now - timedelta(days=7)).timestamp() * 1000)
+            since_ms = _to_timestamp_ms(start_time) or seven_days_ms
+            until_ms = _to_timestamp_ms(end_time)
+            if until_ms is not None and until_ms < since_ms:
+                since_ms, until_ms = until_ms, since_ms
             exchange_id = (self._config.exchange_id or "").lower()
 
             if exchange_id == "binance" and hasattr(client, "fapiPrivateGetIncome"):
-                trades = await _fetch_binance_income_trades(client, seven_days_ms, limit)
+                trades = await _fetch_binance_income_trades(
+                    client,
+                    since_ms=since_ms,
+                    until_ms=until_ms,
+                    limit=limit,
+                )
                 if trades:
                     return trades
 
-            return await _fetch_ccxt_recent_trades(client, seven_days_ms, limit)
+            return await _fetch_ccxt_recent_trades(
+                client,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                limit=limit,
+            )
 
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> List[MarketCandle]:
         async with self._client() as client:
@@ -1227,13 +1246,20 @@ def _is_restricted_location_error(exc: Exception) -> bool:
     return False
 
 
-async def _fetch_binance_income_trades(client: Any, since_ms: int, limit: int) -> List[dict]:
+async def _fetch_binance_income_trades(
+    client: Any,
+    since_ms: int,
+    until_ms: int | None,
+    limit: int,
+) -> List[dict]:
     try:
         params = {
             "incomeType": "REALIZED_PNL",
             "startTime": since_ms,
             "limit": 1000,
         }
+        if until_ms is not None:
+            params["endTime"] = until_ms
         income_records = await client.fapiPrivateGetIncome(params)
     except Exception:
         income_records = []
@@ -1252,9 +1278,14 @@ async def _fetch_binance_income_trades(client: Any, since_ms: int, limit: int) -
             continue
         symbol = _normalize_income_symbol(record.get("symbol") or "")
         timestamp = _to_timestamp_ms(record.get("time"))
+        if timestamp is not None and timestamp < since_ms:
+            continue
+        if until_ms is not None and timestamp is not None and timestamp > until_ms:
+            continue
         trades.append(
             {
                 "symbol": symbol,
+                "order_id": record.get("tradeId") or record.get("tranId"),
                 "direction": "LONG" if pnl > 0 else "SHORT",
                 "entry_price": 0.0,
                 "exit_price": 0.0,
@@ -1271,7 +1302,12 @@ async def _fetch_binance_income_trades(client: Any, since_ms: int, limit: int) -
     return trades
 
 
-async def _fetch_ccxt_recent_trades(client: Any, since_ms: int, limit: int) -> List[dict]:
+async def _fetch_ccxt_recent_trades(
+    client: Any,
+    since_ms: int,
+    until_ms: int | None,
+    limit: int,
+) -> List[dict]:
     symbols = set()
     has = getattr(client, "has", {}) or {}
 
@@ -1314,6 +1350,11 @@ async def _fetch_ccxt_recent_trades(client: Any, since_ms: int, limit: int) -> L
     for trade in all_trades:
         if len(closed_trades) >= limit:
             break
+        timestamp = _to_timestamp_ms(trade.get("timestamp"))
+        if timestamp is not None and timestamp < since_ms:
+            continue
+        if until_ms is not None and timestamp is not None and timestamp > until_ms:
+            continue
         info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
         realized_pnl = info.get("realizedPnl") or info.get("closedPnl")
         pnl_value = _to_float(realized_pnl)
@@ -1324,11 +1365,11 @@ async def _fetch_ccxt_recent_trades(client: Any, since_ms: int, limit: int) -> L
         side = str(trade.get("side") or "").lower()
         amount = _to_float(trade.get("amount")) or 0.0
         price = _to_float(trade.get("price")) or 0.0
-        timestamp = _to_timestamp_ms(trade.get("timestamp"))
 
         closed_trades.append(
             {
                 "symbol": symbol,
+                "order_id": info.get("orderId") or trade.get("order") or trade.get("id"),
                 "direction": "long" if side == "buy" else "short",
                 "entry_price": price or None,
                 "exit_price": price or None,

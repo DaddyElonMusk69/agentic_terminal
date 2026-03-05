@@ -7,10 +7,12 @@ from pydantic import BaseModel, Field
 
 from app.application.automation.runtime import AutomationRuntimeConfig, get_automation_runtime
 from app.application.automation import topics
+from app.application.automation.execution_mode import normalize_execution_mode, should_execute_trades
 from app.application.automation.dependencies import (
     get_automation_config_service,
     get_automation_history_service,
 )
+from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.trade_executor.dependencies import get_trade_executor_service
 from app.application.bus.outbox_service import OutboxService
 from app.common.api import ApiMeta
@@ -445,9 +447,48 @@ async def stop_automation(request: Request) -> AutomationStateDataResponse:
     session_id = pre_state.get("session_id") or state.get("session_id")
     if pre_state.get("is_running") and session_id:
         history_service = get_automation_history_service()
+        ended_at = datetime.now(timezone.utc)
+        cycle_number = _resolve_total_cycles(pre_state)
+        session = await history_service.get_session(session_id)
+        if session and session.started_at:
+            window_start = session.started_at - timedelta(minutes=5)
+        else:
+            window_start = ended_at - timedelta(hours=6)
+        window_end = ended_at + timedelta(minutes=5)
+        reconcile_summary: dict | None = None
+        execution_mode = normalize_execution_mode(pre_state.get("execution_mode"))
+        if should_execute_trades(execution_mode):
+            try:
+                recent_trades = await get_portfolio_service().get_recent_trades(
+                    limit=1000,
+                    start_time=window_start,
+                    end_time=window_end,
+                )
+                if isinstance(recent_trades, list) and recent_trades:
+                    reconcile_summary = await history_service.reconcile_external_trades(
+                        session_id=session_id,
+                        trades=recent_trades,
+                        cycle_number=cycle_number,
+                        started_at=window_start,
+                        ended_at=window_end,
+                    )
+            except Exception:
+                # Best-effort reconciliation from exchange-side closes.
+                pass
+        if isinstance(reconcile_summary, dict) and reconcile_summary.get("scanned", 0) > 0:
+            await hub.emit_topic(
+                "automation.exchange.reconciled",
+                {
+                    "session_id": session_id,
+                    "window_start": window_start.isoformat(),
+                    "window_end": window_end.isoformat(),
+                    **reconcile_summary,
+                },
+                request_id=getattr(request.state, "request_id", None),
+            )
         await history_service.end_session(
             session_id=session_id,
-            total_cycles=_resolve_total_cycles(pre_state),
+            total_cycles=cycle_number,
         )
     purged = 0
     if session_id:
