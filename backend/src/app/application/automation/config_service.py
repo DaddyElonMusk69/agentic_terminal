@@ -30,7 +30,8 @@ class AutomationConfigService:
         quant_interval_seconds: int,
         provider: Optional[str],
         model: Optional[str],
-        vegas_prompt_configs: Optional[dict[str, int]],
+        include_entry_timing_15m_chart: bool = False,
+        vegas_prompt_configs: Optional[dict[str, int]] = None,
     ) -> AutomationConfig:
         normalized = AutomationConfig(
             execution_mode=execution_mode,
@@ -38,6 +39,7 @@ class AutomationConfigService:
             quant_interval_seconds=quant_interval_seconds,
             provider=provider,
             model=model,
+            include_entry_timing_15m_chart=include_entry_timing_15m_chart,
             vegas_prompt_configs=vegas_prompt_configs,
         )
         normalized = self._normalize_config(normalized)
@@ -50,6 +52,7 @@ class AutomationConfigService:
             quant_interval_seconds=DEFAULT_INTERVAL_SECONDS,
             provider=None,
             model=None,
+            include_entry_timing_15m_chart=False,
             vegas_prompt_configs=None,
         )
 
@@ -59,6 +62,7 @@ class AutomationConfigService:
         model = config.model.strip() if config.model else None
         ema_interval = _normalize_interval(config.ema_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         quant_interval = _normalize_interval(config.quant_interval_seconds, DEFAULT_INTERVAL_SECONDS)
+        include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
         prompt_map = _normalize_prompt_map(config.vegas_prompt_configs)
         return replace(
             config,
@@ -67,6 +71,7 @@ class AutomationConfigService:
             quant_interval_seconds=quant_interval,
             provider=provider or None,
             model=model or None,
+            include_entry_timing_15m_chart=include_entry_timing_15m_chart,
             vegas_prompt_configs=prompt_map,
         )
 
@@ -97,3 +102,13 @@ def _normalize_prompt_map(values: Optional[dict[str, int]]) -> Optional[dict[str
         if parsed > 0:
             cleaned[str(key)] = parsed
     return cleaned or None
+
+
+def _normalize_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False

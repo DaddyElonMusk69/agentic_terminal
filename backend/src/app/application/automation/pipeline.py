@@ -59,6 +59,7 @@ class AutomationPipelineService:
         template_map: dict[str, int] | None = None,
         llm_model: str | None = None,
         llm_provider: str | None = None,
+        include_entry_timing_15m_chart: bool = False,
         session_id: str | None = None,
         cycle_number: int | None = None,
     ) -> dict:
@@ -178,6 +179,7 @@ class AutomationPipelineService:
                 execution_mode=mode,
                 llm_model=llm_model,
                 llm_provider=llm_provider,
+                include_entry_timing_15m_chart=include_entry_timing_15m_chart,
                 session_id=session_id,
             )
             payload["cycle_number"] = cycle_number

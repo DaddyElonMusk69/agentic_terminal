@@ -24,6 +24,7 @@ class AutomationScheduler:
         template_map: Optional[dict[str, int]] = None,
         llm_model: Optional[str] = None,
         llm_provider: Optional[str] = None,
+        include_entry_timing_15m_chart: bool = False,
         session_id: Optional[str] = None,
     ) -> None:
         self._pipeline = pipeline
@@ -33,6 +34,7 @@ class AutomationScheduler:
         self._template_map = dict(template_map or {})
         self._llm_model = llm_model
         self._llm_provider = llm_provider
+        self._include_entry_timing_15m_chart = bool(include_entry_timing_15m_chart)
         self._session_id = session_id
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
@@ -64,6 +66,7 @@ class AutomationScheduler:
                     template_map=self._template_map,
                     llm_model=self._llm_model,
                     llm_provider=self._llm_provider,
+                    include_entry_timing_15m_chart=self._include_entry_timing_15m_chart,
                     session_id=self._session_id,
                     cycle_number=cycle_number,
                 )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -27,6 +28,8 @@ from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 from app.infrastructure.repositories.llm_queue_repository import LlmQueueRepository, LlmQueueItem
 from app.settings import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 class LlmQueueWorker:
     def __init__(
@@ -51,6 +54,13 @@ class LlmQueueWorker:
         self._codex_temp_ttl_minutes = max(1, int(settings.codex_temp_image_ttl_minutes))
         self._codex_sweep_interval_seconds = max(1, int(settings.codex_temp_image_sweep_interval_seconds))
         self._last_codex_sweep_at: datetime | None = None
+        logger.debug(
+            "Codex temp image store configured: base=%s managed_roots=%s ttl_minutes=%s sweep_interval_seconds=%s",
+            self._codex_temp_images.base_path,
+            [str(path) for path in self._codex_temp_images.managed_roots],
+            self._codex_temp_ttl_minutes,
+            self._codex_sweep_interval_seconds,
+        )
 
     async def process_next(self) -> bool:
         await self._maybe_sweep_codex_images()
@@ -291,8 +301,14 @@ class LlmQueueWorker:
             elapsed = (now - self._last_codex_sweep_at).total_seconds()
             if elapsed < self._codex_sweep_interval_seconds:
                 return
-        self._codex_temp_images.sweep_expired(self._codex_temp_ttl_minutes)
+        deleted = self._codex_temp_images.sweep_expired(self._codex_temp_ttl_minutes)
         self._last_codex_sweep_at = now
+        if deleted > 0:
+            logger.info(
+                "Codex temp image sweep removed %s file(s); managed_roots=%s",
+                deleted,
+                [str(path) for path in self._codex_temp_images.managed_roots],
+            )
 
     def _delete_codex_images_from_response(self, raw_response: Optional[dict]) -> None:
         if not isinstance(raw_response, dict):
@@ -302,7 +318,12 @@ class LlmQueueWorker:
         image_paths = raw_response.get("image_paths")
         if not isinstance(image_paths, list):
             return
-        self._codex_temp_images.delete_paths([str(path) for path in image_paths if path])
+        deleted = self._codex_temp_images.delete_paths([str(path) for path in image_paths if path])
+        if deleted > 0:
+            logger.info(
+                "Codex temp image immediate cleanup removed %s file(s)",
+                deleted,
+            )
 
     async def _persist_codex_provider_discovery(self, provider: Optional[str], model: Optional[str]) -> None:
         if self._provider_repository is None:

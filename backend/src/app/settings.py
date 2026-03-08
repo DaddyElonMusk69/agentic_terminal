@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     codex_temp_image_path: str = "backend/tmp/codex_images"
     codex_temp_image_ttl_minutes: int = 60
     codex_temp_image_sweep_interval_seconds: int = 600
+    binance_http_timeout_seconds: float = 10.0
+    binance_http_pool_timeout_seconds: float = 30.0
+    binance_http_max_keepalive_connections: int = 20
+    binance_http_max_connections: int = 100
     binance_max_requests_per_second: int = 5
     binance_max_concurrency: int = 2
     binance_retry_count: int = 2

@@ -17,6 +17,14 @@ RESONANCE_TRIGGERS = {
     "resonance_refresh",
 }
 POSITION_TRIGGER = "position_management"
+ENTRY_TIMING_INTERVAL = "15m"
+ENTRY_CHART_TRIGGERS = {
+    "new_resonance",
+    "resonance_increase",
+    "structure_shift",
+    "resonance_refresh",
+    "bb_rejection_entry",
+}
 
 
 def build_prompt_request(
@@ -26,6 +34,7 @@ def build_prompt_request(
     execution_mode: str | ExecutionMode | None = None,
     llm_model: Optional[str] = None,
     llm_provider: Optional[str] = None,
+    include_entry_timing_15m_chart: bool = False,
     session_id: Optional[str] = None,
 ) -> dict:
     mode = normalize_execution_mode(
@@ -36,7 +45,11 @@ def build_prompt_request(
     primary_interval = _select_primary_interval(
         event.bb_signal_intervals or event.active_intervals or intervals
     )
-    chart_requests = [ChartRequest(interval=interval) for interval in intervals]
+    chart_intervals = _dedupe_preserve(intervals)
+    if include_entry_timing_15m_chart and trigger_reason in ENTRY_CHART_TRIGGERS:
+        if ENTRY_TIMING_INTERVAL not in chart_intervals:
+            chart_intervals.append(ENTRY_TIMING_INTERVAL)
+    chart_requests = [ChartRequest(interval=interval) for interval in chart_intervals]
 
     return {
         "request_id": str(uuid4()),

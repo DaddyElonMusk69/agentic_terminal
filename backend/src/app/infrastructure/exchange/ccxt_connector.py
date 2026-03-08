@@ -4,7 +4,8 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
-from typing import Any, Dict, List, Optional
+import random
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 try:
     import ccxt.async_support as ccxt
@@ -26,6 +27,28 @@ from app.domain.portfolio.models import (
     DailyPnlSnapshot,
 )
 
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 0.2
+_RETRY_MAX_DELAY_SECONDS = 1.5
+_RETRY_JITTER_SECONDS = 0.15
+_RETRYABLE_ERROR_TEXT = (
+    "cannot connect to host",
+    "connection reset",
+    "network error",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "server disconnected",
+    "ssl",
+)
+_RETRYABLE_CCXT_ERROR_NAMES = (
+    "ExchangeNotAvailable",
+    "NetworkError",
+    "RequestTimeout",
+    "DDoSProtection",
+)
+T = TypeVar("T")
+
 
 @dataclass
 class CCXTConfig:
@@ -44,7 +67,7 @@ class CCXTConnector(ExchangeConnector):
 
     async def fetch_account_state(self) -> AccountState:
         async with self._client() as client:
-            balance = await client.fetch_balance()
+            balance = await self._with_retry("fetch_balance", client.fetch_balance)
 
             total = balance.get("total") or {}
             free = balance.get("free") or {}
@@ -68,7 +91,7 @@ class CCXTConnector(ExchangeConnector):
             if not getattr(client, "has", {}).get("fetchPositions"):
                 return []
 
-            raw_positions = await client.fetch_positions()
+            raw_positions = await self._with_retry("fetch_positions", client.fetch_positions)
             positions: List[Position] = []
 
             for raw in raw_positions or []:
@@ -735,6 +758,29 @@ class CCXTConnector(ExchangeConnector):
             exchange=self._config.exchange_id,
         )
 
+    async def _with_retry(
+        self,
+        operation_name: str,
+        operation: Callable[[], Awaitable[T]],
+    ) -> T:
+        logger = logging.getLogger(__name__)
+        for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+            try:
+                return await operation()
+            except Exception as exc:
+                if attempt >= _RETRY_MAX_ATTEMPTS or not is_retryable_exchange_error(exc):
+                    raise
+                delay = _retry_delay_seconds(attempt)
+                logger.warning(
+                    "Transient exchange error during %s (attempt %d/%d), retrying in %.2fs: %s",
+                    operation_name,
+                    attempt,
+                    _RETRY_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
     def _client(self):
         return _CCXTClientContext(self._config)
 
@@ -1244,6 +1290,32 @@ def _is_restricted_location_error(exc: Exception) -> bool:
     if "service unavailable" in message and "451" in message:
         return True
     return False
+
+
+def is_retryable_exchange_error(exc: Exception) -> bool:
+    if _is_restricted_location_error(exc):
+        return False
+
+    if ccxt is not None:
+        retryable_types = []
+        for name in _RETRYABLE_CCXT_ERROR_NAMES:
+            candidate = getattr(ccxt, name, None)
+            if isinstance(candidate, type):
+                retryable_types.append(candidate)
+        if retryable_types and isinstance(exc, tuple(retryable_types)):
+            return True
+
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+
+    message = str(exc).lower()
+    return any(token in message for token in _RETRYABLE_ERROR_TEXT)
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    delay = _RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1))
+    delay = min(delay, _RETRY_MAX_DELAY_SECONDS)
+    return delay + random.uniform(0.0, _RETRY_JITTER_SECONDS)
 
 
 async def _fetch_binance_income_trades(

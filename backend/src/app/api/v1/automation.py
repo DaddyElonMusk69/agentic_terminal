@@ -31,6 +31,7 @@ class AutomationStartRequest(BaseModel):
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     provider: Optional[str] = None
     model: Optional[str] = None
+    include_entry_timing_15m_chart: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
 
 
@@ -42,6 +43,7 @@ class AutomationStateResponse(BaseModel):
     quant_interval_seconds: int
     provider: Optional[str] = None
     model: Optional[str] = None
+    include_entry_timing_15m_chart: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
     started_at: Optional[str] = None
     current_cycle: int = 0
@@ -62,6 +64,7 @@ class AutomationConfigPayload(BaseModel):
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     provider: Optional[str] = None
     model: Optional[str] = None
+    include_entry_timing_15m_chart: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
 
 
@@ -71,6 +74,7 @@ class AutomationConfigView(BaseModel):
     quant_interval_seconds: int
     provider: Optional[str] = None
     model: Optional[str] = None
+    include_entry_timing_15m_chart: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
 
 
@@ -327,6 +331,7 @@ async def get_automation_config(request: Request) -> AutomationConfigResponse:
         quant_interval_seconds=config.quant_interval_seconds,
         provider=config.provider,
         model=config.model,
+        include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
         vegas_prompt_configs=config.vegas_prompt_configs,
     )
     return AutomationConfigResponse(data=view, meta=_meta(request))
@@ -344,6 +349,7 @@ async def update_automation_config(
         quant_interval_seconds=payload.quant_interval_seconds,
         provider=payload.provider,
         model=payload.model,
+        include_entry_timing_15m_chart=payload.include_entry_timing_15m_chart,
         vegas_prompt_configs=payload.vegas_prompt_configs,
     )
     view = AutomationConfigView(
@@ -352,6 +358,7 @@ async def update_automation_config(
         quant_interval_seconds=config.quant_interval_seconds,
         provider=config.provider,
         model=config.model,
+        include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
         vegas_prompt_configs=config.vegas_prompt_configs,
     )
     return AutomationConfigResponse(data=view, meta=_meta(request))
@@ -376,6 +383,7 @@ async def start_automation(
         quant_interval_seconds=payload.quant_interval_seconds,
         provider=payload.provider,
         model=payload.model,
+        include_entry_timing_15m_chart=payload.include_entry_timing_15m_chart,
         vegas_prompt_configs=payload.vegas_prompt_configs,
     )
     session_id = str(uuid4())
@@ -391,6 +399,7 @@ async def start_automation(
             "quant_interval_seconds": config.quant_interval_seconds,
             "provider": config.provider,
             "model": config.model,
+            "include_entry_timing_15m_chart": config.include_entry_timing_15m_chart,
             "vegas_prompt_configs": config.vegas_prompt_configs,
         },
     )
@@ -403,6 +412,7 @@ async def start_automation(
                 quant_interval_seconds=config.quant_interval_seconds,
                 provider=config.provider,
                 model=config.model,
+                include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
                 vegas_prompt_configs=config.vegas_prompt_configs,
                 session_id=session_id,
             )
@@ -417,6 +427,7 @@ async def start_automation(
         "quant_interval_seconds": config.quant_interval_seconds,
         "provider": config.provider,
         "model": config.model,
+        "include_entry_timing_15m_chart": config.include_entry_timing_15m_chart,
         "vegas_prompt_configs": config.vegas_prompt_configs,
         "started_at": state.get("started_at"),
         "session_id": session_id,

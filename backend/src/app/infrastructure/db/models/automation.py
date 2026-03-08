@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, JSON, String, Text, ForeignKey
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.db.models.base import Base
@@ -19,6 +19,7 @@ class AutomationConfigModel(Base):
     quant_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    include_entry_timing_15m_chart: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     vegas_prompt_configs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

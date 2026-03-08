@@ -262,6 +262,80 @@
             </div>
           </div>
         </div>
+
+        <div v-if="oiSource === 'nofx'" class="rounded-md border border-border bg-panel/50 p-3">
+          <div class="flex items-center justify-between gap-3">
+            <label class="flex items-center gap-2 text-sm text-text">
+              <input v-model="sources.netflow_top.enabled" type="checkbox" />
+              Netflow Top
+            </label>
+            <span class="text-[11px] text-muted">Highest institutional futures inflow</span>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted">Limit</span>
+              <input
+                v-model.number="sources.netflow_top.limit"
+                class="w-20 rounded-md border border-border bg-panel px-2 py-1 text-xs"
+                type="number"
+                min="1"
+                max="100"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted">Duration</span>
+              <select
+                v-model="sources.netflow_top.duration"
+                class="rounded-md border border-border bg-panel px-2 py-1 text-xs"
+              >
+                <option
+                  v-for="duration in oiDurationOptions"
+                  :key="duration"
+                  :value="duration"
+                >
+                  {{ duration }}
+                </option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="oiSource === 'nofx'" class="rounded-md border border-border bg-panel/50 p-3">
+          <div class="flex items-center justify-between gap-3">
+            <label class="flex items-center gap-2 text-sm text-text">
+              <input v-model="sources.netflow_low.enabled" type="checkbox" />
+              Netflow Low
+            </label>
+            <span class="text-[11px] text-muted">Highest institutional futures outflow</span>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted">Limit</span>
+              <input
+                v-model.number="sources.netflow_low.limit"
+                class="w-20 rounded-md border border-border bg-panel px-2 py-1 text-xs"
+                type="number"
+                min="1"
+                max="100"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted">Duration</span>
+              <select
+                v-model="sources.netflow_low.duration"
+                class="rounded-md border border-border bg-panel px-2 py-1 text-xs"
+              >
+                <option
+                  v-for="duration in oiDurationOptions"
+                  :key="duration"
+                  :value="duration"
+                >
+                  {{ duration }}
+                </option>
+              </select>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="mt-4 flex flex-wrap gap-2">
@@ -308,6 +382,8 @@ const defaultSources: DynamicSources = {
   ai300: { enabled: false, limit: 20, level: "" },
   oi_top: { enabled: false, limit: 20, duration: "1h" },
   oi_low: { enabled: false, limit: 20, duration: "1h" },
+  netflow_top: { enabled: false, limit: 20, duration: "1h" },
+  netflow_low: { enabled: false, limit: 20, duration: "1h" },
 };
 
 const buildDynamicSources = (value?: Partial<DynamicSources> | null): DynamicSources => ({
@@ -315,6 +391,8 @@ const buildDynamicSources = (value?: Partial<DynamicSources> | null): DynamicSou
   ai300: { ...defaultSources.ai300, ...(value?.ai300 || {}) },
   oi_top: { ...defaultSources.oi_top, ...(value?.oi_top || {}) },
   oi_low: { ...defaultSources.oi_low, ...(value?.oi_low || {}) },
+  netflow_top: { ...defaultSources.netflow_top, ...(value?.netflow_top || {}) },
+  netflow_low: { ...defaultSources.netflow_low, ...(value?.netflow_low || {}) },
 });
 
 const dynamicEnabled = ref(false);
@@ -363,6 +441,8 @@ const applyDynamicSources = (value?: Partial<DynamicSources> | null) => {
   sources.ai300 = normalized.ai300;
   sources.oi_top = normalized.oi_top;
   sources.oi_low = normalized.oi_low;
+  sources.netflow_top = normalized.netflow_top;
+  sources.netflow_low = normalized.netflow_low;
   return normalized;
 };
 
@@ -419,6 +499,12 @@ const normalizeOiDurations = () => {
   }
   if (!customDurations.includes(sources.oi_low.duration)) {
     sources.oi_low.duration = "1h";
+  }
+  if (!customDurations.includes(sources.netflow_top.duration)) {
+    sources.netflow_top.duration = "1h";
+  }
+  if (!customDurations.includes(sources.netflow_low.duration)) {
+    sources.netflow_low.duration = "1h";
   }
 };
 
@@ -548,6 +634,8 @@ const saveConfig = async () => {
     if (oiSource.value === "custom") {
       sources.ai500.enabled = false;
       sources.ai300.enabled = false;
+      sources.netflow_top.enabled = false;
+      sources.netflow_low.enabled = false;
       normalizeOiDurations();
     }
     const payload: Record<string, unknown> = {
@@ -653,6 +741,8 @@ watch(
     if (next === "custom") {
       sources.ai500.enabled = false;
       sources.ai300.enabled = false;
+      sources.netflow_top.enabled = false;
+      sources.netflow_low.enabled = false;
       normalizeOiDurations();
       loadOiConfig();
       apiKeyInput.value = "";

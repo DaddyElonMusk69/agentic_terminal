@@ -681,10 +681,70 @@
         </div>
       </aside>
     </div>
+
+    <TransitionRoot :show="showClearVegasStateModal" as="template">
+      <Dialog class="relative z-50" @close="closeClearVegasStateModal">
+        <TransitionChild
+          as="template"
+          enter="ease-out duration-200"
+          enter-from="opacity-0"
+          enter-to="opacity-100"
+          leave="ease-in duration-150"
+          leave-from="opacity-100"
+          leave-to="opacity-0"
+        >
+          <div class="fixed inset-0 bg-black/60" />
+        </TransitionChild>
+
+        <div class="fixed inset-0 flex items-center justify-center p-4">
+          <TransitionChild
+            as="template"
+            enter="ease-out duration-200"
+            enter-from="opacity-0 scale-95"
+            enter-to="opacity-100 scale-100"
+            leave="ease-in duration-150"
+            leave-from="opacity-100 scale-100"
+            leave-to="opacity-0 scale-95"
+          >
+            <DialogPanel class="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-panel">
+              <div class="space-y-2">
+                <DialogTitle class="font-display text-base text-text">Clear Managed States</DialogTitle>
+                <p class="text-sm text-muted">
+                  Clear all managed Vegas states now? This is the manual reset control for managed states.
+                </p>
+                <p v-if="vegasStateError" class="text-xs text-negative">
+                  {{ vegasStateError }}
+                </p>
+              </div>
+
+              <div class="mt-5 flex items-center justify-end gap-2">
+                <button
+                  class="rounded-md border border-border bg-panel px-3 py-1.5 text-sm text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+                  type="button"
+                  :disabled="isClearingVegasState"
+                  @click="closeClearVegasStateModal"
+                >
+                  Cancel
+                </button>
+                <button
+                  class="rounded-md border border-negative/50 bg-negative/10 px-3 py-1.5 text-sm text-negative transition-colors hover:border-negative hover:bg-negative/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  type="button"
+                  :disabled="isClearingVegasState"
+                  @click="confirmClearVegasState"
+                >
+                  {{ isClearingVegasState ? "Clearing..." : "Clear Managed States" }}
+                </button>
+              </div>
+            </DialogPanel>
+          </TransitionChild>
+        </div>
+      </Dialog>
+    </TransitionRoot>
   </div>
 </template>
 
 <script setup lang="ts">
+import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from "@headlessui/vue";
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from "vue";
 import BaseBadge from "@/components/BaseBadge.vue";
 import BaseCard from "@/components/BaseCard.vue";
@@ -750,6 +810,7 @@ const stateConfig = ref<StateManagerConfig>({
 const isSavingStateConfig = ref(false);
 const stateConfigError = ref("");
 const isClearingVegasState = ref(false);
+const showClearVegasStateModal = ref(false);
 const vegasStateError = ref("");
 const leftPanelRef = ref<HTMLElement | null>(null);
 const leftPanelScrollTop = ref(0);
@@ -760,17 +821,22 @@ const logOverlayAutoScroll = ref(true);
 
 const scanButtonLabel = computed(() => {
   if (!automationStateReady.value) return "Checking automation...";
-  if (store.isScanning) return "Scanning...";
+  if (store.isScanning) return "Stop Scan";
   if (automationIsRunning.value) return "managed by agent";
   return "Run Scan Once";
 });
 
-const isScanDisabled = computed(
-  () => !automationStateReady.value || store.isScanning || automationIsRunning.value,
-);
+const isScanDisabled = computed(() => {
+  if (store.isScanning) return false;
+  return !automationStateReady.value || automationIsRunning.value;
+});
 
 const handleScan = () => {
   if (isScanDisabled.value) return;
+  if (store.isScanning) {
+    void store.stopScan();
+    return;
+  }
   void store.runScan();
 };
 
@@ -801,16 +867,24 @@ const handleExport = () => {
   void store.exportScanResults();
 };
 
-const handleClearVegasState = async () => {
+const handleClearVegasState = () => {
   if (isClearingVegasState.value) return;
-  const confirmed = window.confirm(
-    "Clear all managed Vegas states now? This is the manual reset control for managed states.",
-  );
-  if (!confirmed) return;
+  vegasStateError.value = "";
+  showClearVegasStateModal.value = true;
+};
+
+const closeClearVegasStateModal = () => {
+  if (isClearingVegasState.value) return;
+  showClearVegasStateModal.value = false;
+};
+
+const confirmClearVegasState = async () => {
+  if (isClearingVegasState.value) return;
   isClearingVegasState.value = true;
   vegasStateError.value = "";
   try {
     await store.clearVegasState();
+    showClearVegasStateModal.value = false;
   } catch (err) {
     vegasStateError.value = err instanceof Error ? err.message : "Failed to clear managed states.";
   } finally {
@@ -1079,6 +1153,12 @@ const formatLogMessage = (log: ScannerLog, withPrompt = false) => {
         break;
       case "scan_fetch_failed":
         message = `  ✗ Failed to fetch ${asText(data.source)} data for ${asText(data.interval)}. Skipping.`;
+        break;
+      case "scan_cancel_requested":
+        message = "Cancellation requested. Stopping current EMA scan...";
+        break;
+      case "scan_cancelled":
+        message = "EMA scan cancelled.";
         break;
       case "scan_no_price":
         message = `  ⚠ Skipping ${asText(data.interval)}: Current price is NaN/None.`;

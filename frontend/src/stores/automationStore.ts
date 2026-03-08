@@ -203,6 +203,12 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
       const signals = typeof detail.signals === "number" ? detail.signals : null;
       return signals !== null ? `EMA scan finished · ${signals} signals` : "EMA scan finished";
     }
+    if (data.event === "scan_cancel_requested") {
+      return "EMA scan cancel requested";
+    }
+    if (data.event === "scan_cancelled") {
+      return "EMA scan cancelled";
+    }
     if (data.event === "state_processed") {
       const signals = typeof detail.signals === "number" ? detail.signals : null;
       const events = typeof detail.events === "number" ? detail.events : null;

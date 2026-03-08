@@ -10,6 +10,10 @@ from app.application.ema_scanner.dependencies import (
     get_ema_scan_runner,
 )
 from app.application.ema_scanner.runner import EmaConfigLoadError, EmaScanRunError
+from app.application.ema_scanner.runner import (
+    EmaScanAlreadyRunningError,
+    EmaScanCancelledError,
+)
 from app.application.ema_state_manager.dependencies import (
     get_ema_state_config_service,
     get_ema_state_manager_service,
@@ -100,6 +104,16 @@ class EmaScanDeletePayload(BaseModel):
 
 class EmaScanDeleteResponse(BaseModel):
     data: EmaScanDeletePayload
+    meta: Optional[ApiMeta] = None
+
+
+class EmaScanControlPayload(BaseModel):
+    running: bool
+    stop_requested: bool = False
+
+
+class EmaScanControlResponse(BaseModel):
+    data: EmaScanControlPayload
     meta: Optional[ApiMeta] = None
 
 
@@ -463,6 +477,10 @@ async def run_scan(request: Request) -> EmaScanResultsResponse:
         )
     except EmaConfigLoadError as exc:
         raise HTTPException(status_code=500, detail="Failed to load EMA scanner config") from exc
+    except EmaScanAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EmaScanCancelledError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except EmaScanRunError as exc:
@@ -470,5 +488,27 @@ async def run_scan(request: Request) -> EmaScanResultsResponse:
 
     return EmaScanResultsResponse(
         data=EmaScanResults(results=response_payload),
+        meta=_meta(request),
+    )
+
+
+@router.post("/stop", response_model=EmaScanControlResponse)
+async def stop_scan(request: Request) -> EmaScanControlResponse:
+    runner = get_ema_scan_runner()
+    was_running = runner.is_running()
+    stop_requested = runner.cancel_active_scan()
+
+    if stop_requested:
+        await _emit_log(
+            request,
+            "scan_cancel_requested",
+            {"running": was_running},
+        )
+
+    return EmaScanControlResponse(
+        data=EmaScanControlPayload(
+            running=runner.is_running(),
+            stop_requested=stop_requested,
+        ),
         meta=_meta(request),
     )

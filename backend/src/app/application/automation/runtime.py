@@ -43,6 +43,7 @@ class AutomationRuntimeConfig:
     quant_interval_seconds: int = 60
     provider: Optional[str] = None
     model: Optional[str] = None
+    include_entry_timing_15m_chart: bool = False
     vegas_prompt_configs: Optional[dict[str, int]] = None
     session_id: Optional[str] = None
 
@@ -78,6 +79,7 @@ class AutomationRuntime:
                 template_map=normalized.vegas_prompt_configs,
                 llm_model=normalized.model,
                 llm_provider=normalized.provider,
+                include_entry_timing_15m_chart=normalized.include_entry_timing_15m_chart,
                 session_id=session_id,
             )
             await self._scheduler.start()
@@ -112,6 +114,7 @@ class AutomationRuntime:
             "quant_interval_seconds": self._config.quant_interval_seconds,
             "provider": self._config.provider,
             "model": self._config.model,
+            "include_entry_timing_15m_chart": self._config.include_entry_timing_15m_chart,
             "vegas_prompt_configs": self._config.vegas_prompt_configs,
             "started_at": _format_dt(self._started_at),
             "current_cycle": ema_cycles,
@@ -211,6 +214,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
     mode = normalize_execution_mode(config.execution_mode).value
     provider = config.provider.strip() if config.provider else None
     model = config.model.strip() if config.model else None
+    include_entry_timing_15m_chart = bool(config.include_entry_timing_15m_chart)
     prompt_map = _normalize_prompt_map(config.vegas_prompt_configs)
 
     return AutomationRuntimeConfig(
@@ -219,6 +223,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
         quant_interval_seconds=max(1, int(config.quant_interval_seconds)),
         provider=provider or None,
         model=model or None,
+        include_entry_timing_15m_chart=include_entry_timing_15m_chart,
         vegas_prompt_configs=prompt_map,
         session_id=config.session_id or None,
     )

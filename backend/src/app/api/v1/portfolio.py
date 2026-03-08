@@ -1,12 +1,14 @@
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.monitored_assets.dependencies import get_monitored_assets_service
-from app.common.api import ApiMeta
+from app.common.api import ApiErrorDetail, ApiErrorResponse, ApiMeta
 from app.domain.portfolio.models import (
     ExchangeAccount,
     AccountState,
@@ -14,6 +16,9 @@ from app.domain.portfolio.models import (
     PortfolioSnapshot,
     DailyPnlSnapshot,
 )
+from app.infrastructure.exchange.ccxt_connector import is_retryable_exchange_error
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -129,13 +134,38 @@ def _meta(request: Request) -> ApiMeta:
     return ApiMeta(request_id=getattr(request.state, "request_id", None))
 
 
+def _exchange_unavailable_response(request: Request) -> JSONResponse:
+    payload = ApiErrorResponse(
+        error=ApiErrorDetail(
+            code="exchange_unavailable",
+            message="Exchange temporarily unavailable. Please retry shortly.",
+            details={"retryable": True},
+        ),
+        meta=_meta(request),
+    )
+    return JSONResponse(
+        status_code=503,
+        content=payload.model_dump(),
+        headers={"Retry-After": "2"},
+    )
+
+
 @router.get("/snapshot", response_model=PortfolioSnapshotDataResponse)
-async def get_portfolio_snapshot(request: Request) -> PortfolioSnapshotDataResponse:
+async def get_portfolio_snapshot(request: Request) -> PortfolioSnapshotDataResponse | JSONResponse:
     service = get_portfolio_service()
     try:
         snapshot = await service.get_portfolio_snapshot()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        if is_retryable_exchange_error(exc):
+            logger.warning(
+                "Portfolio snapshot unavailable due to transient exchange error request_id=%s error=%s",
+                getattr(request.state, "request_id", None),
+                exc,
+            )
+            return _exchange_unavailable_response(request)
+        raise
     try:
         assets_service = get_monitored_assets_service()
         await assets_service.sync_positions(snapshot.positions)

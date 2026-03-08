@@ -54,6 +54,7 @@ export type AutomationStatePayload = {
   session_id?: string | null;
   started_at?: string | null;
   last_cycle_at?: string | null;
+  include_entry_timing_15m_chart?: boolean;
   circuitBreakerTriggered?: boolean;
   circuit_breaker_triggered?: boolean;
   circuitBreakerReason?: string | null;

@@ -260,6 +260,8 @@ const defaultDynamicSources: DynamicSources = {
   ai300: { enabled: false, limit: 20, level: "" },
   oi_top: { enabled: false, limit: 20, duration: "1h" },
   oi_low: { enabled: false, limit: 20, duration: "1h" },
+  netflow_top: { enabled: false, limit: 20, duration: "1h" },
+  netflow_low: { enabled: false, limit: 20, duration: "1h" },
 };
 
 const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
@@ -267,6 +269,8 @@ const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
   ai300: { ...defaultDynamicSources.ai300, ...(value?.ai300 || {}) },
   oi_top: { ...defaultDynamicSources.oi_top, ...(value?.oi_top || {}) },
   oi_low: { ...defaultDynamicSources.oi_low, ...(value?.oi_low || {}) },
+  netflow_top: { ...defaultDynamicSources.netflow_top, ...(value?.netflow_top || {}) },
+  netflow_low: { ...defaultDynamicSources.netflow_low, ...(value?.netflow_low || {}) },
 });
 
 const assets = ref<string[]>([]);

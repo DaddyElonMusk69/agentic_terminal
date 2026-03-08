@@ -33,6 +33,7 @@ type RealtimeEnvelope<T = unknown> = {
 
 const socketClient = createEmaSocket();
 let socketExchangeId = "";
+let activeScanAbortController: AbortController | null = null;
 
 const MAX_LOG_ENTRIES = 200;
 const EMA_LOG_TOPIC = "scanner.ema.log";
@@ -139,8 +140,14 @@ export const useScannerEmaStore = defineStore("scannerEma", {
       this.lastUpdated = null;
       this.selectedDate = null;
 
+      const controller = new AbortController();
+      activeScanAbortController = controller;
+
       try {
-        const response = await fetch("/api/v1/scanner/ema/run", { method: "POST" });
+        const response = await fetch("/api/v1/scanner/ema/run", {
+          method: "POST",
+          signal: controller.signal,
+        });
         const data = await parseResponse<EmaScannerRunPayload>(response);
         if (!response.ok) {
           const message = resolveError(data, "EMA scan failed.");
@@ -150,8 +157,41 @@ export const useScannerEmaStore = defineStore("scannerEma", {
         this.setResults(data.data?.results || []);
         await this.loadCalendar();
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          this.appendLog({ event: "scan_cancelled", data: { reason: "client_abort" } });
+          return;
+        }
         const message = error instanceof Error ? error.message : "EMA scan failed.";
         this.appendLog({ event: "scan_error", data: { error: message } });
+      } finally {
+        if (activeScanAbortController === controller) {
+          activeScanAbortController = null;
+        }
+        this.isScanning = false;
+      }
+    },
+    async stopScan(): Promise<boolean> {
+      if (activeScanAbortController) {
+        activeScanAbortController.abort();
+        activeScanAbortController = null;
+      }
+
+      try {
+        const response = await fetch("/api/v1/scanner/ema/stop", { method: "POST" });
+        const data = await parseResponse<{ running: boolean; stop_requested: boolean }>(response);
+        if (!response.ok) {
+          const message = resolveError(data, "Failed to stop EMA scan.");
+          this.appendLog({ event: "scan_error", data: { error: message } });
+          return false;
+        }
+        if (data.data?.stop_requested) {
+          this.appendLog({ event: "scan_cancel_requested", data: { running: data.data.running } });
+        }
+        return Boolean(data.data?.stop_requested);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to stop EMA scan.";
+        this.appendLog({ event: "scan_error", data: { error: message } });
+        return false;
       } finally {
         this.isScanning = false;
       }
@@ -240,7 +280,10 @@ export const useScannerEmaStore = defineStore("scannerEma", {
         );
 
       const isScanStart = payload.event === "scan_init" || payload.event === "cycle_start";
-      const isScanEnd = payload.event === "scan_finished" || payload.event === "scan_empty_config";
+      const isScanEnd =
+        payload.event === "scan_finished" ||
+        payload.event === "scan_empty_config" ||
+        payload.event === "scan_cancelled";
       const hasSymbol = typeof data.symbol === "string" && data.symbol.trim().length > 0;
       const isTerminalError = payload.event === "scan_error" && !hasSymbol;
 

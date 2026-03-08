@@ -32,6 +32,8 @@ DEFAULT_SOURCES: Dict[str, Dict[str, Any]] = {
     "ai300": {"enabled": False, "limit": 20, "level": ""},
     "oi_top": {"enabled": False, "limit": 20, "duration": "1h"},
     "oi_low": {"enabled": False, "limit": 20, "duration": "1h"},
+    "netflow_top": {"enabled": False, "limit": 20, "duration": "1h"},
+    "netflow_low": {"enabled": False, "limit": 20, "duration": "1h"},
 }
 
 
@@ -322,7 +324,7 @@ def _strip_ai_sources_if_custom(
     if oi_source != "custom":
         return sources
     stripped = {key: dict(value) for key, value in sources.items()}
-    for key in ("ai500", "ai300"):
+    for key in ("ai500", "ai300", "netflow_top", "netflow_low"):
         if key in stripped:
             stripped[key]["enabled"] = False
     return stripped

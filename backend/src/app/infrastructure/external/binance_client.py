@@ -31,6 +31,9 @@ class BinanceClient:
     BASE_URL = "https://fapi.binance.com"
     DATA_URL = "https://fapi.binance.com/futures/data"
     DEFAULT_TIMEOUT = 10
+    DEFAULT_HTTP_POOL_TIMEOUT = 30.0
+    DEFAULT_HTTP_MAX_KEEPALIVE_CONNECTIONS = 20
+    DEFAULT_HTTP_MAX_CONNECTIONS = 100
     MAX_KLINES_LIMIT = 1500
     DEFAULT_MAX_RPS = 5
     DEFAULT_MAX_CONCURRENCY = 2
@@ -62,21 +65,42 @@ class BinanceClient:
     _retry_max_delay = DEFAULT_RETRY_MAX_DELAY
     _retry_jitter = DEFAULT_RETRY_JITTER
     _rate_limit_backoff = DEFAULT_RATE_LIMIT_BACKOFF
+    _http_timeout_seconds = float(DEFAULT_TIMEOUT)
+    _http_pool_timeout_seconds = DEFAULT_HTTP_POOL_TIMEOUT
+    _http_max_keepalive_connections = DEFAULT_HTTP_MAX_KEEPALIVE_CONNECTIONS
+    _http_max_connections = DEFAULT_HTTP_MAX_CONNECTIONS
 
-    def __init__(self, timeout: int = DEFAULT_TIMEOUT) -> None:
-        self._timeout = timeout
+    def __init__(self, timeout: Optional[float] = None) -> None:
+        self._ensure_rate_config()
+        self._timeout = _resolve_timeout(timeout, self._http_timeout_seconds)
         self._last_error: Optional[str] = None
         verify = False if _allow_insecure_ssl() else certifi.where()
+        timeout_config = httpx.Timeout(
+            connect=self._timeout,
+            read=self._timeout,
+            write=self._timeout,
+            pool=self._http_pool_timeout_seconds,
+        )
         self._client = httpx.Client(
-            timeout=self._timeout,
+            timeout=timeout_config,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "TradingDashboard/1.0",
             },
-            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+            limits=httpx.Limits(
+                max_keepalive_connections=self._http_max_keepalive_connections,
+                max_connections=self._http_max_connections,
+            ),
             verify=verify,
         )
-        self._ensure_rate_config()
+        logger.debug(
+            "BinanceClient initialized timeout=%.2fs pool_timeout=%.2fs max_connections=%s keepalive=%s max_concurrency=%s",
+            self._timeout,
+            self._http_pool_timeout_seconds,
+            self._http_max_connections,
+            self._http_max_keepalive_connections,
+            self._max_concurrency,
+        )
 
     def fetch_candles(
         self,
@@ -339,47 +363,50 @@ class BinanceClient:
                 with self._concurrency_sem:
                     self._throttle()
                     response = self._client.get(url, params=params)
-                payload = response.text
-                if response.status_code != 200:
-                    self._last_error = f"http {response.status_code}"
-                    retryable = _is_retryable_http(response.status_code)
-                    logger.warning(
-                        "Binance API HTTP error %s for %s params=%s payload=%s",
-                        response.status_code,
-                        url,
-                        params,
-                        payload[:200],
-                    )
-                    if retryable and attempt < max_attempts:
-                        delay = self._retry_delay(
-                            attempt,
-                            is_rate_limit=response.status_code in {418, 429},
-                        )
-                        time.sleep(delay)
-                        continue
-                    return None
-                data = json.loads(payload)
-                if isinstance(data, dict) and "code" in data:
-                    code = data.get("code")
-                    message = data.get("msg", "unknown error")
-                    if code == -1121:
-                        self._last_error = "invalid symbol"
-                        logger.debug("Binance API invalid symbol: %s params=%s", message, params)
-                        return None
-                    if code == -1003 and attempt < max_attempts:
-                        delay = self._retry_delay(attempt, is_rate_limit=True)
+                try:
+                    payload = response.text
+                    if response.status_code != 200:
+                        self._last_error = f"http {response.status_code}"
+                        retryable = _is_retryable_http(response.status_code)
                         logger.warning(
-                            "Binance API rate limit (code %s). Retrying in %.2fs params=%s",
-                            code,
-                            delay,
+                            "Binance API HTTP error %s for %s params=%s payload=%s",
+                            response.status_code,
+                            url,
                             params,
+                            payload[:200],
                         )
-                        time.sleep(delay)
-                        continue
-                    self._last_error = f"api error {code}: {message}"
-                    logger.warning("Binance API error: %s params=%s", message, params)
-                    return None
-                return data
+                        if retryable and attempt < max_attempts:
+                            delay = self._retry_delay(
+                                attempt,
+                                is_rate_limit=response.status_code in {418, 429},
+                            )
+                            time.sleep(delay)
+                            continue
+                        return None
+                    data = json.loads(payload)
+                    if isinstance(data, dict) and "code" in data:
+                        code = data.get("code")
+                        message = data.get("msg", "unknown error")
+                        if code == -1121:
+                            self._last_error = "invalid symbol"
+                            logger.debug("Binance API invalid symbol: %s params=%s", message, params)
+                            return None
+                        if code == -1003 and attempt < max_attempts:
+                            delay = self._retry_delay(attempt, is_rate_limit=True)
+                            logger.warning(
+                                "Binance API rate limit (code %s). Retrying in %.2fs params=%s",
+                                code,
+                                delay,
+                                params,
+                            )
+                            time.sleep(delay)
+                            continue
+                        self._last_error = f"api error {code}: {message}"
+                        logger.warning("Binance API error: %s params=%s", message, params)
+                        return None
+                    return data
+                finally:
+                    response.close()
             except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError, httpx.RequestError, IncompleteRead, TimeoutError) as exc:
                 details = str(exc).strip()
                 if details:
@@ -431,10 +458,35 @@ class BinanceClient:
         if cls._rate_configured:
             return
         settings = get_settings()
+        cls._http_timeout_seconds = _resolve_timeout(
+            getattr(settings, "binance_http_timeout_seconds", cls.DEFAULT_TIMEOUT),
+            cls.DEFAULT_TIMEOUT,
+        )
+        cls._http_pool_timeout_seconds = _resolve_timeout(
+            getattr(settings, "binance_http_pool_timeout_seconds", cls.DEFAULT_HTTP_POOL_TIMEOUT),
+            cls.DEFAULT_HTTP_POOL_TIMEOUT,
+        )
+        cls._http_max_connections = max(
+            1,
+            int(getattr(settings, "binance_http_max_connections", cls.DEFAULT_HTTP_MAX_CONNECTIONS)),
+        )
+        cls._http_max_keepalive_connections = max(
+            1,
+            int(
+                getattr(
+                    settings,
+                    "binance_http_max_keepalive_connections",
+                    cls.DEFAULT_HTTP_MAX_KEEPALIVE_CONNECTIONS,
+                )
+            ),
+        )
         cls._max_rps = max(1, int(getattr(settings, "binance_max_requests_per_second", cls.DEFAULT_MAX_RPS)))
         cls._max_concurrency = max(
             1, int(getattr(settings, "binance_max_concurrency", cls.DEFAULT_MAX_CONCURRENCY))
         )
+        cls._http_max_connections = max(cls._http_max_connections, cls._max_concurrency)
+        if cls._http_max_keepalive_connections > cls._http_max_connections:
+            cls._http_max_keepalive_connections = cls._http_max_connections
         cls._retry_count = max(0, int(getattr(settings, "binance_retry_count", cls.DEFAULT_RETRY_COUNT)))
         cls._retry_base_delay = float(
             getattr(settings, "binance_retry_base_delay", cls.DEFAULT_RETRY_BASE_DELAY)
@@ -529,3 +581,12 @@ def _clamp_int(value: Any, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return minimum
     return max(minimum, min(numeric, maximum))
+
+
+def _resolve_timeout(value: Any, default: float) -> float:
+    try:
+        if value is None:
+            raise ValueError("missing timeout")
+        return max(1.0, float(value))
+    except (TypeError, ValueError):
+        return max(1.0, float(default))

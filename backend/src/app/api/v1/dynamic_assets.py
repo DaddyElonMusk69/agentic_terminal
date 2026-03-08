@@ -33,6 +33,8 @@ class DynamicSources(BaseModel):
     ai300: Ai300Source = Field(default_factory=Ai300Source)
     oi_top: OiSource = Field(default_factory=OiSource)
     oi_low: OiSource = Field(default_factory=OiSource)
+    netflow_top: OiSource = Field(default_factory=OiSource)
+    netflow_low: OiSource = Field(default_factory=OiSource)
 
 
 class DynamicAssetsConfigPayload(BaseModel):

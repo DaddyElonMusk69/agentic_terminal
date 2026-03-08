@@ -189,6 +189,27 @@
                 </select>
               </label>
 
+              <label
+                class="flex items-center justify-between rounded-md border border-border bg-panel/50 px-3 py-2 text-[11px] text-muted"
+              >
+                <div>
+                  <div class="text-text">Add 15m Entry Timing Chart</div>
+                  <div class="text-[10px] text-muted">
+                    Applies to entry-related prompts only.
+                  </div>
+                </div>
+                <input
+                  v-model="automationConfig.include_entry_timing_15m_chart"
+                  type="checkbox"
+                  @change="
+                    updateConfigPersisted({
+                      include_entry_timing_15m_chart:
+                        automationConfig.include_entry_timing_15m_chart,
+                    })
+                  "
+                />
+              </label>
+
               <div class="space-y-2">
                 <div class="text-[10px] uppercase tracking-wide text-muted">
                   Vegas Prompt Mapping
@@ -1328,6 +1349,32 @@
                           >{{ detailText(log) }}</pre>
                         </div>
                       </div>
+                      <div
+                        v-if="sessionDetail.logs.length > 0"
+                        class="mt-2 flex items-center justify-between text-[10px] text-muted"
+                      >
+                        <span>
+                          Page {{ sessionLogPage }} · {{ sessionDetail.logs.length }} entries
+                        </span>
+                        <div class="flex items-center gap-2">
+                          <button
+                            class="rounded-md border border-border bg-panel px-2 py-1 text-[10px] text-muted hover:text-text disabled:opacity-50"
+                            type="button"
+                            :disabled="sessionDetailLoading || sessionLogPage === 1"
+                            @click="changeSessionLogPage(sessionLogPage - 1)"
+                          >
+                            Prev
+                          </button>
+                          <button
+                            class="rounded-md border border-border bg-panel px-2 py-1 text-[10px] text-muted hover:text-text disabled:opacity-50"
+                            type="button"
+                            :disabled="sessionDetailLoading || !sessionLogHasMore"
+                            @click="changeSessionLogPage(sessionLogPage + 1)"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
                     </div>
                     <div v-else class="space-y-2">
                       <div
@@ -1535,6 +1582,7 @@ type AutomationConfig = {
   model: string;
   ema_interval_seconds: number;
   quant_interval_seconds: number;
+  include_entry_timing_15m_chart: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
 };
 
@@ -1544,6 +1592,7 @@ type AutomationConfigPayload = {
   model?: string | null;
   ema_interval_seconds?: number;
   quant_interval_seconds?: number;
+  include_entry_timing_15m_chart?: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
 };
 
@@ -1614,6 +1663,7 @@ const automationConfigDefaults: AutomationConfig = {
   model: "",
   ema_interval_seconds: 60,
   quant_interval_seconds: 60,
+  include_entry_timing_15m_chart: false,
   vegas_prompt_configs: {},
 };
 
@@ -2350,6 +2400,7 @@ const buildAutomationConfigPayload = () => ({
   quant_interval_seconds: automationConfig.value.quant_interval_seconds,
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
+  include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
   vegas_prompt_configs: automationConfig.value.vegas_prompt_configs || null,
 });
 
@@ -2370,6 +2421,9 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   }
   if (typeof payload.quant_interval_seconds === "number") {
     updates.quant_interval_seconds = payload.quant_interval_seconds;
+  }
+  if (typeof payload.include_entry_timing_15m_chart === "boolean") {
+    updates.include_entry_timing_15m_chart = payload.include_entry_timing_15m_chart;
   }
   if ("provider" in payload) {
     updates.provider = payload.provider ? String(payload.provider) : "";
@@ -2659,6 +2713,7 @@ const startAutomation = async () => {
         model: automationConfig.value.model,
         ema_interval_seconds: automationConfig.value.ema_interval_seconds,
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
+        include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
         vegas_prompt_configs: automationConfig.value.vegas_prompt_configs || null,
       }),
     });

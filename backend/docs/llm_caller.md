@@ -70,6 +70,10 @@ Environment variables (see `.env.example`):
 - `BACKEND_CODEX_TEMP_IMAGE_TTL_MINUTES` (default `60`)
 - `BACKEND_CODEX_TEMP_IMAGE_SWEEP_INTERVAL_SECONDS` (default `600`)
 
+Notes:
+- Relative `BACKEND_CODEX_TEMP_IMAGE_PATH` values are resolved from the backend root directory (not process cwd).
+- Legacy `backend/...` paths are still recognized for sweep/delete compatibility.
+
 ## CLI Usage
 Call the model with a prompt file:
 

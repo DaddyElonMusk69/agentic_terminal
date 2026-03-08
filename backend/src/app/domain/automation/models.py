@@ -10,6 +10,7 @@ class AutomationConfig:
     quant_interval_seconds: int
     provider: Optional[str]
     model: Optional[str]
+    include_entry_timing_15m_chart: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

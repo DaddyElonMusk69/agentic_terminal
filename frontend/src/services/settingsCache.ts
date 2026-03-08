@@ -3,6 +3,8 @@ export type DynamicSources = {
   ai300: { enabled: boolean; limit: number; level?: string };
   oi_top: { enabled: boolean; limit: number; duration: string };
   oi_low: { enabled: boolean; limit: number; duration: string };
+  netflow_top: { enabled: boolean; limit: number; duration: string };
+  netflow_low: { enabled: boolean; limit: number; duration: string };
 };
 
 export type MarketCacheData = {
@@ -91,11 +93,22 @@ const cloneProviders = (list: ProviderInfo[]) =>
     settings: provider.settings ? { ...provider.settings } : null,
   }));
 
-const cloneDynamicSources = (sources: DynamicSources): DynamicSources => ({
-  ai500: { ...sources.ai500 },
-  ai300: { ...sources.ai300 },
-  oi_top: { ...sources.oi_top },
-  oi_low: { ...sources.oi_low },
+const defaultDynamicSources: DynamicSources = {
+  ai500: { enabled: false, limit: 10 },
+  ai300: { enabled: false, limit: 20, level: "" },
+  oi_top: { enabled: false, limit: 20, duration: "1h" },
+  oi_low: { enabled: false, limit: 20, duration: "1h" },
+  netflow_top: { enabled: false, limit: 20, duration: "1h" },
+  netflow_low: { enabled: false, limit: 20, duration: "1h" },
+};
+
+const cloneDynamicSources = (sources: Partial<DynamicSources> | DynamicSources): DynamicSources => ({
+  ai500: { ...defaultDynamicSources.ai500, ...(sources?.ai500 || {}) },
+  ai300: { ...defaultDynamicSources.ai300, ...(sources?.ai300 || {}) },
+  oi_top: { ...defaultDynamicSources.oi_top, ...(sources?.oi_top || {}) },
+  oi_low: { ...defaultDynamicSources.oi_low, ...(sources?.oi_low || {}) },
+  netflow_top: { ...defaultDynamicSources.netflow_top, ...(sources?.netflow_top || {}) },
+  netflow_low: { ...defaultDynamicSources.netflow_low, ...(sources?.netflow_low || {}) },
 });
 
 const cloneMarketCache = (data: MarketCacheData): MarketCacheData => ({

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -22,6 +23,14 @@ class EmaConfigLoadError(RuntimeError):
 
 
 class EmaScanRunError(RuntimeError):
+    pass
+
+
+class EmaScanAlreadyRunningError(RuntimeError):
+    pass
+
+
+class EmaScanCancelledError(RuntimeError):
     pass
 
 
@@ -71,8 +80,33 @@ class EmaScanRunner:
         self._state_service = state_service
         self._portfolio_service = portfolio_service
         self._cycle_number = 0
+        self._run_lock = asyncio.Lock()
+        self._active_task: asyncio.Task | None = None
 
     async def run_scan(
+        self,
+        log_callback: Optional[LogCallback] = None,
+        state_callback: Optional[StateCallback] = None,
+    ) -> List[dict]:
+        if self._run_lock.locked():
+            raise EmaScanAlreadyRunningError("EMA scan is already running")
+
+        async with self._run_lock:
+            current = asyncio.current_task()
+            self._active_task = current
+            try:
+                return await self._run_scan_inner(log_callback=log_callback, state_callback=state_callback)
+            except asyncio.CancelledError as exc:
+                await _emit_log(
+                    log_callback,
+                    "scan_cancelled",
+                    {"reason": "cancel_requested"},
+                )
+                raise EmaScanCancelledError("EMA scan cancelled") from exc
+            finally:
+                self._active_task = None
+
+    async def _run_scan_inner(
         self,
         log_callback: Optional[LogCallback] = None,
         state_callback: Optional[StateCallback] = None,
@@ -194,6 +228,16 @@ class EmaScanRunner:
                 )
                 response_payload = results
         return response_payload
+
+    def is_running(self) -> bool:
+        return bool(self._active_task and not self._active_task.done())
+
+    def cancel_active_scan(self) -> bool:
+        task = self._active_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     async def _fetch_positions(self) -> List[PositionSnapshot]:
         try:

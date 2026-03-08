@@ -62,6 +62,26 @@ class NofXOSDynamicAssetsClient:
                         duration=sources["oi_low"].get("duration", "1h"),
                     )
                 )
+            if sources.get("netflow_top", {}).get("enabled"):
+                tasks.append(
+                    self._fetch_netflow_ranking(
+                        client,
+                        api_key,
+                        ranking_type="top",
+                        limit=int(sources["netflow_top"].get("limit", 20)),
+                        duration=sources["netflow_top"].get("duration", "1h"),
+                    )
+                )
+            if sources.get("netflow_low", {}).get("enabled"):
+                tasks.append(
+                    self._fetch_netflow_ranking(
+                        client,
+                        api_key,
+                        ranking_type="low",
+                        limit=int(sources["netflow_low"].get("limit", 20)),
+                        duration=sources["netflow_low"].get("duration", "1h"),
+                    )
+                )
 
             if not tasks:
                 return []
@@ -116,22 +136,29 @@ class NofXOSDynamicAssetsClient:
         params = self._auth_params(api_key)
         params.update({"limit": limit, "duration": duration})
         data = await self._get_json(client, url, params)
-        if not data:
-            return []
-        payload = data.get("data", {}) if isinstance(data, dict) else {}
-        positions = payload.get("positions", []) if isinstance(payload, dict) else []
-        # Sort by explicit rank field if present, otherwise preserve API order
-        ranked = []
-        for item in positions:
-            if not isinstance(item, dict):
-                continue
-            symbol = item.get("symbol", "")
-            cleaned = self._clean_symbol(symbol)
-            if cleaned:
-                rank = item.get("rank")
-                ranked.append((rank if isinstance(rank, (int, float)) else float("inf"), cleaned))
-        ranked.sort(key=lambda x: x[0])
-        return _dedup_preserve_order([symbol for _, symbol in ranked])
+        return self._parse_ranking_assets(data)
+
+    async def _fetch_netflow_ranking(
+        self,
+        client: httpx.AsyncClient,
+        api_key: Optional[str],
+        ranking_type: str,
+        limit: int,
+        duration: str,
+    ) -> List[str]:
+        endpoint = "top-ranking" if ranking_type == "top" else "low-ranking"
+        url = f"{self._base_url}/netflow/{endpoint}"
+        params = self._auth_params(api_key)
+        params.update(
+            {
+                "limit": limit,
+                "duration": duration,
+                "type": "institution",
+                "trade": "future",
+            }
+        )
+        data = await self._get_json(client, url, params)
+        return self._parse_ranking_assets(data)
 
     async def _get_json(
         self,
@@ -179,6 +206,50 @@ class NofXOSDynamicAssetsClient:
 
         cleaned = [self._clean_symbol(a) for a in assets if a]
         return _dedup_preserve_order(cleaned)
+
+    def _parse_ranking_assets(self, data: Dict[str, Any]) -> List[str]:
+        if not isinstance(data, dict):
+            return []
+        payload = data.get("data", data)
+
+        if isinstance(payload, list):
+            return self._extract_ranked_assets(payload)
+        if not isinstance(payload, dict):
+            return []
+
+        for key in ("positions", "netflows", "rankings", "items", "rows", "coins", "list"):
+            items = payload.get(key)
+            if isinstance(items, list):
+                return self._extract_ranked_assets(items)
+        return []
+
+    def _extract_ranked_assets(self, items: List[Any]) -> List[str]:
+        ranked: List[tuple[float, int, str]] = []
+        for idx, item in enumerate(items):
+            if isinstance(item, str):
+                cleaned = self._clean_symbol(item)
+                if cleaned:
+                    ranked.append((float(idx), idx, cleaned))
+                continue
+            if not isinstance(item, dict):
+                continue
+
+            symbol = ""
+            for key in ("symbol", "pair", "coin", "asset", "baseAsset"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    symbol = value
+                    break
+            cleaned = self._clean_symbol(symbol)
+            if not cleaned:
+                continue
+
+            rank = item.get("rank")
+            rank_value = float(rank) if isinstance(rank, (int, float)) else float(idx)
+            ranked.append((rank_value, idx, cleaned))
+
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return _dedup_preserve_order([symbol for _, _, symbol in ranked])
 
     def _clean_symbol(self, symbol: str) -> str:
         value = symbol.upper().strip()

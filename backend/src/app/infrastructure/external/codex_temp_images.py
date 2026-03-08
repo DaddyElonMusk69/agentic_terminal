@@ -8,11 +8,29 @@ from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 
-def _resolve_base_path(path: str | Path) -> Path:
+def _backend_root() -> Path:
+    # backend/src/app/infrastructure/external/codex_temp_images.py -> backend/
+    return Path(__file__).resolve().parents[4]
+
+
+def _resolve_base_path(path: str | Path) -> tuple[Path, tuple[Path, ...]]:
     candidate = Path(path).expanduser()
     if candidate.is_absolute():
-        return candidate.resolve()
-    return (Path.cwd() / candidate).resolve()
+        return candidate.resolve(), tuple()
+
+    backend_root = _backend_root()
+    parts = candidate.parts
+    has_legacy_prefix = bool(parts) and parts[0] == backend_root.name
+
+    if has_legacy_prefix:
+        trimmed = Path(*parts[1:]) if len(parts) > 1 else Path()
+        canonical = (backend_root / trimmed).resolve()
+        legacy = (backend_root / candidate).resolve()
+        if legacy != canonical:
+            return canonical, (legacy,)
+        return canonical, tuple()
+
+    return (backend_root / candidate).resolve(), tuple()
 
 
 def _safe_stem(name: str) -> str:
@@ -23,11 +41,18 @@ def _safe_stem(name: str) -> str:
 
 class CodexTempImageStore:
     def __init__(self, base_path: str | Path) -> None:
-        self._base_path = _resolve_base_path(base_path)
+        resolved_base, legacy_paths = _resolve_base_path(base_path)
+        self._base_path = resolved_base
+        # Keep compatibility with earlier cwd-relative "backend/..." resolution.
+        self._managed_roots = tuple([resolved_base, *legacy_paths])
 
     @property
     def base_path(self) -> Path:
         return self._base_path
+
+    @property
+    def managed_roots(self) -> tuple[Path, ...]:
+        return self._managed_roots
 
     def save_png(self, image_bytes: bytes, name: str) -> str:
         return self.save_bytes(image_bytes, name=name, suffix=".png")
@@ -104,29 +129,38 @@ class CodexTempImageStore:
         return deleted
 
     def sweep_expired(self, ttl_minutes: int) -> int:
-        if not self._base_path.exists():
-            return 0
         ttl_seconds = max(0, int(ttl_minutes)) * 60
         cutoff_ts = time.time() - ttl_seconds
         deleted = 0
+        seen: set[str] = set()
 
-        for candidate in self._base_path.rglob("*"):
-            if not candidate.is_file():
+        for root in self._managed_roots:
+            if not root.exists():
                 continue
-            resolved = self._resolve_candidate(candidate)
-            if not resolved or not self._is_within_base(resolved):
-                continue
-            try:
-                modified_at = resolved.stat().st_mtime
-            except OSError:
-                continue
-            if modified_at > cutoff_ts:
-                continue
-            try:
-                resolved.unlink()
-                deleted += 1
-            except OSError:
-                continue
+
+            for candidate in root.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                resolved = self._resolve_candidate(candidate)
+                if not resolved or not self._is_within_base(resolved):
+                    continue
+
+                key = str(resolved)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                try:
+                    modified_at = resolved.stat().st_mtime
+                except OSError:
+                    continue
+                if modified_at > cutoff_ts:
+                    continue
+                try:
+                    resolved.unlink()
+                    deleted += 1
+                except OSError:
+                    continue
 
         return deleted
 
@@ -137,8 +171,10 @@ class CodexTempImageStore:
             return None
 
     def _is_within_base(self, path: Path) -> bool:
-        try:
-            path.relative_to(self._base_path)
-            return True
-        except ValueError:
-            return False
+        for root in self._managed_roots:
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
