@@ -10,6 +10,10 @@ from app.infrastructure.external.binance_client import BinanceClient
 
 
 LogCallback = Callable[[str, Optional[dict]], Awaitable[None] | None]
+AssetScanCallback = Callable[
+    [str, List[EmaScannerSignal], Dict[str, dict]],
+    Awaitable[None] | None,
+]
 _EMA_INTERVAL_DELAY_SEC = 0.2
 
 
@@ -21,6 +25,19 @@ async def _emit_log(
     if not log_callback:
         return
     result = log_callback(event, data)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _emit_asset_scan(
+    asset_callback: Optional[AssetScanCallback],
+    symbol: str,
+    signals: List[EmaScannerSignal],
+    charts: Dict[str, dict],
+) -> None:
+    if not asset_callback:
+        return
+    result = asset_callback(symbol, signals, charts)
     if inspect.isawaitable(result):
         await result
 
@@ -41,6 +58,7 @@ class EmaScannerService:
         config: EmaScannerConfig,
         log_callback: Optional[LogCallback] = None,
         chart_store: Optional[Dict[str, Dict[str, dict]]] = None,
+        asset_callback: Optional[AssetScanCallback] = None,
     ) -> List[EmaScannerSignal]:
         if not config.assets or not config.timeframes or not config.ema_lengths:
             return []
@@ -57,6 +75,8 @@ class EmaScannerService:
             asset_label = asset.strip().upper()
             ema_votes = 0
             bb_votes = 0
+            asset_signals: List[EmaScannerSignal] = []
+            asset_failed = False
 
             await _emit_log(
                 log_callback,
@@ -159,20 +179,20 @@ class EmaScannerService:
                                         "ema_value": ema_value,
                                     },
                                 )
-                                signals.append(
-                                    EmaScannerSignal(
-                                        symbol=symbol,
-                                        timeframe=timeframe,
-                                        indicator="EMA",
-                                        parameter=f"EMA-{length}",
-                                        value=ema_value,
-                                        price=price,
-                                        lower_bound=lower_bound,
-                                        upper_bound=upper_bound,
-                                        condition="proximity",
-                                        timestamp=timestamp,
-                                    )
+                                signal = EmaScannerSignal(
+                                    symbol=symbol,
+                                    timeframe=timeframe,
+                                    indicator="EMA",
+                                    parameter=f"EMA-{length}",
+                                    value=ema_value,
+                                    price=price,
+                                    lower_bound=lower_bound,
+                                    upper_bound=upper_bound,
+                                    condition="proximity",
+                                    timestamp=timestamp,
                                 )
+                                signals.append(signal)
+                                asset_signals.append(signal)
 
                         if len(closes) >= 20:
                             bb = _bollinger_bands(closes, length=20, std_dev=2)
@@ -192,20 +212,20 @@ class EmaScannerService:
                                 if is_near_upper or is_above_upper:
                                     bb_votes += 1
                                     interval_has_vote = True
-                                    signals.append(
-                                        EmaScannerSignal(
-                                            symbol=symbol,
-                                            timeframe=timeframe,
-                                            indicator="BB",
-                                            parameter="BB-Upper",
-                                            value=bb_upper,
-                                            price=price,
-                                            lower_bound=upper_lower_bound,
-                                            upper_bound=upper_upper_bound,
-                                            condition="breakout" if is_above_upper else "proximity",
-                                            timestamp=timestamp,
-                                        )
+                                    signal = EmaScannerSignal(
+                                        symbol=symbol,
+                                        timeframe=timeframe,
+                                        indicator="BB",
+                                        parameter="BB-Upper",
+                                        value=bb_upper,
+                                        price=price,
+                                        lower_bound=upper_lower_bound,
+                                        upper_bound=upper_upper_bound,
+                                        condition="breakout" if is_above_upper else "proximity",
+                                        timestamp=timestamp,
                                     )
+                                    signals.append(signal)
+                                    asset_signals.append(signal)
 
                                 distance_lower = abs(price - bb_lower)
                                 is_near_lower = distance_lower <= lower_tolerance
@@ -213,20 +233,20 @@ class EmaScannerService:
                                 if is_near_lower or is_below_lower:
                                     bb_votes += 1
                                     interval_has_vote = True
-                                    signals.append(
-                                        EmaScannerSignal(
-                                            symbol=symbol,
-                                            timeframe=timeframe,
-                                            indicator="BB",
-                                            parameter="BB-Lower",
-                                            value=bb_lower,
-                                            price=price,
-                                            lower_bound=lower_lower_bound,
-                                            upper_bound=lower_upper_bound,
-                                            condition="breakdown" if is_below_lower else "proximity",
-                                            timestamp=timestamp,
-                                        )
+                                    signal = EmaScannerSignal(
+                                        symbol=symbol,
+                                        timeframe=timeframe,
+                                        indicator="BB",
+                                        parameter="BB-Lower",
+                                        value=bb_lower,
+                                        price=price,
+                                        lower_bound=lower_lower_bound,
+                                        upper_bound=lower_upper_bound,
+                                        condition="breakdown" if is_below_lower else "proximity",
+                                        timestamp=timestamp,
                                     )
+                                    signals.append(signal)
+                                    asset_signals.append(signal)
                         else:
                             await _emit_log(
                                 log_callback,
@@ -242,11 +262,21 @@ class EmaScannerService:
                         if _EMA_INTERVAL_DELAY_SEC > 0:
                             await asyncio.sleep(_EMA_INTERVAL_DELAY_SEC)
             except Exception as exc:
+                asset_failed = True
                 await _emit_log(
                     log_callback,
                     "scan_error",
                     {"symbol": asset_label, "error": str(exc)},
                 )
+            finally:
+                await _emit_asset_scan(
+                    asset_callback=asset_callback,
+                    symbol=symbol,
+                    signals=asset_signals,
+                    charts=dict((chart_store or {}).get(symbol, {})),
+                )
+
+            if asset_failed:
                 continue
 
             await _emit_log(

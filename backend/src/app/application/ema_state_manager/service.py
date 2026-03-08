@@ -2,7 +2,11 @@ from typing import List, Sequence
 
 from app.application.ema_state_manager.config_service import EmaStateManagerConfigService
 from app.domain.ema_scanner.models import EmaScannerSignal
-from app.domain.ema_state_manager.models import EmaStateEvent, PositionSnapshot
+from app.domain.ema_state_manager.models import (
+    EmaStateEvent,
+    EmaStateManagerConfig,
+    PositionSnapshot,
+)
 from app.domain.ema_state_manager.service import EmaStateManager
 
 
@@ -21,14 +25,24 @@ class EmaStateManagerService:
         monitored_assets: Sequence[str],
         quote_asset: str = "USDT",
         open_positions: Sequence[PositionSnapshot] | None = None,
+        update_assets: Sequence[str] | None = None,
+        prune_missing: bool = True,
+        state_config: EmaStateManagerConfig | None = None,
     ) -> List[EmaStateEvent]:
-        config = await self._config_service.get_config()
+        config = state_config or await self._config_service.get_config()
         monitored_symbols = _normalize_assets(monitored_assets, quote_asset)
+        update_symbols = (
+            _normalize_assets(update_assets, quote_asset)
+            if update_assets is not None
+            else None
+        )
         return self._state_manager.update(
             signals=signals,
             monitored_symbols=monitored_symbols,
             config=config,
             open_positions=open_positions,
+            update_symbols=update_symbols,
+            prune_missing=prune_missing,
         )
 
     async def get_config(self):

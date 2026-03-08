@@ -27,6 +27,8 @@ class EmaStateManager:
         monitored_symbols: Sequence[str],
         config: EmaStateManagerConfig,
         open_positions: Sequence[PositionSnapshot] | None = None,
+        update_symbols: Sequence[str] | None = None,
+        prune_missing: bool = True,
     ) -> List[EmaStateEvent]:
         now = datetime.now(timezone.utc)
         snapshot_symbols = {
@@ -34,13 +36,23 @@ class EmaStateManager:
             for symbol in monitored_symbols
             if symbol and _normalize_symbol(symbol)
         }
-        self._prune_states(snapshot_symbols)
+        if prune_missing:
+            self._prune_states(snapshot_symbols)
 
-        grouped_signals = _group_signals(signals, allowed_symbols=snapshot_symbols)
-        grouped_positions = _group_positions(open_positions or [], allowed_symbols=snapshot_symbols)
+        if update_symbols is None:
+            target_symbols = snapshot_symbols
+        else:
+            target_symbols = {
+                _normalize_symbol(symbol)
+                for symbol in update_symbols
+                if symbol and _normalize_symbol(symbol)
+            } & snapshot_symbols
+
+        grouped_signals = _group_signals(signals, allowed_symbols=target_symbols)
+        grouped_positions = _group_positions(open_positions or [], allowed_symbols=target_symbols)
 
         events: List[EmaStateEvent] = []
-        for symbol in sorted(snapshot_symbols):
+        for symbol in sorted(target_symbols):
             event = self._update_symbol(
                 symbol=symbol,
                 signals=grouped_signals.get(symbol, []),

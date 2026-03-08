@@ -82,6 +82,14 @@ class NofXOSDynamicAssetsClient:
                         duration=sources["netflow_low"].get("duration", "1h"),
                     )
                 )
+            if sources.get("futures_depth", {}).get("enabled"):
+                tasks.append(
+                    self._fetch_futures_depth(
+                        client,
+                        api_key,
+                        limit=int(sources["futures_depth"].get("limit", 60)),
+                    )
+                )
 
             if not tasks:
                 return []
@@ -160,6 +168,19 @@ class NofXOSDynamicAssetsClient:
         data = await self._get_json(client, url, params)
         return self._parse_ranking_assets(data)
 
+    async def _fetch_futures_depth(
+        self,
+        client: httpx.AsyncClient,
+        api_key: Optional[str],
+        limit: int,
+    ) -> List[str]:
+        url = f"{self._base_url}/heatmap/list"
+        params = self._auth_params(api_key)
+        params.update({"trade": "future", "limit": limit})
+        data = await self._get_json(client, url, params)
+        assets = self._parse_ranking_assets(data)
+        return assets[:limit] if limit else assets
+
     async def _get_json(
         self,
         client: httpx.AsyncClient,
@@ -217,7 +238,7 @@ class NofXOSDynamicAssetsClient:
         if not isinstance(payload, dict):
             return []
 
-        for key in ("positions", "netflows", "rankings", "items", "rows", "coins", "list"):
+        for key in ("positions", "netflows", "heatmaps", "rankings", "items", "rows", "coins", "list"):
             items = payload.get(key)
             if isinstance(items, list):
                 return self._extract_ranked_assets(items)

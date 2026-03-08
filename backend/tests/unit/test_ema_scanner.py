@@ -1,38 +1,49 @@
 import pytest
 
+import app.application.ema_scanner.service as scanner_module
 from app.application.ema_scanner.service import EmaScannerService
 from app.domain.ema_scanner.models import EmaScannerConfig
-from app.domain.portfolio.models import MarketCandle, MarketQuote
+from app.domain.portfolio.models import MarketCandle
 
 
-class FakeConnector:
-    def __init__(self, candles, price=None):
-        self._candles = candles
-        self._price = price
+class FakeBinanceClient:
+    def __init__(self, candles_by_symbol, price_by_symbol=None):
+        self._candles_by_symbol = {
+            self._normalize_symbol(symbol): list(candles)
+            for symbol, candles in candles_by_symbol.items()
+        }
+        self._price_by_symbol = {
+            self._normalize_symbol(symbol): price
+            for symbol, price in (price_by_symbol or {}).items()
+        }
 
-    async def fetch_candles(self, symbol: str, timeframe: str, limit: int):
-        return self._candles
+    def fetch_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        start_time_ms: int | None = None,
+    ):
+        del timeframe, start_time_ms
+        candles = self._candles_by_symbol.get(self._normalize_symbol(symbol), [])
+        return list(candles[-limit:])
 
-    async def fetch_ticker_price(self, symbol: str):
-        return self._price
+    def fetch_ticker_price(self, symbol: str):
+        return self._price_by_symbol.get(self._normalize_symbol(symbol))
 
-    async def fetch_ticker_quote(self, symbol: str):
-        if self._price is None:
-            return None
-        return MarketQuote(price=self._price, change_percent=None)
-
-    async def fetch_ticker_quotes(self, symbols):
-        if self._price is None:
-            return {}
-        return {symbol: MarketQuote(price=self._price, change_percent=None) for symbol in symbols}
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        return symbol.replace("/", "").upper()
 
 
 class FakePortfolioService:
-    def __init__(self, connector):
-        self._connector = connector
-
     async def get_active_connector(self):
-        return self._connector
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_interval_delay(monkeypatch):
+    monkeypatch.setattr(scanner_module, "_EMA_INTERVAL_DELAY_SEC", 0)
 
 
 @pytest.mark.asyncio
@@ -42,7 +53,10 @@ async def test_ema_scanner_detects_signal():
         MarketCandle(2, 10, 10, 10, 10, 0),
         MarketCandle(3, 10, 10, 10, 10, 0),
     ]
-    service = EmaScannerService(FakePortfolioService(FakeConnector(candles, price=10)))
+    service = EmaScannerService(
+        FakePortfolioService(),
+        binance_client=FakeBinanceClient({"BTCUSDT": candles}, {"BTCUSDT": 10}),
+    )
 
     config = EmaScannerConfig(
         assets=["btc"],
@@ -71,7 +85,10 @@ async def test_ema_scanner_skips_short_series():
         MarketCandle(1, 10, 10, 10, 10, 0),
         MarketCandle(2, 10, 10, 10, 10, 0),
     ]
-    service = EmaScannerService(FakePortfolioService(FakeConnector(candles, price=10)))
+    service = EmaScannerService(
+        FakePortfolioService(),
+        binance_client=FakeBinanceClient({"ETHUSDT": candles}, {"ETHUSDT": 10}),
+    )
 
     config = EmaScannerConfig(
         assets=["ETH"],
@@ -88,13 +105,16 @@ async def test_ema_scanner_skips_short_series():
 
 
 @pytest.mark.asyncio
-async def test_ema_scanner_requires_live_price_when_enabled():
+async def test_ema_scanner_uses_candle_close_when_live_price_unavailable():
     candles = [
         MarketCandle(1, 10, 10, 10, 10, 0),
         MarketCandle(2, 10, 10, 10, 10, 0),
         MarketCandle(3, 10, 10, 10, 10, 0),
     ]
-    service = EmaScannerService(FakePortfolioService(FakeConnector(candles, price=None)))
+    service = EmaScannerService(
+        FakePortfolioService(),
+        binance_client=FakeBinanceClient({"BTCUSDT": candles}, {"BTCUSDT": None}),
+    )
 
     config = EmaScannerConfig(
         assets=["BTC"],
@@ -107,13 +127,16 @@ async def test_ema_scanner_requires_live_price_when_enabled():
     )
 
     signals = await service.scan(config)
-    assert signals == []
+    assert len([signal for signal in signals if signal.indicator == "EMA"]) == 1
 
 
 @pytest.mark.asyncio
 async def test_ema_scanner_emits_bb_signals():
     candles = [MarketCandle(i, 10, 10, 10, 10, 0) for i in range(1, 21)]
-    service = EmaScannerService(FakePortfolioService(FakeConnector(candles, price=10)))
+    service = EmaScannerService(
+        FakePortfolioService(),
+        binance_client=FakeBinanceClient({"BTCUSDT": candles}, {"BTCUSDT": 10}),
+    )
 
     config = EmaScannerConfig(
         assets=["BTC"],
@@ -130,3 +153,41 @@ async def test_ema_scanner_emits_bb_signals():
     assert len(bb_signals) == 2
     params = {s.parameter for s in bb_signals}
     assert params == {"BB-Upper", "BB-Lower"}
+
+
+@pytest.mark.asyncio
+async def test_ema_scanner_invokes_asset_callback_per_asset():
+    candles = [
+        MarketCandle(1, 10, 10, 10, 10, 0),
+        MarketCandle(2, 10, 10, 10, 10, 0),
+        MarketCandle(3, 10, 10, 10, 10, 0),
+    ]
+    service = EmaScannerService(
+        FakePortfolioService(),
+        binance_client=FakeBinanceClient(
+            {"BTCUSDT": candles, "ETHUSDT": candles},
+            {"BTCUSDT": 10, "ETHUSDT": 10},
+        ),
+    )
+
+    config = EmaScannerConfig(
+        assets=["BTC", "ETH"],
+        timeframes=["15m"],
+        ema_lengths=[3],
+        tolerance_pct=0.5,
+        min_candles=3,
+        candles_multiplier=1,
+        max_candles=3,
+    )
+
+    callbacks: list[tuple[str, int]] = []
+
+    async def on_asset(symbol: str, asset_signals, charts):
+        del charts
+        callbacks.append((symbol, len(asset_signals)))
+
+    signals = await service.scan(config, asset_callback=on_asset)
+
+    assert len(signals) == 2
+    assert callbacks == [("BTC/USDT", 1), ("ETH/USDT", 1)]
+

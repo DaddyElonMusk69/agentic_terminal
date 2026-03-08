@@ -25,6 +25,7 @@ from app.application.quant_scanner.service import QuantScannerService
 from app.application.quant_scanner.presenter import snapshot_to_signal
 from app.application.portfolio.service import PortfolioService
 from app.application.telegram.notifications_service import TelegramNotificationService
+from app.domain.ema_scanner.models import EmaScannerSignal
 from app.domain.ema_state_manager.models import PositionSnapshot
 
 
@@ -107,10 +108,62 @@ class AutomationPipelineService:
             return {"signals": 0, "events": 0, "queued": 0}
 
         chart_store: dict[str, dict[str, dict]] = {}
+        state_config = await self._ema_state_manager.get_config()
+        events = []
+        queued = 0
+
+        async def process_scanned_asset(
+            symbol: str,
+            asset_signals: List[EmaScannerSignal],
+            _asset_charts: dict[str, dict],
+        ) -> None:
+            nonlocal queued
+
+            asset_events = await self._ema_state_manager.process_signals(
+                signals=asset_signals,
+                monitored_assets=config.assets,
+                quote_asset=config.quote_asset,
+                open_positions=positions,
+                update_assets=[symbol],
+                prune_missing=False,
+                state_config=state_config,
+            )
+            if not asset_events:
+                return
+
+            events.extend(asset_events)
+
+            if self._telegram_notifier:
+                for event in asset_events:
+                    asyncio.create_task(
+                        self._telegram_notifier.notify_ema_event(event, asset_signals)
+                    )
+
+            for event in asset_events:
+                template_id = _resolve_template_id(event.trigger_reason.value, template_map)
+                payload = build_prompt_request(
+                    event,
+                    config.timeframes,
+                    template_id=template_id,
+                    execution_mode=mode,
+                    llm_model=llm_model,
+                    llm_provider=llm_provider,
+                    include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+                    session_id=session_id,
+                )
+                payload["cycle_number"] = cycle_number
+                await self._prompt_queue.enqueue(payload)
+                await self._outbox.enqueue_event(
+                    topics.PROMPT_REQUESTED,
+                    self._with_session(payload, session_id),
+                )
+                queued += 1
+
         signals = await self._ema_scanner.scan(
             config,
             log_callback=log_event,
             chart_store=chart_store,
+            asset_callback=process_scanned_asset,
         )
 
         await log_event(
@@ -130,11 +183,14 @@ class AutomationPipelineService:
             ),
         )
 
-        events = await self._ema_state_manager.process_signals(
-            signals=signals,
+        await self._ema_state_manager.process_signals(
+            signals=[],
             monitored_assets=config.assets,
             quote_asset=config.quote_asset,
             open_positions=positions,
+            update_assets=[],
+            prune_missing=True,
+            state_config=state_config,
         )
         await log_event(
             "state_processed",
@@ -144,14 +200,6 @@ class AutomationPipelineService:
                 "tickers": list({event.symbol for event in events}),
             },
         )
-
-        if self._telegram_notifier and events:
-            for event in events:
-                asyncio.create_task(
-                    self._telegram_notifier.notify_ema_event(event, signals)
-                )
-
-        state_config = await self._ema_state_manager.get_config()
         state_payload = build_vegas_state_payload(
             self._ema_state_manager.get_all_states(),
             state_config,
@@ -168,27 +216,6 @@ class AutomationPipelineService:
             topics.EMA_RESULTS,
             self._with_session({"results": results, "cycle_number": cycle_number}, session_id),
         )
-
-        queued = 0
-        for event in events:
-            template_id = _resolve_template_id(event.trigger_reason.value, template_map)
-            payload = build_prompt_request(
-                event,
-                config.timeframes,
-                template_id=template_id,
-                execution_mode=mode,
-                llm_model=llm_model,
-                llm_provider=llm_provider,
-                include_entry_timing_15m_chart=include_entry_timing_15m_chart,
-                session_id=session_id,
-            )
-            payload["cycle_number"] = cycle_number
-            await self._prompt_queue.enqueue(payload)
-            await self._outbox.enqueue_event(
-                topics.PROMPT_REQUESTED,
-                self._with_session(payload, session_id),
-            )
-            queued += 1
 
         synced_external_trades = 0
         if should_execute_trades(mode):

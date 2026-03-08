@@ -336,6 +336,39 @@
             </div>
           </div>
         </div>
+
+        <div v-if="oiSource === 'nofx'" class="rounded-md border border-border bg-panel/50 p-3">
+          <div class="flex items-center justify-between gap-3">
+            <label class="flex items-center gap-2 text-sm text-text">
+              <input v-model="sources.futures_depth.enabled" type="checkbox" />
+              Futures Depth
+            </label>
+            <span class="text-[11px] text-muted">Futures heatmap ranking</span>
+          </div>
+          <div class="mt-3 flex items-center gap-2">
+            <span class="text-[11px] text-muted">Limit</span>
+            <input
+              v-model.number="sources.futures_depth.limit"
+              class="w-20 rounded-md border border-border bg-panel px-2 py-1 text-xs"
+              type="number"
+              min="1"
+              max="200"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4 rounded-md border border-border bg-panel/40 p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">Exclude Tickers</div>
+        <p class="mt-1 text-[11px] text-muted">
+          Comma-separated base tickers to always remove from dynamic assets (for example: BTC, ETH, SOL).
+        </p>
+        <input
+          v-model="sources.excluded_assets.symbols"
+          class="mt-2 w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-text"
+          type="text"
+          placeholder="BTC, ETH, SOL"
+        />
       </div>
 
       <div class="mt-4 flex flex-wrap gap-2">
@@ -384,15 +417,38 @@ const defaultSources: DynamicSources = {
   oi_low: { enabled: false, limit: 20, duration: "1h" },
   netflow_top: { enabled: false, limit: 20, duration: "1h" },
   netflow_low: { enabled: false, limit: 20, duration: "1h" },
+  futures_depth: { enabled: false, limit: 60 },
+  excluded_assets: { enabled: false, symbols: "" },
 };
 
-const buildDynamicSources = (value?: Partial<DynamicSources> | null): DynamicSources => ({
-  ai500: { ...defaultSources.ai500, ...(value?.ai500 || {}) },
-  ai300: { ...defaultSources.ai300, ...(value?.ai300 || {}) },
-  oi_top: { ...defaultSources.oi_top, ...(value?.oi_top || {}) },
-  oi_low: { ...defaultSources.oi_low, ...(value?.oi_low || {}) },
-  netflow_top: { ...defaultSources.netflow_top, ...(value?.netflow_top || {}) },
-  netflow_low: { ...defaultSources.netflow_low, ...(value?.netflow_low || {}) },
+const buildDynamicSources = (
+  value?: Partial<DynamicSources> | null,
+  fallback?: Partial<DynamicSources> | null,
+): DynamicSources => ({
+  ai500: { ...defaultSources.ai500, ...(fallback?.ai500 || {}), ...(value?.ai500 || {}) },
+  ai300: { ...defaultSources.ai300, ...(fallback?.ai300 || {}), ...(value?.ai300 || {}) },
+  oi_top: { ...defaultSources.oi_top, ...(fallback?.oi_top || {}), ...(value?.oi_top || {}) },
+  oi_low: { ...defaultSources.oi_low, ...(fallback?.oi_low || {}), ...(value?.oi_low || {}) },
+  netflow_top: {
+    ...defaultSources.netflow_top,
+    ...(fallback?.netflow_top || {}),
+    ...(value?.netflow_top || {}),
+  },
+  netflow_low: {
+    ...defaultSources.netflow_low,
+    ...(fallback?.netflow_low || {}),
+    ...(value?.netflow_low || {}),
+  },
+  futures_depth: {
+    ...defaultSources.futures_depth,
+    ...(fallback?.futures_depth || {}),
+    ...(value?.futures_depth || {}),
+  },
+  excluded_assets: {
+    ...defaultSources.excluded_assets,
+    ...(fallback?.excluded_assets || {}),
+    ...(value?.excluded_assets || {}),
+  },
 });
 
 const dynamicEnabled = ref(false);
@@ -414,6 +470,7 @@ const oiStatus = ref<"unknown" | "warming" | "ready" | "stale" | "error">("unkno
 const oiStatusLoading = ref(false);
 
 const sources = reactive<DynamicSources>(buildDynamicSources());
+let lastConfigMutationTs = 0;
 
 const oiDurationOptions = computed(() =>
   oiSource.value === "custom" ? customDurations : nofxDurations,
@@ -436,13 +493,15 @@ const oiStatusToneClass = computed(() => {
 });
 
 const applyDynamicSources = (value?: Partial<DynamicSources> | null) => {
-  const normalized = buildDynamicSources(value);
+  const normalized = buildDynamicSources(value, sources);
   sources.ai500 = normalized.ai500;
   sources.ai300 = normalized.ai300;
   sources.oi_top = normalized.oi_top;
   sources.oi_low = normalized.oi_low;
   sources.netflow_top = normalized.netflow_top;
   sources.netflow_low = normalized.netflow_low;
+  sources.futures_depth = normalized.futures_depth;
+  sources.excluded_assets = normalized.excluded_assets;
   return normalized;
 };
 
@@ -456,7 +515,7 @@ const updateMarketCache = (patch: Partial<MarketCacheData>) => {
     dynamicOiSource: cached.dynamicOiSource || "nofx",
   };
   if (patch.dynamicSources) {
-    next.dynamicSources = buildDynamicSources(patch.dynamicSources);
+    next.dynamicSources = buildDynamicSources(patch.dynamicSources, cached.dynamicSources);
   }
   if (patch.dynamicOiSource) {
     next.dynamicOiSource = patch.dynamicOiSource;
@@ -490,6 +549,54 @@ const setStatus = (message: string, tone: "info" | "success" | "error" = "info")
   window.setTimeout(() => {
     if (statusMessage.value === message) statusMessage.value = "";
   }, 4000);
+};
+
+const excludedSymbolsStorageKey = "td_cache:dynamic_assets:excluded_symbols";
+
+const normalizeExcludedSymbolsText = (value: string) => {
+  const items = String(value || "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase().replace(/[^A-Z0-9]/g, ""))
+    .filter(Boolean);
+  const deduped = Array.from(new Set(items));
+  return deduped.join(", ");
+};
+
+const readStoredExcludedSymbols = () => {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(excludedSymbolsStorageKey);
+    return normalizeExcludedSymbolsText(raw || "");
+  } catch {
+    return "";
+  }
+};
+
+const writeStoredExcludedSymbols = (value: string) => {
+  if (typeof window === "undefined") return;
+  const normalized = normalizeExcludedSymbolsText(value);
+  try {
+    if (!normalized) {
+      window.localStorage.removeItem(excludedSymbolsStorageKey);
+      return;
+    }
+    window.localStorage.setItem(excludedSymbolsStorageKey, normalized);
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const restoreExcludedSymbolsFromStorage = () => {
+  const stored = readStoredExcludedSymbols();
+  if (!stored) return;
+  if (String(sources.excluded_assets.symbols || "").trim()) return;
+  sources.excluded_assets.symbols = stored;
+};
+
+const normalizeExcludedSymbols = () => {
+  sources.excluded_assets.symbols = normalizeExcludedSymbolsText(
+    String(sources.excluded_assets.symbols || ""),
+  );
 };
 
 const normalizeOiDurations = () => {
@@ -597,16 +704,33 @@ const resolveOiStatus = async () => {
 };
 
 const loadConfig = async () => {
+  const loadStartedTs = Date.now();
   error.value = "";
   try {
     const configRes = await fetch("/api/v1/market/dynamic-assets");
     const configData = await configRes.json();
+    if (!configRes.ok) {
+      throw new Error(configData?.error?.message || "Failed to load dynamic assets config.");
+    }
 
     if (configData?.data) {
+      if (loadStartedTs < lastConfigMutationTs) {
+        return;
+      }
       const dynamicConfig = configData.data;
       dynamicEnabled.value = Boolean(dynamicConfig.enabled);
       hasApiKey.value = Boolean(dynamicConfig.api_key_present);
       const normalizedSources = applyDynamicSources(dynamicConfig.sources);
+      const apiExcluded = normalizeExcludedSymbolsText(
+        String(normalizedSources.excluded_assets?.symbols || ""),
+      );
+      const fallbackExcluded = readStoredExcludedSymbols();
+      const finalExcluded = apiExcluded || fallbackExcluded;
+      if (finalExcluded) {
+        sources.excluded_assets.symbols = finalExcluded;
+        normalizedSources.excluded_assets.symbols = finalExcluded;
+      }
+      writeStoredExcludedSymbols(finalExcluded);
       oiSource.value = dynamicConfig.oi_source === "custom" ? "custom" : "nofx";
       refreshIntervalMinutes.value = Math.max(
         1,
@@ -622,6 +746,8 @@ const loadConfig = async () => {
         dynamicRefreshMinutes: refreshIntervalMinutes.value,
         dynamicOiSource: oiSource.value,
       });
+    } else {
+      throw new Error("Dynamic assets config response was empty.");
     }
   } catch (err) {
     error.value = err instanceof Error ? err.message : "Failed to load dynamic assets config.";
@@ -629,6 +755,7 @@ const loadConfig = async () => {
 };
 
 const saveConfig = async () => {
+  lastConfigMutationTs = Date.now();
   isSaving.value = true;
   try {
     if (oiSource.value === "custom") {
@@ -636,15 +763,19 @@ const saveConfig = async () => {
       sources.ai300.enabled = false;
       sources.netflow_top.enabled = false;
       sources.netflow_low.enabled = false;
+      sources.futures_depth.enabled = false;
       normalizeOiDurations();
     }
+    normalizeExcludedSymbols();
+    const payloadSources = buildDynamicSources(sources);
+    writeStoredExcludedSymbols(String(payloadSources.excluded_assets?.symbols || ""));
     const payload: Record<string, unknown> = {
       enabled: dynamicEnabled.value,
       refresh_interval_seconds: Math.round(
         Math.min(60, Math.max(1, refreshIntervalMinutes.value || 10)) * 60,
       ),
       volatility_threshold_pct: Math.min(100, Math.max(5, volatilityThresholdPct.value || 20)),
-      sources: buildDynamicSources(sources),
+      sources: payloadSources,
       oi_source: oiSource.value,
     };
     const apiKey = apiKeyInput.value.trim();
@@ -661,7 +792,7 @@ const saveConfig = async () => {
     if (!response.ok) {
       throw new Error(data?.error?.message || "Failed to save configuration.");
     }
-    let normalizedSources = buildDynamicSources(sources);
+    let normalizedSources = applyDynamicSources(payloadSources);
     if (data?.data) {
       dynamicEnabled.value = Boolean(data.data.enabled);
       hasApiKey.value = Boolean(data.data.api_key_present);
@@ -672,8 +803,15 @@ const saveConfig = async () => {
       );
       volatilityThresholdPct.value = data.data.volatility_threshold_pct ?? 20;
       isBinanceActive.value = Boolean(data.data.is_binance_active);
-      normalizedSources = applyDynamicSources(data.data.sources);
+      const responseSources = buildDynamicSources(data.data.sources, payloadSources);
+      const responseExcluded = String(responseSources.excluded_assets?.symbols || "").trim();
+      const payloadExcluded = String(payloadSources.excluded_assets?.symbols || "").trim();
+      if (!responseExcluded && payloadExcluded) {
+        responseSources.excluded_assets.symbols = payloadExcluded;
+      }
+      normalizedSources = applyDynamicSources(responseSources);
     }
+    writeStoredExcludedSymbols(String(normalizedSources.excluded_assets?.symbols || ""));
     if (apiKey) {
       apiKeyInput.value = "";
       hasApiKey.value = true;
@@ -687,12 +825,15 @@ const saveConfig = async () => {
       dynamicOiSource: oiSource.value,
     });
     const oiOk = await updateOiConfig();
-    const refreshed = await refreshMonitoredAssets();
     if (oiOk) {
-      setStatus(
-        refreshed ? "Configuration saved. Asset list refreshed." : "Configuration saved.",
-        "success",
-      );
+      setStatus("Configuration saved. Refreshing asset list...", "info");
+      void (async () => {
+        const refreshed = await refreshMonitoredAssets();
+        setStatus(
+          refreshed ? "Configuration saved. Asset list refreshed." : "Configuration saved.",
+          "success",
+        );
+      })();
     } else {
       setStatus("Dynamic assets saved, but OI refresh interval update failed.", "error");
     }
@@ -743,11 +884,13 @@ watch(
       sources.ai300.enabled = false;
       sources.netflow_top.enabled = false;
       sources.netflow_low.enabled = false;
+      sources.futures_depth.enabled = false;
       normalizeOiDurations();
       loadOiConfig();
       apiKeyInput.value = "";
       showKey.value = false;
     }
+    normalizeExcludedSymbols();
     updateMarketCache({ dynamicOiSource: next });
     resolveOiStatus();
   },
@@ -761,6 +904,7 @@ watch(
 );
 
 onMounted(() => {
+  restoreExcludedSymbolsFromStorage();
   loadConfig();
   loadOiConfig();
   resolveOiStatus();

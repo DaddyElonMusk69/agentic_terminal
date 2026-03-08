@@ -34,6 +34,8 @@ DEFAULT_SOURCES: Dict[str, Dict[str, Any]] = {
     "oi_low": {"enabled": False, "limit": 20, "duration": "1h"},
     "netflow_top": {"enabled": False, "limit": 20, "duration": "1h"},
     "netflow_low": {"enabled": False, "limit": 20, "duration": "1h"},
+    "futures_depth": {"enabled": False, "limit": 60},
+    "excluded_assets": {"enabled": False, "symbols": ""},
 }
 
 
@@ -186,6 +188,7 @@ class DynamicAssetsService:
             logger.warning("Dynamic assets fetch failed: %s", exc)
 
         if assets:
+            assets = _filter_excluded_assets(assets, config.sources)
             assets = _normalize_assets(assets)
             assets = await self._exclude_open_positions(assets)
             assets, removed = await self._filter_extreme_24h_change(assets, config.volatility_threshold_pct)
@@ -314,6 +317,9 @@ def _normalize_sources(sources: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 value["limit"] = max(1, int(value.get("limit", 1)))
             except (TypeError, ValueError):
                 value["limit"] = DEFAULT_SOURCES[key]["limit"]
+        if key == "excluded_assets":
+            value["enabled"] = False
+            value["symbols"] = _normalize_excluded_symbols(value.get("symbols", ""))
     return normalized
 
 
@@ -324,10 +330,63 @@ def _strip_ai_sources_if_custom(
     if oi_source != "custom":
         return sources
     stripped = {key: dict(value) for key, value in sources.items()}
-    for key in ("ai500", "ai300", "netflow_top", "netflow_low"):
+    for key in ("ai500", "ai300", "netflow_top", "netflow_low", "futures_depth"):
         if key in stripped:
             stripped[key]["enabled"] = False
     return stripped
+
+
+def _filter_excluded_assets(assets: Iterable[str], sources: Dict[str, Dict[str, Any]]) -> list[str]:
+    assets_list = list(assets)
+    excluded = _extract_excluded_assets(sources)
+    if not assets_list or not excluded:
+        return assets_list
+
+    filtered: list[str] = []
+    removed = 0
+    for asset in assets_list:
+        normalized = _normalize_asset(asset)
+        if normalized and normalized in excluded:
+            removed += 1
+            continue
+        filtered.append(asset)
+
+    if removed > 0:
+        logger.info("Dynamic assets: removed %s user-excluded tickers", removed)
+    return filtered
+
+
+def _extract_excluded_assets(sources: Dict[str, Dict[str, Any]]) -> set[str]:
+    if not isinstance(sources, dict):
+        return set()
+    entry = sources.get("excluded_assets")
+    if not isinstance(entry, dict):
+        return set()
+    normalized = _normalize_excluded_symbols(entry.get("symbols", ""))
+    if not normalized:
+        return set()
+    return {item for item in normalized.split(",") if item}
+
+
+def _normalize_excluded_symbols(value: Any) -> str:
+    if isinstance(value, str):
+        candidates = value.split(",")
+    elif isinstance(value, list):
+        candidates = [str(item) for item in value]
+    elif value is None:
+        candidates = []
+    else:
+        candidates = [str(value)]
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_asset(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ",".join(ordered)
 
 
 def _normalize_oi_source(value: Optional[str], default: str, strict: bool = False) -> str:

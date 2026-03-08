@@ -5,6 +5,8 @@ export type DynamicSources = {
   oi_low: { enabled: boolean; limit: number; duration: string };
   netflow_top: { enabled: boolean; limit: number; duration: string };
   netflow_low: { enabled: boolean; limit: number; duration: string };
+  futures_depth: { enabled: boolean; limit: number };
+  excluded_assets: { enabled: boolean; symbols: string };
 };
 
 export type MarketCacheData = {
@@ -100,6 +102,8 @@ const defaultDynamicSources: DynamicSources = {
   oi_low: { enabled: false, limit: 20, duration: "1h" },
   netflow_top: { enabled: false, limit: 20, duration: "1h" },
   netflow_low: { enabled: false, limit: 20, duration: "1h" },
+  futures_depth: { enabled: false, limit: 60 },
+  excluded_assets: { enabled: false, symbols: "" },
 };
 
 const cloneDynamicSources = (sources: Partial<DynamicSources> | DynamicSources): DynamicSources => ({
@@ -109,6 +113,8 @@ const cloneDynamicSources = (sources: Partial<DynamicSources> | DynamicSources):
   oi_low: { ...defaultDynamicSources.oi_low, ...(sources?.oi_low || {}) },
   netflow_top: { ...defaultDynamicSources.netflow_top, ...(sources?.netflow_top || {}) },
   netflow_low: { ...defaultDynamicSources.netflow_low, ...(sources?.netflow_low || {}) },
+  futures_depth: { ...defaultDynamicSources.futures_depth, ...(sources?.futures_depth || {}) },
+  excluded_assets: { ...defaultDynamicSources.excluded_assets, ...(sources?.excluded_assets || {}) },
 });
 
 const cloneMarketCache = (data: MarketCacheData): MarketCacheData => ({

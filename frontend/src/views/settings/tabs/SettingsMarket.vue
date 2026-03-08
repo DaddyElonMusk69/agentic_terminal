@@ -262,6 +262,8 @@ const defaultDynamicSources: DynamicSources = {
   oi_low: { enabled: false, limit: 20, duration: "1h" },
   netflow_top: { enabled: false, limit: 20, duration: "1h" },
   netflow_low: { enabled: false, limit: 20, duration: "1h" },
+  futures_depth: { enabled: false, limit: 60 },
+  excluded_assets: { enabled: false, symbols: "" },
 };
 
 const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
@@ -271,6 +273,8 @@ const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
   oi_low: { ...defaultDynamicSources.oi_low, ...(value?.oi_low || {}) },
   netflow_top: { ...defaultDynamicSources.netflow_top, ...(value?.netflow_top || {}) },
   netflow_low: { ...defaultDynamicSources.netflow_low, ...(value?.netflow_low || {}) },
+  futures_depth: { ...defaultDynamicSources.futures_depth, ...(value?.futures_depth || {}) },
+  excluded_assets: { ...defaultDynamicSources.excluded_assets, ...(value?.excluded_assets || {}) },
 });
 
 const assets = ref<string[]>([]);

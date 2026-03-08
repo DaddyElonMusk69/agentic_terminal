@@ -28,6 +28,11 @@ class OiSource(BaseModel):
     duration: str = "1h"
 
 
+class ExcludedAssetsSource(BaseModel):
+    enabled: bool = False
+    symbols: str = ""
+
+
 class DynamicSources(BaseModel):
     ai500: Ai500Source = Field(default_factory=Ai500Source)
     ai300: Ai300Source = Field(default_factory=Ai300Source)
@@ -35,6 +40,8 @@ class DynamicSources(BaseModel):
     oi_low: OiSource = Field(default_factory=OiSource)
     netflow_top: OiSource = Field(default_factory=OiSource)
     netflow_low: OiSource = Field(default_factory=OiSource)
+    futures_depth: Ai500Source = Field(default_factory=Ai500Source)
+    excluded_assets: ExcludedAssetsSource = Field(default_factory=ExcludedAssetsSource)
 
 
 class DynamicAssetsConfigPayload(BaseModel):

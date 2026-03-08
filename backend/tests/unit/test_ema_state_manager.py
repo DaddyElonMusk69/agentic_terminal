@@ -147,3 +147,50 @@ def test_state_manager_new_resonance_requires_consecutive_touches():
     assert len(events) == 1
     assert events[0].trigger_reason == EmaStateTrigger.NEW_RESONANCE
 
+
+def test_state_manager_partial_update_does_not_prune_other_symbols():
+    manager = EmaStateManager()
+    config = _config()
+
+    btc_signals = [_ema_signal("BTC/USDT", "2h"), _ema_signal("BTC/USDT", "4h")]
+    eth_signals = [_ema_signal("ETH/USDT", "2h"), _ema_signal("ETH/USDT", "4h")]
+
+    manager.update(
+        btc_signals,
+        monitored_symbols=["BTC/USDT", "ETH/USDT"],
+        config=config,
+        update_symbols=["BTC/USDT"],
+        prune_missing=False,
+    )
+    assert manager.get_state("BTC/USDT") is not None
+    assert manager.get_state("ETH/USDT") is None
+
+    events = manager.update(
+        eth_signals,
+        monitored_symbols=["BTC/USDT", "ETH/USDT"],
+        config=config,
+        update_symbols=["ETH/USDT"],
+        prune_missing=False,
+    )
+    assert len(events) == 1
+    assert events[0].symbol == "ETH/USDT"
+    assert manager.get_state("BTC/USDT") is not None
+    assert manager.get_state("ETH/USDT") is not None
+
+
+def test_state_manager_partial_update_with_prune_removes_missing_symbols():
+    manager = EmaStateManager()
+    config = _config()
+
+    signals = [_ema_signal("BTC/USDT", "4h"), _ema_signal("BTC/USDT", "8h")]
+    manager.update(signals, monitored_symbols=["BTC/USDT"], config=config)
+    assert manager.get_state("BTC/USDT") is not None
+
+    manager.update(
+        [],
+        monitored_symbols=["ETH/USDT"],
+        config=config,
+        update_symbols=[],
+        prune_missing=True,
+    )
+    assert manager.get_state("BTC/USDT") is None
