@@ -255,6 +255,17 @@
                           HTF Bollinger Bands
                         </span>
                       </label>
+                      <label class="mt-2 flex items-center gap-2 text-[11px] text-muted">
+                        <input
+                          v-model="store.draft.vegas_show_atr"
+                          type="checkbox"
+                          :disabled="!isCategorySelected(category.id)"
+                        />
+                        <span class="inline-flex items-center gap-2">
+                          <span class="h-2 w-2 rounded-full bg-orange-400"></span>
+                          ATR (14) Panel
+                        </span>
+                      </label>
                       <div class="mt-2 grid gap-2 sm:grid-cols-2">
                         <label class="text-[11px] text-muted">
                           Length
@@ -580,7 +591,8 @@
                 <div v-else-if="previewState === 'success'" class="space-y-3">
                   <div class="text-[11px] text-muted">
                     {{ selectedChartTicker }} @ {{ previewInterval }} | {{ previewCandles }} candles | EMAs:
-                    {{ previewEmaList.length ? previewEmaList.join(", ") : "none" }}
+                    {{ previewEmaList.length ? previewEmaList.join(", ") : "none" }} | ATR:
+                    {{ store.draft.vegas_show_atr ? "on" : "off" }}
                   </div>
                   <div class="overflow-auto rounded-md border border-border bg-panel/30 p-2">
                     <img
@@ -701,7 +713,7 @@ const contextCategories = [
   {
     id: "chart_snapshots",
     label: "Chart Snapshots",
-    description: "Multi-timeframe chart snapshots with EMA tunnel overlays",
+    description: "Multi-timeframe chart snapshots with EMA, BB, and ATR overlays",
   },
   {
     id: "open_positions",
@@ -1072,6 +1084,7 @@ const previewVegasChart = async (interval: string) => {
         candles: previewCandles.value,
         emas: previewEmaList.value,
         show_bb: store.draft.vegas_show_bb,
+        show_atr: store.draft.vegas_show_atr,
         bb_length: store.draft.vegas_bb_length,
         bb_std: store.draft.vegas_bb_std,
       }),

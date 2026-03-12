@@ -220,6 +220,7 @@ const buildOverlayDefaults = (draft: ContextBuilderDraft): string[] => {
   const { lengths } = buildVegasEmaConfig(draft);
   if (lengths.length) overlays.push("ema");
   if (draft.vegas_show_bb) overlays.push("bb");
+  if (draft.vegas_show_atr) overlays.push("atr");
   return overlays;
 };
 
@@ -254,6 +255,7 @@ const mapTemplateToConfig = (template: PromptTemplatePayload): ContextBuilderCon
     vegas_show_medium_tunnel: readBoolean(defaults.vegas_show_medium_tunnel, true),
     vegas_show_slow_tunnel: readBoolean(defaults.vegas_show_slow_tunnel, true),
     vegas_show_bb: readBoolean(defaults.vegas_show_bb, true),
+    vegas_show_atr: readBoolean(defaults.vegas_show_atr, true),
     vegas_bb_length: readNumber(defaults.vegas_bb_length, 20),
     vegas_bb_std: readNumber(defaults.vegas_bb_std, 2),
     is_default: template.is_default,
@@ -275,6 +277,7 @@ const buildTemplatePayload = (draft: ContextBuilderDraft, name?: string) => {
       vegas_show_medium_tunnel: draft.vegas_show_medium_tunnel,
       vegas_show_slow_tunnel: draft.vegas_show_slow_tunnel,
       vegas_show_bb: draft.vegas_show_bb,
+      vegas_show_atr: draft.vegas_show_atr,
       vegas_bb_length: draft.vegas_bb_length,
       vegas_bb_std: draft.vegas_bb_std,
       ema_lengths: vegasEmaConfig.lengths,
@@ -304,6 +307,7 @@ const buildDraftFromConfig = (config?: Partial<ContextBuilderConfig>): ContextBu
   vegas_show_slow_tunnel:
     typeof config?.vegas_show_slow_tunnel === "boolean" ? config.vegas_show_slow_tunnel : true,
   vegas_show_bb: typeof config?.vegas_show_bb === "boolean" ? config.vegas_show_bb : true,
+  vegas_show_atr: typeof config?.vegas_show_atr === "boolean" ? config.vegas_show_atr : true,
   vegas_bb_length: typeof config?.vegas_bb_length === "number" ? config.vegas_bb_length : 20,
   vegas_bb_std: typeof config?.vegas_bb_std === "number" ? config.vegas_bb_std : 2,
 });

@@ -42,6 +42,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             model.provider = config.provider
             model.model = config.model
             model.include_entry_timing_15m_chart = config.include_entry_timing_15m_chart
+            model.reverse_order_enabled = config.reverse_order_enabled
             model.vegas_prompt_configs = config.vegas_prompt_configs or None
 
             await session.commit()
@@ -56,6 +57,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             provider=model.provider,
             model=model.model,
             include_entry_timing_15m_chart=bool(model.include_entry_timing_15m_chart),
+            reverse_order_enabled=bool(model.reverse_order_enabled),
             vegas_prompt_configs=model.vegas_prompt_configs,
             created_at=model.created_at,
             updated_at=model.updated_at,

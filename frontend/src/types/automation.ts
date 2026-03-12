@@ -55,6 +55,7 @@ export type AutomationStatePayload = {
   started_at?: string | null;
   last_cycle_at?: string | null;
   include_entry_timing_15m_chart?: boolean;
+  reverse_order_enabled?: boolean;
   circuitBreakerTriggered?: boolean;
   circuit_breaker_triggered?: boolean;
   circuitBreakerReason?: string | null;

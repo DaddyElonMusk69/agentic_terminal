@@ -16,6 +16,7 @@ export type ContextBuilderConfig = {
   vegas_show_medium_tunnel?: boolean;
   vegas_show_slow_tunnel?: boolean;
   vegas_show_bb?: boolean;
+  vegas_show_atr?: boolean;
   vegas_bb_length?: number;
   vegas_bb_std?: number;
   is_default?: boolean;
@@ -33,6 +34,7 @@ export type ContextBuilderDraft = {
   vegas_show_medium_tunnel: boolean;
   vegas_show_slow_tunnel: boolean;
   vegas_show_bb: boolean;
+  vegas_show_atr: boolean;
   vegas_bb_length: number;
   vegas_bb_std: number;
 };

@@ -20,6 +20,7 @@ class AutomationConfigModel(Base):
     provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     include_entry_timing_15m_chart: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reverse_order_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     vegas_prompt_configs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

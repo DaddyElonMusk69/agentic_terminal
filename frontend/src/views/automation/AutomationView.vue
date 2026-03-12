@@ -210,6 +210,26 @@
                 />
               </label>
 
+              <label
+                class="flex items-center justify-between rounded-md border border-border bg-panel/50 px-3 py-2 text-[11px] text-muted"
+              >
+                <div>
+                  <div class="text-text">Reverse Order (Parse Stage)</div>
+                  <div class="text-[10px] text-muted">
+                    Flip OPEN_LONG/OPEN_SHORT before trade guard checks.
+                  </div>
+                </div>
+                <input
+                  v-model="automationConfig.reverse_order_enabled"
+                  type="checkbox"
+                  @change="
+                    updateConfigPersisted({
+                      reverse_order_enabled: automationConfig.reverse_order_enabled,
+                    })
+                  "
+                />
+              </label>
+
               <div class="space-y-2">
                 <div class="text-[10px] uppercase tracking-wide text-muted">
                   Vegas Prompt Mapping
@@ -1583,6 +1603,7 @@ type AutomationConfig = {
   ema_interval_seconds: number;
   quant_interval_seconds: number;
   include_entry_timing_15m_chart: boolean;
+  reverse_order_enabled: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
 };
 
@@ -1593,6 +1614,7 @@ type AutomationConfigPayload = {
   ema_interval_seconds?: number;
   quant_interval_seconds?: number;
   include_entry_timing_15m_chart?: boolean;
+  reverse_order_enabled?: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
 };
 
@@ -1664,6 +1686,7 @@ const automationConfigDefaults: AutomationConfig = {
   ema_interval_seconds: 60,
   quant_interval_seconds: 60,
   include_entry_timing_15m_chart: false,
+  reverse_order_enabled: false,
   vegas_prompt_configs: {},
 };
 
@@ -2401,6 +2424,7 @@ const buildAutomationConfigPayload = () => ({
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
   include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
+  reverse_order_enabled: automationConfig.value.reverse_order_enabled,
   vegas_prompt_configs: automationConfig.value.vegas_prompt_configs || null,
 });
 
@@ -2424,6 +2448,9 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   }
   if (typeof payload.include_entry_timing_15m_chart === "boolean") {
     updates.include_entry_timing_15m_chart = payload.include_entry_timing_15m_chart;
+  }
+  if (typeof payload.reverse_order_enabled === "boolean") {
+    updates.reverse_order_enabled = payload.reverse_order_enabled;
   }
   if ("provider" in payload) {
     updates.provider = payload.provider ? String(payload.provider) : "";
@@ -2714,6 +2741,7 @@ const startAutomation = async () => {
         ema_interval_seconds: automationConfig.value.ema_interval_seconds,
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
         include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
+        reverse_order_enabled: automationConfig.value.reverse_order_enabled,
         vegas_prompt_configs: automationConfig.value.vegas_prompt_configs || null,
       }),
     });

@@ -118,6 +118,7 @@ def get_llm_queue_worker() -> LlmQueueWorker:
         order_queue=get_order_queue_service(),
         outbox=get_outbox_service(),
         provider_repository=provider_repository,
+        automation_config_service=get_automation_config_service(),
         telegram_notifier=get_telegram_notification_service(),
     )
 

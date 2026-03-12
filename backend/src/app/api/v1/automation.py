@@ -19,6 +19,7 @@ from app.common.api import ApiMeta
 from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.infrastructure.bus.outbox_repository import OutboxRepository
 from app.infrastructure.db import get_sessionmaker
+from app.infrastructure.repositories.llm_queue_repository import LlmQueueRepository
 from app.realtime.hub import hub
 
 
@@ -32,6 +33,7 @@ class AutomationStartRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
+    reverse_order_enabled: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
 
 
@@ -44,6 +46,7 @@ class AutomationStateResponse(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
+    reverse_order_enabled: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
     started_at: Optional[str] = None
     current_cycle: int = 0
@@ -65,6 +68,7 @@ class AutomationConfigPayload(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
+    reverse_order_enabled: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
 
 
@@ -75,6 +79,7 @@ class AutomationConfigView(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
+    reverse_order_enabled: bool = False
     vegas_prompt_configs: Optional[Dict[str, int]] = None
 
 
@@ -91,6 +96,16 @@ class OutboxPurgeResponse(BaseModel):
 
 class OutboxPurgeDataResponse(BaseModel):
     data: OutboxPurgeResponse
+    meta: Optional[ApiMeta] = None
+
+
+class LlmQueuePurgeResponse(BaseModel):
+    purged: int
+    statuses: List[str]
+
+
+class LlmQueuePurgeDataResponse(BaseModel):
+    data: LlmQueuePurgeResponse
     meta: Optional[ApiMeta] = None
 
 
@@ -332,6 +347,7 @@ async def get_automation_config(request: Request) -> AutomationConfigResponse:
         provider=config.provider,
         model=config.model,
         include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
+        reverse_order_enabled=config.reverse_order_enabled,
         vegas_prompt_configs=config.vegas_prompt_configs,
     )
     return AutomationConfigResponse(data=view, meta=_meta(request))
@@ -350,6 +366,7 @@ async def update_automation_config(
         provider=payload.provider,
         model=payload.model,
         include_entry_timing_15m_chart=payload.include_entry_timing_15m_chart,
+        reverse_order_enabled=payload.reverse_order_enabled,
         vegas_prompt_configs=payload.vegas_prompt_configs,
     )
     view = AutomationConfigView(
@@ -359,6 +376,7 @@ async def update_automation_config(
         provider=config.provider,
         model=config.model,
         include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
+        reverse_order_enabled=config.reverse_order_enabled,
         vegas_prompt_configs=config.vegas_prompt_configs,
     )
     return AutomationConfigResponse(data=view, meta=_meta(request))
@@ -384,6 +402,7 @@ async def start_automation(
         provider=payload.provider,
         model=payload.model,
         include_entry_timing_15m_chart=payload.include_entry_timing_15m_chart,
+        reverse_order_enabled=payload.reverse_order_enabled,
         vegas_prompt_configs=payload.vegas_prompt_configs,
     )
     session_id = str(uuid4())
@@ -400,6 +419,7 @@ async def start_automation(
             "provider": config.provider,
             "model": config.model,
             "include_entry_timing_15m_chart": config.include_entry_timing_15m_chart,
+            "reverse_order_enabled": config.reverse_order_enabled,
             "vegas_prompt_configs": config.vegas_prompt_configs,
         },
     )
@@ -413,6 +433,7 @@ async def start_automation(
                 provider=config.provider,
                 model=config.model,
                 include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
+                reverse_order_enabled=config.reverse_order_enabled,
                 vegas_prompt_configs=config.vegas_prompt_configs,
                 session_id=session_id,
             )
@@ -428,6 +449,7 @@ async def start_automation(
         "provider": config.provider,
         "model": config.model,
         "include_entry_timing_15m_chart": config.include_entry_timing_15m_chart,
+        "reverse_order_enabled": config.reverse_order_enabled,
         "vegas_prompt_configs": config.vegas_prompt_configs,
         "started_at": state.get("started_at"),
         "session_id": session_id,
@@ -587,6 +609,36 @@ async def purge_outbox(request: Request) -> OutboxPurgeDataResponse:
             purged=purged,
             cutoff=cutoff.isoformat(),
             hours=6,
+        ),
+        meta=_meta(request),
+    )
+
+
+@router.post("/llm-queue/purge", response_model=LlmQueuePurgeDataResponse)
+async def purge_llm_queue(request: Request) -> LlmQueuePurgeDataResponse:
+    statuses = ["queued"]
+    llm_queue_repository = LlmQueueRepository(get_sessionmaker())
+    purged = await llm_queue_repository.delete_by_statuses(statuses=statuses)
+
+    runtime = get_automation_runtime()
+    session_id = runtime.snapshot().get("session_id")
+    outbox_repository = OutboxRepository(get_sessionmaker())
+    outbox = OutboxService(outbox_repository)
+    payload = {
+        "event": "llm_queue_purge_manual",
+        "data": {
+            "purged": purged,
+            "statuses": statuses,
+        },
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    await outbox.enqueue_event("scanner.ema.log", payload)
+
+    return LlmQueuePurgeDataResponse(
+        data=LlmQueuePurgeResponse(
+            purged=purged,
+            statuses=statuses,
         ),
         meta=_meta(request),
     )

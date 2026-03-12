@@ -5,6 +5,7 @@ import logging
 from typing import Optional, List
 
 from app.domain.chart_generator.models import (
+    AtrOverlay,
     ChartRenderRequest,
     EmaOverlay,
     VwapOverlay,
@@ -44,12 +45,13 @@ class ChartGenerator:
                 df,
                 request.overlays,
                 candle_limit,
+                request.show_volume,
                 (request.data.symbol, request.data.timeframe),
             )
 
             title = request.title or f"{request.data.symbol} ({request.data.timeframe.upper()})"
             style = _build_style(request)
-            panel_ratios = (7, 1) if request.show_volume else None
+            panel_ratios = _resolve_panel_ratios(request.overlays, request.show_volume)
             fig_ratio = (10, 10)
             xlim = _compute_xlim_padding(df_display)
 
@@ -132,13 +134,18 @@ def _candles_to_dataframe(candles):
     return df
 
 
-def _build_addplots(df, overlays, candle_limit: Optional[int], context: Optional[tuple[str, str]] = None):
+def _build_addplots(
+    df,
+    overlays,
+    candle_limit: Optional[int],
+    show_volume: bool,
+    _context: Optional[tuple[str, str]] = None,
+):
     import mplfinance as mpf
 
     addplots: List = []
     slice_index = -candle_limit if candle_limit and len(df) > candle_limit else None
-    symbol = context[0] if context else ""
-    timeframe = context[1] if context else ""
+    atr_panel = 2 if show_volume else 1
 
     for overlay in overlays:
         if isinstance(overlay, EmaOverlay):
@@ -176,8 +183,46 @@ def _build_addplots(df, overlays, candle_limit: Optional[int], context: Optional
                     linestyle=overlay.linestyle,
                 )
             )
+        elif isinstance(overlay, AtrOverlay):
+            atr = _compute_atr_series(df, overlay.length)
+            if slice_index is not None:
+                atr = atr.iloc[slice_index:]
+            addplots.append(
+                mpf.make_addplot(
+                    atr,
+                    panel=atr_panel,
+                    color=overlay.color,
+                    width=overlay.width,
+                    ylabel=f"ATR({overlay.length})",
+                )
+            )
 
     return addplots
+
+
+def _compute_atr_series(df, period: int):
+    import pandas as pd
+
+    safe_period = max(1, int(period))
+    prev_close = df["Close"].shift(1)
+    true_range = pd.concat(
+        [
+            (df["High"] - df["Low"]).abs(),
+            (df["High"] - prev_close).abs(),
+            (df["Low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return true_range.ewm(alpha=1 / safe_period, adjust=False, min_periods=safe_period).mean()
+
+
+def _resolve_panel_ratios(overlays, show_volume: bool):
+    has_atr = any(isinstance(overlay, AtrOverlay) for overlay in overlays or [])
+    if show_volume:
+        return (7, 1, 1) if has_atr else (7, 1)
+    if has_atr:
+        return (7, 1)
+    return None
 
 
 def _build_style(request: ChartRenderRequest):
@@ -267,6 +312,8 @@ def _compute_overlay_ylim(df, df_display, overlays, candle_limit: Optional[int])
             except Exception:
                 pass
             continue
+        elif isinstance(overlay, AtrOverlay):
+            continue
         else:
             continue
 
@@ -296,14 +343,15 @@ def _add_ema_tunnel_legend(fig, overlays, text_color: str) -> None:
         (overlay for overlay in overlays if isinstance(overlay, BollingerBandsOverlay)),
         None,
     )
-    if not ema_lengths and bb_overlay is None:
+    atr_overlay = next((overlay for overlay in overlays if isinstance(overlay, AtrOverlay)), None)
+    if not ema_lengths and bb_overlay is None and atr_overlay is None:
         return
 
     fast = any(length in _FAST_TUNNEL for length in ema_lengths)
     main = any(length in _MAIN_TUNNEL for length in ema_lengths)
     slow = any(length in _SLOW_TUNNEL for length in ema_lengths)
 
-    if not (fast or main or slow or bb_overlay):
+    if not (fast or main or slow or bb_overlay or atr_overlay):
         return
 
     try:
@@ -325,6 +373,9 @@ def _add_ema_tunnel_legend(fig, overlays, text_color: str) -> None:
     if bb_overlay:
         handles.append(Line2D([0], [0], color=bb_overlay.color, linewidth=2, linestyle="--"))
         labels.append("Purple = BB band")
+    if atr_overlay:
+        handles.append(Line2D([0], [0], color=atr_overlay.color, linewidth=2))
+        labels.append(f"Orange = ATR({atr_overlay.length})")
 
     if not handles:
         return

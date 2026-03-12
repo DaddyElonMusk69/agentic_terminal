@@ -64,13 +64,24 @@
         <button
           class="rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted transition hover:text-text disabled:opacity-60"
           type="button"
-          :disabled="isPurging"
+          :disabled="isPurgingLlmQueue"
+          @click="handleLlmQueuePurge"
+        >
+          {{ isPurgingLlmQueue ? "Purging..." : "Purge LLM Queue" }}
+        </button>
+        <button
+          class="rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted transition hover:text-text disabled:opacity-60"
+          type="button"
+          :disabled="isPurgingOutbox"
           @click="handleOutboxPurge"
         >
-          {{ isPurging ? "Purging..." : "Purge Outbox" }}
+          {{ isPurgingOutbox ? "Purging..." : "Purge Outbox" }}
         </button>
-        <span v-if="purgeMessage" class="text-[11px] text-muted">
-          {{ purgeMessage }}
+        <span v-if="llmQueuePurgeMessage" class="text-[11px] text-muted">
+          {{ llmQueuePurgeMessage }}
+        </span>
+        <span v-if="outboxPurgeMessage" class="text-[11px] text-muted">
+          {{ outboxPurgeMessage }}
         </span>
       </div>
     </div>
@@ -314,8 +325,10 @@ const filters = ref({
 });
 
 const selectedEvent = ref<ObservabilityEvent | null>(null);
-const isPurging = ref(false);
-const purgeMessage = ref<string | null>(null);
+const isPurgingOutbox = ref(false);
+const outboxPurgeMessage = ref<string | null>(null);
+const isPurgingLlmQueue = ref(false);
+const llmQueuePurgeMessage = ref<string | null>(null);
 
 const rangeToMs = (range: string) => {
   if (range === "1h") return 60 * 60 * 1000;
@@ -543,10 +556,33 @@ const eventMeta = (event: ObservabilityEvent) => {
 
 const depthWidth = (depth: number) => `${Math.min(100, 10 + depth * 1.6)}%`;
 
+const handleLlmQueuePurge = async () => {
+  if (isPurgingLlmQueue.value) return;
+  isPurgingLlmQueue.value = true;
+  llmQueuePurgeMessage.value = null;
+  try {
+    const response = await fetch("/api/v1/automation/llm-queue/purge", { method: "POST" });
+    if (!response.ok) {
+      throw new Error("Purge failed");
+    }
+    const payload = await response.json();
+    const result = payload?.data;
+    if (result) {
+      llmQueuePurgeMessage.value = `Purged ${result.purged} queued LLM prompts`;
+    } else {
+      llmQueuePurgeMessage.value = "LLM queue purge completed";
+    }
+  } catch (error) {
+    llmQueuePurgeMessage.value = "LLM queue purge failed";
+  } finally {
+    isPurgingLlmQueue.value = false;
+  }
+};
+
 const handleOutboxPurge = async () => {
-  if (isPurging.value) return;
-  isPurging.value = true;
-  purgeMessage.value = null;
+  if (isPurgingOutbox.value) return;
+  isPurgingOutbox.value = true;
+  outboxPurgeMessage.value = null;
   try {
     const response = await fetch("/api/v1/automation/outbox/purge", { method: "POST" });
     if (!response.ok) {
@@ -555,14 +591,14 @@ const handleOutboxPurge = async () => {
     const payload = await response.json();
     const result = payload?.data;
     if (result) {
-      purgeMessage.value = `Purged ${result.purged} rows (older than ${result.hours}h)`;
+      outboxPurgeMessage.value = `Purged ${result.purged} rows (older than ${result.hours}h)`;
     } else {
-      purgeMessage.value = "Outbox purge completed";
+      outboxPurgeMessage.value = "Outbox purge completed";
     }
   } catch (error) {
-    purgeMessage.value = "Outbox purge failed";
+    outboxPurgeMessage.value = "Outbox purge failed";
   } finally {
-    isPurging.value = false;
+    isPurgingOutbox.value = false;
   }
 };
 

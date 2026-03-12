@@ -22,6 +22,7 @@ class ChartPreviewRequest(BaseModel):
     candles: int = Field(50, ge=1, le=2000)
     emas: Optional[List[int]] = None
     show_bb: bool = True
+    show_atr: bool = True
     bb_length: int = Field(20, ge=1)
     bb_std: float = Field(2.0, gt=0)
 
@@ -64,6 +65,7 @@ async def preview_chart(
         candle_limit,
         ema_list,
         payload.show_bb,
+        payload.show_atr,
         payload.bb_length,
         payload.bb_std,
     )

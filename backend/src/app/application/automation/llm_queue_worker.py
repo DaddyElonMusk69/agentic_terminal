@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -12,6 +13,7 @@ from app.application.ai_providers.service import (
 )
 from app.application.automation.llm_queue_service import LlmQueuePolicy
 from app.application.automation.order_queue_service import OrderQueueService
+from app.application.automation.config_service import AutomationConfigService
 from app.application.automation import topics
 from app.application.bus.outbox_service import OutboxService
 from app.application.llm_caller.service import extract_chart_images
@@ -30,6 +32,13 @@ from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+_REVERSE_ACTION_MAP = {
+    "OPEN_LONG": "OPEN_SHORT",
+    "OPEN_SHORT": "OPEN_LONG",
+    "OPEN_LONG_LIMIT": "OPEN_SHORT_LIMIT",
+    "OPEN_SHORT_LIMIT": "OPEN_LONG_LIMIT",
+}
+
 
 class LlmQueueWorker:
     def __init__(
@@ -39,6 +48,7 @@ class LlmQueueWorker:
         order_queue: OrderQueueService,
         outbox: OutboxService,
         provider_repository: ProviderConfigRepository | None = None,
+        automation_config_service: AutomationConfigService | None = None,
         policy: Optional[LlmQueuePolicy] = None,
         telegram_notifier: TelegramNotificationService | None = None,
     ) -> None:
@@ -48,6 +58,7 @@ class LlmQueueWorker:
         self._order_queue = order_queue
         self._outbox = outbox
         self._provider_repository = provider_repository
+        self._automation_config_service = automation_config_service
         self._policy = policy or LlmQueuePolicy()
         self._telegram_notifier = telegram_notifier
         self._codex_temp_images = CodexTempImageStore(settings.codex_temp_image_path)
@@ -217,10 +228,18 @@ class LlmQueueWorker:
             )
             return True
 
+        reverse_order_enabled = await self._resolve_reverse_order_enabled()
+        transformed_ideas, order_reversal_metadata, reversed_actions = _apply_reverse_order_transform(
+            result.parse_result.ideas,
+            reverse_order_enabled,
+        )
+        reverse_order_applied = len(reversed_actions) > 0
+        execution_ideas = [idea.to_dict() for idea in transformed_ideas]
+        result_payload["parse_result"]["ideas"] = execution_ideas
+
         await self._repository.mark_done(item.id, result_payload)
         self._delete_codex_images_from_response(result.call_response.raw_response)
 
-        execution_ideas = [idea.to_dict() for idea in result.parse_result.ideas]
         response_meta = {
             "model": result.call_response.model,
             "tokens_used": result.call_response.tokens_used,
@@ -231,10 +250,13 @@ class LlmQueueWorker:
             _with_session(
                 {
                     "request_id": payload.get("request_id", item.id),
-                    "parse_result": result.parse_result.to_dict(),
+                    "parse_result": result_payload["parse_result"],
                     "execution_ideas": execution_ideas,
                     "protocol": protocol,
                     "response_meta": response_meta,
+                    "reverse_order_enabled": reverse_order_enabled,
+                    "reverse_order_applied": reverse_order_applied,
+                    "reversed_actions": reversed_actions,
                     "cycle_number": cycle_number,
                 },
                 session_id,
@@ -251,7 +273,7 @@ class LlmQueueWorker:
                     "llm_response": result.call_response.content,
                     "protocol": protocol,
                     "response_meta": response_meta,
-                    "parse_result": result.parse_result.to_dict(),
+                    "parse_result": result_payload["parse_result"],
                     "cycle_number": cycle_number,
                 },
                 session_id,
@@ -270,7 +292,7 @@ class LlmQueueWorker:
         if not should_enqueue_orders(execution_mode):
             return True
 
-        for idea in execution_ideas:
+        for idea, reversal_meta in zip(execution_ideas, order_reversal_metadata):
             await self._order_queue.enqueue(
                 {
                     "source_request_id": payload.get("request_id", item.id),
@@ -287,6 +309,9 @@ class LlmQueueWorker:
                     {
                         "execution_idea": idea,
                         "execution_mode": execution_mode.value,
+                        "reverse_order_applied": reversal_meta["reverse_order_applied"],
+                        "original_action": reversal_meta["original_action"],
+                        "effective_action": reversal_meta["effective_action"],
                         "cycle_number": cycle_number,
                     },
                     session_id,
@@ -357,6 +382,15 @@ class LlmQueueWorker:
         )
         await self._provider_repository.upsert(config)
 
+    async def _resolve_reverse_order_enabled(self) -> bool:
+        if self._automation_config_service is None:
+            return False
+        try:
+            config = await self._automation_config_service.get_config()
+        except Exception:
+            return False
+        return bool(getattr(config, "reverse_order_enabled", False))
+
 
 def _is_expired(item: LlmQueueItem, policy: LlmQueuePolicy) -> bool:
     now = datetime.now(timezone.utc)
@@ -407,6 +441,44 @@ def _infer_protocol_from_model(model: Optional[str]) -> Optional[str]:
     if "codex" in normalized:
         return "codex_cli"
     return None
+
+
+def _apply_reverse_order_transform(ideas, reverse_order_enabled: bool):
+    transformed_ideas = []
+    order_metadata = []
+    reversed_actions = []
+
+    for idea in ideas:
+        original_action = idea.action.value
+        effective_action = original_action
+        reverse_order_applied = False
+        transformed_idea = idea
+
+        if reverse_order_enabled:
+            reversed_action = _REVERSE_ACTION_MAP.get(original_action)
+            if reversed_action:
+                transformed_idea = replace(idea, action=idea.action.__class__(reversed_action))
+                effective_action = reversed_action
+                reverse_order_applied = True
+                reversed_actions.append(
+                    {
+                        "symbol": idea.symbol,
+                        "original_action": original_action,
+                        "effective_action": effective_action,
+                    }
+                )
+
+        transformed_ideas.append(transformed_idea)
+        order_metadata.append(
+            {
+                "symbol": idea.symbol,
+                "original_action": original_action,
+                "effective_action": effective_action,
+                "reverse_order_applied": reverse_order_applied,
+            }
+        )
+
+    return transformed_ideas, order_metadata, reversed_actions
 
 
 async def _resolve_provider_config(

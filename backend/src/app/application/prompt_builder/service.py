@@ -12,6 +12,7 @@ from app.application.chart_preview.service import ChartPreviewService
 from app.application.portfolio.service import PortfolioService
 from app.application.risk_management.config_service import RiskManagementConfigService
 from app.domain.chart_generator.models import (
+    AtrOverlay,
     BollingerBandsOverlay,
     EmaOverlay,
     VwapOverlay,
@@ -714,6 +715,11 @@ def _resolve_overlays(
 
     if "bb" not in overlay_keys and defaults.get("vegas_show_bb") is True:
         overlay_names.append("bb")
+        overlay_keys.add("bb")
+
+    if "atr" not in overlay_keys and defaults.get("vegas_show_atr", True) is True:
+        overlay_names.append("atr")
+        overlay_keys.add("atr")
 
     resolved: List[Any] = []
 
@@ -730,6 +736,9 @@ def _resolve_overlays(
             length = _resolve_bb_length(defaults)
             std_dev = _resolve_bb_std(defaults)
             resolved.append(BollingerBandsOverlay(length=length, std_dev=std_dev))
+        elif key == "atr":
+            length = _resolve_atr_length(defaults)
+            resolved.append(AtrOverlay(length=length))
         elif key == "vwap":
             resolved.append(VwapOverlay())
 
@@ -1181,6 +1190,15 @@ def _resolve_bb_std(defaults: Dict[str, Any]) -> float:
     except (TypeError, ValueError):
         return 2.0
     return value if value > 0 else 2.0
+
+
+def _resolve_atr_length(defaults: Dict[str, Any]) -> int:
+    raw = defaults.get("atr_length", defaults.get("vegas_atr_length", 14))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 14
+    return max(1, value)
 
 
 def _resolve_candle_limit(

@@ -6,6 +6,7 @@ pytest.importorskip("matplotlib")
 
 from app.application.chart_generator import ChartGenerator
 from app.domain.chart_generator import (
+    AtrOverlay,
     ChartData,
     ChartRenderRequest,
     EmaOverlay,
@@ -37,6 +38,7 @@ def test_chart_generator_renders_png():
             EmaOverlay(length=20, color="#FF9800"),
             VwapOverlay(),
             BollingerBandsOverlay(),
+            AtrOverlay(length=14),
         ],
         candle_limit=25,
     )

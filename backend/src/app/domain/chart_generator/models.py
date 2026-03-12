@@ -46,7 +46,14 @@ class BollingerBandsOverlay:
     linestyle: str = "--"
 
 
-ChartOverlay = Union[EmaOverlay, VwapOverlay, BollingerBandsOverlay]
+@dataclass(frozen=True)
+class AtrOverlay:
+    length: int = 14
+    color: str = "#FFA726"
+    width: float = 1.1
+
+
+ChartOverlay = Union[EmaOverlay, VwapOverlay, BollingerBandsOverlay, AtrOverlay]
 
 
 @dataclass(frozen=True)

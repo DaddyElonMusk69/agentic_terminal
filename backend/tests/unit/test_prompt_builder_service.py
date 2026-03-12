@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.application.prompt_builder.service import PromptBuilderService, PromptBuildError
+from app.domain.chart_generator.models import AtrOverlay
 from app.domain.prompt_builder.models import ChartRequest, PromptBuildRequest, PromptTemplate
 from app.domain.quant_scanner.models import QuantSnapshot
 from app.domain.portfolio.models import MarketCandle, MarketDataPoint, FundingRateSnapshot
@@ -33,7 +34,18 @@ class StubQuantProvider:
 
 
 class StubChartGenerator:
+    def __init__(self) -> None:
+        self.calls = []
+
     def render_with_overlays(self, symbol, interval, candle_limit, overlays=None):  # noqa: ANN001
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "candle_limit": candle_limit,
+                "overlays": list(overlays or []),
+            }
+        )
         return b"fakeimage"
 
 
@@ -235,6 +247,43 @@ async def test_prompt_builder_raises_on_missing_charts():
     with pytest.raises(PromptBuildError) as exc:
         await service.build(request)
     assert "missing chart snapshots" in str(exc.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_includes_atr_overlay_by_default():
+    template = PromptTemplate(
+        id=1,
+        name="default",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={"candles": 50},
+        is_default=True,
+    )
+    snapshot = _build_snapshot()
+    chart_preview = StubChartGenerator()
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=chart_preview,
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioService(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-atr",
+        template_id=1,
+        trigger_reason="new_resonance",
+        tickers=["BTC"],
+        intervals=["2h"],
+        chart_requests=[ChartRequest(interval="2h", candles=50)],
+    )
+
+    await service.build(request)
+    assert chart_preview.calls
+    overlays = chart_preview.calls[0]["overlays"]
+    assert any(isinstance(item, AtrOverlay) and item.length == 14 for item in overlays)
 
 
 @pytest.mark.asyncio

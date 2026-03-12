@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from app.application.chart_generator.service import ChartGenerator
 from app.domain.chart_generator.models import (
+    AtrOverlay,
     BollingerBandsOverlay,
     ChartData,
     ChartRenderRequest,
@@ -41,6 +42,7 @@ class ChartPreviewService:
         candle_limit: int,
         ema_lengths: Optional[List[int]] = None,
         show_bb: bool = True,
+        show_atr: bool = True,
         bb_length: int = 20,
         bb_std: float = 2.0,
     ) -> Optional[bytes]:
@@ -56,7 +58,7 @@ class ChartPreviewService:
         bb_length = _clamp_int(bb_length, 1, BinanceClient.MAX_KLINES_LIMIT)
         bb_std = float(bb_std) if bb_std and bb_std > 0 else 2.0
 
-        overlays = _build_overlays(ema_list, show_bb, bb_length, bb_std)
+        overlays = _build_overlays(ema_list, show_bb, show_atr, bb_length, bb_std)
         return self._render(symbol_key, timeframe, candle_limit, overlays, ema_list)
 
     def render_with_overlays(
@@ -168,6 +170,7 @@ def _compute_fetch_limit(candle_limit: int, ema_lengths: List[int]) -> int:
 def _build_overlays(
     ema_lengths: List[int],
     show_bb: bool,
+    show_atr: bool,
     bb_length: int,
     bb_std: float,
 ) -> List[object]:
@@ -177,4 +180,6 @@ def _build_overlays(
         overlays.append(EmaOverlay(length=length, color=color))
     if show_bb:
         overlays.append(BollingerBandsOverlay(length=bb_length, std_dev=bb_std))
+    if show_atr:
+        overlays.append(AtrOverlay(length=14))
     return overlays

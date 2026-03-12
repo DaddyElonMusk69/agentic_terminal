@@ -31,6 +31,7 @@ class AutomationConfigService:
         provider: Optional[str],
         model: Optional[str],
         include_entry_timing_15m_chart: bool = False,
+        reverse_order_enabled: bool = False,
         vegas_prompt_configs: Optional[dict[str, int]] = None,
     ) -> AutomationConfig:
         normalized = AutomationConfig(
@@ -40,6 +41,7 @@ class AutomationConfigService:
             provider=provider,
             model=model,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+            reverse_order_enabled=reverse_order_enabled,
             vegas_prompt_configs=vegas_prompt_configs,
         )
         normalized = self._normalize_config(normalized)
@@ -53,6 +55,7 @@ class AutomationConfigService:
             provider=None,
             model=None,
             include_entry_timing_15m_chart=False,
+            reverse_order_enabled=False,
             vegas_prompt_configs=None,
         )
 
@@ -63,6 +66,7 @@ class AutomationConfigService:
         ema_interval = _normalize_interval(config.ema_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         quant_interval = _normalize_interval(config.quant_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
+        reverse_order_enabled = _normalize_bool(config.reverse_order_enabled)
         prompt_map = _normalize_prompt_map(config.vegas_prompt_configs)
         return replace(
             config,
@@ -72,6 +76,7 @@ class AutomationConfigService:
             provider=provider or None,
             model=model or None,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+            reverse_order_enabled=reverse_order_enabled,
             vegas_prompt_configs=prompt_map,
         )
 

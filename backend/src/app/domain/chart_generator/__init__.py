@@ -4,6 +4,7 @@ from app.domain.chart_generator.models import (
     EmaOverlay,
     VwapOverlay,
     BollingerBandsOverlay,
+    AtrOverlay,
     ChartRenderRequest,
     ChartOverlay,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "EmaOverlay",
     "VwapOverlay",
     "BollingerBandsOverlay",
+    "AtrOverlay",
     "ChartRenderRequest",
     "ChartOverlay",
 ]
