@@ -31,7 +31,7 @@ def test_resonance_intervals_use_active_intervals():
     assert payload["intervals"] == ["2h", "4h", "8h"]
 
 
-def test_entry_timing_15m_chart_appends_to_chart_requests_only():
+def test_entry_timing_15m_chart_appends_to_chart_requests():
     event = _event(EmaStateTrigger.NEW_RESONANCE, active=["2h", "4h"])
     payload = build_prompt_request(
         event,
@@ -43,7 +43,7 @@ def test_entry_timing_15m_chart_appends_to_chart_requests_only():
     assert chart_intervals == ["2h", "4h", "8h", "15m"]
 
 
-def test_entry_timing_15m_chart_not_added_for_position_management():
+def test_entry_timing_15m_chart_added_for_position_management():
     event = _event(EmaStateTrigger.POSITION_MANAGEMENT, active=["2h", "4h"])
     payload = build_prompt_request(
         event,
@@ -52,7 +52,21 @@ def test_entry_timing_15m_chart_not_added_for_position_management():
     )
     chart_intervals = [item["interval"] for item in payload["chart_requests"]]
     assert payload["intervals"] == ["2h", "4h", "8h"]
-    assert chart_intervals == ["2h", "4h", "8h"]
+    assert chart_intervals == ["2h", "4h", "8h", "15m"]
+
+
+def test_position_management_template_context_includes_position_fields():
+    event = _event(EmaStateTrigger.POSITION_MANAGEMENT, active=["2h", "4h"])
+    event.ticker_state.position_direction = "LONG"
+    event.ticker_state.position_entry_price = 123.45
+    event.ticker_state.position_opened_at = datetime(2024, 9, 1, 8, 0, tzinfo=timezone.utc)
+    event.timestamp = datetime(2024, 9, 1, 10, 30, tzinfo=timezone.utc)
+
+    payload = build_prompt_request(event, ["2h", "4h", "8h"])
+
+    assert payload["template_context"]["position_side"] == "LONG"
+    assert payload["template_context"]["entry_price"] == 123.45
+    assert payload["template_context"]["duration"] == "2h30m"
 
 
 def test_entry_timing_15m_chart_is_deduped_when_already_present():
@@ -65,3 +79,28 @@ def test_entry_timing_15m_chart_is_deduped_when_already_present():
     chart_intervals = [item["interval"] for item in payload["chart_requests"]]
     assert payload["intervals"] == ["15m", "2h", "4h"]
     assert chart_intervals == ["15m", "2h", "4h"]
+
+
+def test_all_monitored_interval_charts_expand_chart_requests_only():
+    event = _event(EmaStateTrigger.NEW_RESONANCE, active=["2h", "4h"])
+    payload = build_prompt_request(
+        event,
+        ["30m", "1h", "2h", "4h", "8h"],
+        use_all_monitored_interval_charts=True,
+    )
+    chart_intervals = [item["interval"] for item in payload["chart_requests"]]
+    assert payload["intervals"] == ["2h", "4h", "8h"]
+    assert chart_intervals == ["30m", "1h", "2h", "4h", "8h"]
+
+
+def test_all_monitored_interval_charts_still_dedupes_entry_timing_chart():
+    event = _event(EmaStateTrigger.NEW_RESONANCE, active=["2h", "4h"])
+    payload = build_prompt_request(
+        event,
+        ["15m", "30m", "1h", "2h", "4h", "8h"],
+        include_entry_timing_15m_chart=True,
+        use_all_monitored_interval_charts=True,
+    )
+    chart_intervals = [item["interval"] for item in payload["chart_requests"]]
+    assert payload["intervals"] == ["2h", "4h", "8h"]
+    assert chart_intervals == ["15m", "30m", "1h", "2h", "4h", "8h"]

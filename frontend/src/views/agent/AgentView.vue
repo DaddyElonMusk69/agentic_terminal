@@ -783,7 +783,7 @@ const contextCategories = [
   },
 ];
 
-const DEFAULT_VEGAS_INTERVALS: string[] = [];
+const DEFAULT_VEGAS_INTERVALS: string[] = ["30m", "1h", "2h", "4h", "8h", "12h"];
 
 const monitoredIntervals = ref<string[]>([]);
 const isLoadingIntervals = ref(false);

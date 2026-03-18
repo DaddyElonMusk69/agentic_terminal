@@ -61,7 +61,7 @@ async def test_execute_codex_cli_raises_on_nonzero_exit(monkeypatch):
         fake_create_subprocess_exec,
     )
 
-    with pytest.raises(CodexCliError):
+    with pytest.raises(CodexCliError, match="boom"):
         await execute_codex_cli(
             prompt_text="test",
             model="gpt-5.3-codex",
@@ -141,3 +141,160 @@ async def test_execute_codex_cli_retries_without_ask_for_approval(monkeypatch):
     assert len(captured_cmds) == 2
     assert "--ask-for-approval" in captured_cmds[0]
     assert "--ask-for-approval" not in captured_cmds[1]
+
+
+@pytest.mark.asyncio
+async def test_execute_codex_cli_retries_without_ask_for_approval_with_help_footer(monkeypatch):
+    captured_cmds = []
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        captured_cmds.append(cmd)
+
+        class _Process:
+            returncode = 0
+
+            async def communicate(self, input=None):
+                output_path = cmd[cmd.index("--output-last-message") + 1]
+                if "--ask-for-approval" in cmd:
+                    self.returncode = 2
+                    stderr = (
+                        "error: unexpected argument '--ask-for-approval' found\n\n"
+                        "Usage: codex exec --skip-git-repo-check --json --sandbox "
+                        "<SANDBOX_MODE> --output-last-message <FILE> [PROMPT]\n\n"
+                        "For more information, try '--help'.\n"
+                    )
+                    return b"", stderr.encode("utf-8")
+                Path(output_path).write_text("fallback-ok", encoding="utf-8")
+                return b"", b""
+
+        return _Process()
+
+    monkeypatch.setattr(
+        "app.infrastructure.external.codex_cli.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    result = await execute_codex_cli(
+        prompt_text="hello",
+        model="gpt-5.3-codex",
+        images=[],
+        cli_path="codex",
+        timeout_seconds=30,
+    )
+
+    assert result.content == "fallback-ok"
+    assert len(captured_cmds) == 2
+    assert "--ask-for-approval" in captured_cmds[0]
+    assert "--ask-for-approval" not in captured_cmds[1]
+
+
+@pytest.mark.asyncio
+async def test_execute_codex_cli_prefers_structured_failure_message(monkeypatch):
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        class _Process:
+            returncode = 1
+
+            async def communicate(self, input=None):
+                stdout = (
+                    '{"type":"turn.failed","error":{"message":"stream disconnected before '
+                    'completion: error sending request for url '
+                    '(https://gmn.chuangzuoli.com/responses)"}}\n'
+                )
+                stderr = (
+                    "Reading prompt from stdin...\n"
+                    "Warning: no last agent message; wrote empty content to /tmp/codex-last.txt\n"
+                )
+                return stdout.encode("utf-8"), stderr.encode("utf-8")
+
+        return _Process()
+
+    monkeypatch.setattr(
+        "app.infrastructure.external.codex_cli.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    with pytest.raises(CodexCliError) as exc_info:
+        await execute_codex_cli(
+            prompt_text="describe the image",
+            model="gpt-5.3-codex",
+            images=[],
+            cli_path="codex",
+            timeout_seconds=30,
+        )
+
+    message = str(exc_info.value)
+    assert "stream disconnected before completion" in message
+    assert "no last agent message" not in message
+
+
+@pytest.mark.asyncio
+async def test_execute_codex_cli_filters_noise_from_stderr(monkeypatch):
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        class _Process:
+            returncode = 1
+
+            async def communicate(self, input=None):
+                stderr = (
+                    "Reading prompt from stdin...\n"
+                    "stream disconnected before completion: error sending request for url "
+                    "(https://gmn.chuangzuoli.com/responses)\n"
+                    "Warning: no last agent message; wrote empty content to /tmp/codex-last.txt\n"
+                )
+                return b"", stderr.encode("utf-8")
+
+        return _Process()
+
+    monkeypatch.setattr(
+        "app.infrastructure.external.codex_cli.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    with pytest.raises(CodexCliError) as exc_info:
+        await execute_codex_cli(
+            prompt_text="describe the image",
+            model="gpt-5.3-codex",
+            images=[],
+            cli_path="codex",
+            timeout_seconds=30,
+        )
+
+    message = str(exc_info.value)
+    assert "stream disconnected before completion" in message
+    assert "Reading prompt from stdin" not in message
+    assert "no last agent message" not in message
+
+
+@pytest.mark.asyncio
+async def test_execute_codex_cli_prefers_specific_cli_error_over_help_footer(monkeypatch):
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        class _Process:
+            returncode = 2
+
+            async def communicate(self, input=None):
+                stderr = (
+                    "error: unexpected argument '--ask-for-approval' found\n\n"
+                    "Usage: codex exec --skip-git-repo-check --json --sandbox "
+                    "<SANDBOX_MODE> --output-last-message <FILE> [PROMPT]\n\n"
+                    "For more information, try '--help'.\n"
+                )
+                return b"", stderr.encode("utf-8")
+
+        return _Process()
+
+    monkeypatch.setattr(
+        "app.infrastructure.external.codex_cli.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    with pytest.raises(CodexCliError) as exc_info:
+        await execute_codex_cli(
+            prompt_text="describe the image",
+            model="gpt-5.3-codex",
+            images=[],
+            cli_path="codex-broken",
+            timeout_seconds=30,
+        )
+
+    message = str(exc_info.value)
+    assert "unexpected argument '--ask-for-approval'" in message
+    assert "For more information, try '--help'." not in message

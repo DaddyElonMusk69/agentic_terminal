@@ -5,7 +5,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.application.quant_scanner.dependencies import get_quant_scan_runner
-from app.application.quant_scanner.runner import QuantConfigLoadError, QuantScanRunError
+from app.application.quant_scanner.runner import (
+    QuantConfigLoadError,
+    QuantScanAlreadyRunningError,
+    QuantScanCancelledError,
+    QuantScanRunError,
+)
 from app.common.api import ApiMeta
 from app.realtime.hub import hub
 
@@ -19,6 +24,16 @@ class QuantScanResults(BaseModel):
 
 class QuantScanResultsResponse(BaseModel):
     data: QuantScanResults
+    meta: Optional[ApiMeta] = None
+
+
+class QuantScanControlPayload(BaseModel):
+    running: bool
+    stop_requested: bool
+
+
+class QuantScanControlResponse(BaseModel):
+    data: QuantScanControlPayload
     meta: Optional[ApiMeta] = None
 
 
@@ -73,7 +88,28 @@ async def run_quant_scan(request: Request) -> QuantScanResultsResponse:
         )
     except QuantConfigLoadError as exc:
         raise HTTPException(status_code=500, detail="Failed to load quant scanner config") from exc
+    except QuantScanAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except QuantScanCancelledError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except QuantScanRunError as exc:
         raise HTTPException(status_code=500, detail="Quant scan failed") from exc
 
     return QuantScanResultsResponse(data=QuantScanResults(results=results), meta=_meta(request))
+
+
+@router.post("/stop", response_model=QuantScanControlResponse)
+async def stop_quant_scan(request: Request) -> QuantScanControlResponse:
+    runner = get_quant_scan_runner()
+    stop_requested = runner.cancel_active_scan()
+
+    if stop_requested:
+        await _emit_log(request, "Quant scan cancel requested.", "warning")
+
+    return QuantScanControlResponse(
+        data=QuantScanControlPayload(
+            running=runner.is_running(),
+            stop_requested=stop_requested,
+        ),
+        meta=_meta(request),
+    )

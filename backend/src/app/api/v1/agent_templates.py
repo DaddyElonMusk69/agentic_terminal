@@ -131,6 +131,13 @@ def _dedupe(values: List[str]) -> List[str]:
     return output
 
 
+def _interval_sort_key(interval: str) -> tuple[float, str]:
+    minutes = _timeframe_minutes(interval)
+    if minutes is None:
+        return (float("inf"), interval)
+    return (float(minutes), interval)
+
+
 def _build_chart_requests(
     chart_defaults: Optional[Dict[str, Any]],
     payload: PromptPreviewRequest,
@@ -157,14 +164,13 @@ def _build_chart_requests(
 
     interval_order: List[str] = []
     if isinstance(vegas_configs, dict) and vegas_configs:
-        for interval in monitored_intervals:
+        configured_intervals = [str(key).strip() for key in vegas_configs.keys() if str(key).strip()]
+        candidate_intervals = _dedupe([*monitored_intervals, *configured_intervals])
+        for interval in sorted(candidate_intervals, key=_interval_sort_key):
             if interval in vegas_configs or interval.lower() in vegas_configs:
                 interval_order.append(interval)
-        if not interval_order:
-            for key in vegas_configs.keys():
-                interval_order.append(str(key))
     else:
-        interval_order = list(monitored_intervals)
+        interval_order = sorted(_dedupe(monitored_intervals), key=_interval_sort_key)
 
     if not interval_order:
         return []

@@ -35,7 +35,7 @@
 
           <button
             class="w-full rounded-md border border-border px-3 py-2 text-sm font-medium transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-70"
-            :class="automationIsRunning || !automationStateReady ? 'bg-panel text-muted' : 'bg-accent text-base'"
+            :class="scanButtonClass"
             type="button"
             :disabled="isScanDisabled"
             @click="handleRun"
@@ -973,13 +973,27 @@ const filteredLogs = computed(() => {
 
 const scanButtonLabel = computed(() => {
   if (!automationStateReady.value) return "Checking automation...";
-  if (store.isRunning) return "Scanning...";
+  if (store.isStopping) return "Stopping...";
+  if (store.isRunning) return "Stop Scan";
   if (automationIsRunning.value) return "managed by agent";
   return "Run Scan Once";
 });
 
+const scanButtonClass = computed(() => {
+  if (!automationStateReady.value || automationIsRunning.value) {
+    return "bg-panel text-muted";
+  }
+  if (store.isStopping) {
+    return "bg-warning/20 text-warning";
+  }
+  if (store.isRunning) {
+    return "bg-warning text-base";
+  }
+  return "bg-accent text-base";
+});
+
 const isScanDisabled = computed(
-  () => !automationStateReady.value || store.isRunning || automationIsRunning.value,
+  () => !automationStateReady.value || automationIsRunning.value || store.isStopping,
 );
 
 const loadAutomationState = async () => {
@@ -998,6 +1012,10 @@ const loadAutomationState = async () => {
 
 const handleRun = () => {
   if (isScanDisabled.value) return;
+  if (store.isRunning) {
+    void store.stopScan();
+    return;
+  }
   void store.runScan();
 };
 

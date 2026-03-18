@@ -61,6 +61,7 @@ class AutomationPipelineService:
         llm_model: str | None = None,
         llm_provider: str | None = None,
         include_entry_timing_15m_chart: bool = False,
+        use_all_monitored_interval_charts: bool = False,
         session_id: str | None = None,
         cycle_number: int | None = None,
     ) -> dict:
@@ -149,6 +150,7 @@ class AutomationPipelineService:
                     llm_model=llm_model,
                     llm_provider=llm_provider,
                     include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+                    use_all_monitored_interval_charts=use_all_monitored_interval_charts,
                     session_id=session_id,
                 )
                 payload["cycle_number"] = cycle_number

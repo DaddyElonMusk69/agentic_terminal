@@ -6,7 +6,7 @@ from app.application.prompt_builder.service import PromptBuilderService, PromptB
 from app.domain.chart_generator.models import AtrOverlay
 from app.domain.prompt_builder.models import ChartRequest, PromptBuildRequest, PromptTemplate
 from app.domain.quant_scanner.models import QuantSnapshot
-from app.domain.portfolio.models import MarketCandle, MarketDataPoint, FundingRateSnapshot
+from app.domain.portfolio.models import FundingRateSnapshot, MarketCandle, MarketDataPoint, Position
 from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 
 
@@ -64,6 +64,26 @@ class StubPortfolioSnapshot:
     positions = []
 
 
+class StubPortfolioSnapshotWithPosition:
+    state = StubPortfolioState()
+
+    def __init__(self) -> None:
+        self.positions = [
+            Position(
+                symbol="TON/USDT",
+                direction="long",
+                size=10.0,
+                entry_price=3.25,
+                mark_price=3.41,
+                unrealized_pnl=1.75,
+                liquidation_price=2.1,
+                margin=5.0,
+                leverage=6.0,
+                opened_at=datetime(2024, 9, 1, 10, 0, tzinfo=timezone.utc),
+            )
+        ]
+
+
 class StubDailyPnl:
     realized_pnl = 0.0
     trade_count = 0
@@ -81,6 +101,11 @@ class StubPortfolioService:
 
     async def get_recent_trades(self, limit):  # noqa: ANN001
         return []
+
+
+class StubPortfolioServiceWithPosition(StubPortfolioService):
+    async def get_portfolio_snapshot(self):
+        return StubPortfolioSnapshotWithPosition()
 
 
 class StubRiskConfig:
@@ -112,7 +137,7 @@ class StubUploaderService:
         return self._uploader
 
 
-def _build_snapshot() -> QuantSnapshot:
+def _build_snapshot(symbol: str = "BTC") -> QuantSnapshot:
     candle = MarketCandle(
         timestamp_ms=1700000000000,
         open=1.0,
@@ -124,7 +149,7 @@ def _build_snapshot() -> QuantSnapshot:
     oi_point = MarketDataPoint(timestamp_ms=1700000000000, value=100.0)
     funding = FundingRateSnapshot(rate=0.0001, timestamp_ms=1700000000000)
     return QuantSnapshot(
-        symbol="BTC",
+        symbol=symbol,
         timeframe="2h",
         timestamp=datetime(2024, 9, 1, tzinfo=timezone.utc),
         candles=[candle],
@@ -321,3 +346,46 @@ async def test_prompt_builder_uses_local_codex_temp_images(tmp_path):
     assert result.chart_items
     image_url = result.chart_items[0]["image_url"]
     assert image_url.startswith(str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_formats_position_management_template_context():
+    template = PromptTemplate(
+        id=1,
+        name="pm",
+        intro=(
+            "You have an open {direction} position on {ticker}. "
+            "Entry: ${entry_price} | Current: {current_price} | "
+            "Unrealized PnL: {pnl_display} | Duration: {duration}"
+        ),
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={"data_selections": ["quantitative_signals"]},
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "open LONG position on TON/USDT" in result.prompt_text
+    assert "Entry: $3.2500" in result.prompt_text
+    assert "Current: $3.4100" in result.prompt_text
+    assert "Unrealized PnL: $1.75" in result.prompt_text
+    assert "Duration: " in result.prompt_text

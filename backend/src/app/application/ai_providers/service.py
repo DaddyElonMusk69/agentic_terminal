@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import time
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from app.domain.ai_providers.interfaces import ProviderConfigRepository
@@ -13,6 +17,7 @@ CODEX_LAST_SUCCESS_MODEL_KEY = "codex_last_success_model"
 CODEX_DISCOVERED_MODELS_KEY = "codex_discovered_models"
 CODEX_DISCOVERED_MODELS_MAX = 20
 CODEX_FALLBACK_MODELS = [
+    "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5-codex",
     "gpt-5.1-codex",
@@ -355,6 +360,8 @@ def _list_codex_models(defaults: Optional[ProviderDefaults], config: Optional[Pr
     last_success = str(settings.get(CODEX_LAST_SUCCESS_MODEL_KEY)).strip() if settings and settings.get(CODEX_LAST_SUCCESS_MODEL_KEY) else None
 
     candidates: List[str] = []
+    candidates.extend(_read_codex_models_cache())
+    candidates.extend(_read_codex_config_models())
     if config and config.default_model:
         candidates.append(config.default_model)
     if last_success:
@@ -362,8 +369,7 @@ def _list_codex_models(defaults: Optional[ProviderDefaults], config: Optional[Pr
     candidates.extend(discovered)
     if defaults:
         candidates.extend(defaults.models)
-    if not candidates:
-        candidates.extend(CODEX_FALLBACK_MODELS)
+    candidates.extend(CODEX_FALLBACK_MODELS)
     return _dedupe(candidates)
 
 
@@ -424,6 +430,81 @@ def _dedupe(items: List[str]) -> List[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _read_codex_config_models() -> List[str]:
+    config_path = _codex_home_path() / "config.toml"
+    try:
+        raw = config_path.read_bytes()
+    except OSError:
+        return []
+
+    try:
+        payload = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return []
+
+    if not isinstance(payload, dict):
+        return []
+
+    candidates: List[str] = []
+    model = payload.get("model")
+    if isinstance(model, str) and model.strip():
+        candidates.append(model.strip())
+
+    profiles = payload.get("profiles")
+    if isinstance(profiles, dict):
+        for profile in profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            profile_model = profile.get("model")
+            if isinstance(profile_model, str) and profile_model.strip():
+                candidates.append(profile_model.strip())
+
+    notice = payload.get("notice")
+    if isinstance(notice, dict):
+        migrations = notice.get("model_migrations")
+        if isinstance(migrations, dict):
+            for target in migrations.values():
+                if isinstance(target, str) and target.strip():
+                    candidates.append(target.strip())
+
+    return _dedupe(candidates)
+
+
+def _read_codex_models_cache() -> List[str]:
+    cache_path = _codex_home_path() / "models_cache.json"
+    try:
+        raw = cache_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+
+    results: List[str] = []
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        visibility = str(entry.get("visibility") or "").strip().lower()
+        if visibility and visibility not in {"list", "visible"}:
+            continue
+        slug = entry.get("slug")
+        if isinstance(slug, str) and slug.strip():
+            results.append(slug.strip())
+
+    return _dedupe(results)
+
+
+def _codex_home_path() -> Path:
+    root = os.environ.get("CODEX_HOME")
+    return Path(root).expanduser() if root else Path.home() / ".codex"
 
 
 async def _fetch_openai_models(base_url: str, api_key: Optional[str]) -> List[str]:

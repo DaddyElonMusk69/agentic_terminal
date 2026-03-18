@@ -9,6 +9,7 @@ type ApiErrorDetail = {
 type ApiEnvelope<T> = {
   data?: T;
   error?: ApiErrorDetail;
+  detail?: string;
 };
 
 type RealtimeEnvelope<T = unknown> = {
@@ -46,6 +47,7 @@ export const useScannerQuantStore = defineStore("scannerQuant", {
   state: () => ({
     isConnected: false,
     isRunning: false,
+    isStopping: false,
     logs: [] as QuantLog[],
     results: [] as QuantSignal[],
     opportunities: {} as Record<string, QuantSignal>,
@@ -72,6 +74,7 @@ export const useScannerQuantStore = defineStore("scannerQuant", {
       socket.on("disconnect", () => {
         this.isConnected = false;
         this.isRunning = false;
+        this.isStopping = false;
       });
 
       socket.on("event", (envelope: RealtimeEnvelope) => {
@@ -88,6 +91,7 @@ export const useScannerQuantStore = defineStore("scannerQuant", {
         }
         if (envelope.topic === QUANT_COMPLETE_TOPIC) {
           this.isRunning = false;
+          this.isStopping = false;
         }
       });
     },
@@ -95,6 +99,7 @@ export const useScannerQuantStore = defineStore("scannerQuant", {
       socketClient.disconnect();
       socketExchangeId = "";
       this.isConnected = false;
+      this.isStopping = false;
     },
     appendLog(entry: QuantLog) {
       this.logs.unshift(entry);
@@ -126,8 +131,9 @@ export const useScannerQuantStore = defineStore("scannerQuant", {
       this.opportunities = {};
     },
     async runScan() {
-      if (this.isRunning) return;
+      if (this.isRunning || this.isStopping) return;
       this.isRunning = true;
+      this.isStopping = false;
       this.clearLogs();
       this.results = [];
       this.opportunities = {};
@@ -136,16 +142,48 @@ export const useScannerQuantStore = defineStore("scannerQuant", {
         const res = await fetch("/api/v1/scanner/quant/run", { method: "POST" });
         const data = await parseResponse<{ results: QuantSignal[] }>(res);
         if (!res.ok) {
-          const message = data.error?.message || "Quant scan failed.";
-          this.appendLog({ message, type: "error" });
+          const message = data.error?.message || data.detail || "Quant scan failed.";
+          const cancelled = this.isStopping || /cancel/i.test(message);
+          if (!cancelled) {
+            this.appendLog({ message, type: res.status === 409 ? "warning" : "error" });
+          }
           return;
         }
         this.setResults(data.data?.results || []);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Quant scan failed.";
-        this.appendLog({ message, type: "error" });
+        if (!this.isStopping) {
+          this.appendLog({ message, type: "error" });
+        }
       } finally {
         this.isRunning = false;
+        this.isStopping = false;
+      }
+    },
+    async stopScan() {
+      if (!this.isRunning || this.isStopping) return false;
+      this.isStopping = true;
+
+      try {
+        const res = await fetch("/api/v1/scanner/quant/stop", { method: "POST" });
+        const data = await parseResponse<{ running: boolean; stop_requested: boolean }>(res);
+        if (!res.ok) {
+          const message = data.error?.message || data.detail || "Failed to stop quant scan.";
+          this.appendLog({ message, type: "error" });
+          this.isStopping = false;
+          return false;
+        }
+        const stopRequested = Boolean(data.data?.stop_requested);
+        if (!stopRequested) {
+          this.isRunning = Boolean(data.data?.running);
+          this.isStopping = false;
+        }
+        return stopRequested;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to stop quant scan.";
+        this.appendLog({ message, type: "error" });
+        this.isStopping = false;
+        return false;
       }
     },
     async loadAssets() {

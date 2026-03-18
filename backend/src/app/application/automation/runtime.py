@@ -44,6 +44,7 @@ class AutomationRuntimeConfig:
     provider: Optional[str] = None
     model: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
+    use_all_monitored_interval_charts: bool = False
     reverse_order_enabled: bool = False
     vegas_prompt_configs: Optional[dict[str, int]] = None
     session_id: Optional[str] = None
@@ -81,6 +82,7 @@ class AutomationRuntime:
                 llm_model=normalized.model,
                 llm_provider=normalized.provider,
                 include_entry_timing_15m_chart=normalized.include_entry_timing_15m_chart,
+                use_all_monitored_interval_charts=normalized.use_all_monitored_interval_charts,
                 session_id=session_id,
             )
             await self._scheduler.start()
@@ -116,6 +118,7 @@ class AutomationRuntime:
             "provider": self._config.provider,
             "model": self._config.model,
             "include_entry_timing_15m_chart": self._config.include_entry_timing_15m_chart,
+            "use_all_monitored_interval_charts": self._config.use_all_monitored_interval_charts,
             "reverse_order_enabled": self._config.reverse_order_enabled,
             "vegas_prompt_configs": self._config.vegas_prompt_configs,
             "started_at": _format_dt(self._started_at),
@@ -217,6 +220,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
     provider = config.provider.strip() if config.provider else None
     model = config.model.strip() if config.model else None
     include_entry_timing_15m_chart = bool(config.include_entry_timing_15m_chart)
+    use_all_monitored_interval_charts = bool(config.use_all_monitored_interval_charts)
     reverse_order_enabled = bool(config.reverse_order_enabled)
     prompt_map = _normalize_prompt_map(config.vegas_prompt_configs)
 
@@ -227,6 +231,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
         provider=provider or None,
         model=model or None,
         include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+        use_all_monitored_interval_charts=use_all_monitored_interval_charts,
         reverse_order_enabled=reverse_order_enabled,
         vegas_prompt_configs=prompt_map,
         session_id=config.session_id or None,

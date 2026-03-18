@@ -386,7 +386,9 @@ const syncForm = (provider: ProviderInfo | null) => {
 
 const loadProviderModels = async (providerName: string, force = false) => {
   if (!providerName) return;
-  if (!force) {
+  const normalized = providerName.toLowerCase();
+  const shouldUseCache = normalized !== "codex";
+  if (!force && shouldUseCache) {
     const cached = readModelCache(providerName);
     if (cached) {
       providerModels.value = cached;

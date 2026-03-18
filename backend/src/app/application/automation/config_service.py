@@ -31,6 +31,7 @@ class AutomationConfigService:
         provider: Optional[str],
         model: Optional[str],
         include_entry_timing_15m_chart: bool = False,
+        use_all_monitored_interval_charts: bool = False,
         reverse_order_enabled: bool = False,
         vegas_prompt_configs: Optional[dict[str, int]] = None,
     ) -> AutomationConfig:
@@ -41,6 +42,7 @@ class AutomationConfigService:
             provider=provider,
             model=model,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+            use_all_monitored_interval_charts=use_all_monitored_interval_charts,
             reverse_order_enabled=reverse_order_enabled,
             vegas_prompt_configs=vegas_prompt_configs,
         )
@@ -55,6 +57,7 @@ class AutomationConfigService:
             provider=None,
             model=None,
             include_entry_timing_15m_chart=False,
+            use_all_monitored_interval_charts=False,
             reverse_order_enabled=False,
             vegas_prompt_configs=None,
         )
@@ -66,6 +69,7 @@ class AutomationConfigService:
         ema_interval = _normalize_interval(config.ema_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         quant_interval = _normalize_interval(config.quant_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
+        use_all_monitored_interval_charts = _normalize_bool(config.use_all_monitored_interval_charts)
         reverse_order_enabled = _normalize_bool(config.reverse_order_enabled)
         prompt_map = _normalize_prompt_map(config.vegas_prompt_configs)
         return replace(
@@ -76,6 +80,7 @@ class AutomationConfigService:
             provider=provider or None,
             model=model or None,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
+            use_all_monitored_interval_charts=use_all_monitored_interval_charts,
             reverse_order_enabled=reverse_order_enabled,
             vegas_prompt_configs=prompt_map,
         )

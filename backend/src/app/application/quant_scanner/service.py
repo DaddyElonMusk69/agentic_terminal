@@ -30,6 +30,7 @@ DEFAULT_ATR_SLOPE_WINDOW = 5
 
 LogCallback = Callable[[str, str], Awaitable[None] | None]
 SnapshotCallback = Callable[[QuantSnapshot], Awaitable[None] | None]
+CancelCheck = Callable[[], bool]
 
 
 async def _emit_log(
@@ -53,6 +54,11 @@ async def _emit_snapshot(
     result = snapshot_callback(snapshot)
     if inspect.isawaitable(result):
         await result
+
+
+async def _raise_if_cancelled(cancel_check: Optional[CancelCheck]) -> None:
+    if cancel_check and cancel_check():
+        raise asyncio.CancelledError()
 
 
 def _format_number(value: Optional[float], decimals: int = 2) -> str:
@@ -116,6 +122,7 @@ class QuantScannerService:
         limit: int = 200,
         log_callback: Optional[LogCallback] = None,
         snapshot_callback: Optional[SnapshotCallback] = None,
+        cancel_check: Optional[CancelCheck] = None,
     ) -> List[QuantSnapshot]:
         if not config.assets or not config.timeframes:
             return []
@@ -127,6 +134,7 @@ class QuantScannerService:
         scan_count = 0
 
         for asset in config.assets:
+            await _raise_if_cancelled(cancel_check)
             symbol = _normalize_asset(asset, config.quote_asset)
             if not symbol:
                 continue
@@ -198,7 +206,9 @@ class QuantScannerService:
                     "warning",
                 )
 
+            await _raise_if_cancelled(cancel_check)
             raw_netflow = await self._netflow_service.fetch_raw(symbol)
+            await _raise_if_cancelled(cancel_check)
             if raw_netflow is None and not self._netflow_service.is_configured():
                 await _emit_log(
                     log_callback,
@@ -207,6 +217,7 @@ class QuantScannerService:
                 )
 
             for timeframe in config.timeframes:
+                await _raise_if_cancelled(cancel_check)
                 scan_count += 1
                 await _emit_log(
                     log_callback,
@@ -219,6 +230,7 @@ class QuantScannerService:
                     timeframe,
                     candles_needed,
                 )
+                await _raise_if_cancelled(cancel_check)
                 if not candles:
                     await _emit_log(
                         log_callback,
@@ -258,6 +270,7 @@ class QuantScannerService:
                         timeframe,
                         candles_needed,
                     )
+                    await _raise_if_cancelled(cancel_check)
                 except Exception:
                     oi_points = []
                 if not oi_points:
@@ -452,6 +465,7 @@ class QuantScannerService:
 
                 self._cache.set(snapshot)
                 snapshots.append(snapshot)
+                await _raise_if_cancelled(cancel_check)
                 await _emit_snapshot(snapshot_callback, snapshot)
 
                 summary_parts: List[str] = []

@@ -18,13 +18,6 @@ RESONANCE_TRIGGERS = {
 }
 POSITION_TRIGGER = "position_management"
 ENTRY_TIMING_INTERVAL = "15m"
-ENTRY_CHART_TRIGGERS = {
-    "new_resonance",
-    "resonance_increase",
-    "structure_shift",
-    "resonance_refresh",
-    "bb_rejection_entry",
-}
 
 
 def build_prompt_request(
@@ -35,6 +28,7 @@ def build_prompt_request(
     llm_model: Optional[str] = None,
     llm_provider: Optional[str] = None,
     include_entry_timing_15m_chart: bool = False,
+    use_all_monitored_interval_charts: bool = False,
     session_id: Optional[str] = None,
 ) -> dict:
     mode = normalize_execution_mode(
@@ -45,8 +39,12 @@ def build_prompt_request(
     primary_interval = _select_primary_interval(
         event.bb_signal_intervals or event.active_intervals or intervals
     )
-    chart_intervals = _dedupe_preserve(intervals)
-    if include_entry_timing_15m_chart and trigger_reason in ENTRY_CHART_TRIGGERS:
+    chart_intervals = _select_chart_intervals(
+        intervals,
+        monitored_intervals,
+        use_all_monitored_interval_charts=use_all_monitored_interval_charts,
+    )
+    if include_entry_timing_15m_chart:
         if ENTRY_TIMING_INTERVAL not in chart_intervals:
             chart_intervals.append(ENTRY_TIMING_INTERVAL)
     chart_requests = [ChartRequest(interval=interval) for interval in chart_intervals]
@@ -71,6 +69,12 @@ def build_prompt_request(
             "trigger_reason": trigger_reason,
             "resonance_count": event.resonance_count,
             "direction": event.direction_signal,
+            "position_side": event.ticker_state.position_direction,
+            "entry_price": event.ticker_state.position_entry_price,
+            "duration": _format_position_duration(
+                event.ticker_state.position_opened_at,
+                now=event.timestamp,
+            ),
         },
     }
 
@@ -102,6 +106,17 @@ def _select_intervals(event: EmaStateEvent, monitored_intervals: Sequence[str]) 
         return active_intervals
 
     return _dedupe_preserve(event.active_intervals)
+
+
+def _select_chart_intervals(
+    intervals: Sequence[str],
+    monitored_intervals: Sequence[str],
+    *,
+    use_all_monitored_interval_charts: bool,
+) -> List[str]:
+    if use_all_monitored_interval_charts:
+        return _dedupe_preserve(monitored_intervals)
+    return _dedupe_preserve(intervals)
 
 
 def _get_interval_and_higher(interval: str, monitored_intervals: Sequence[str]) -> List[str]:
@@ -190,3 +205,25 @@ def _dedupe_preserve(values: Sequence[str]) -> List[str]:
         seen.add(item)
         output.append(item)
     return output
+
+
+def _format_position_duration(
+    opened_at,
+    *,
+    now,
+) -> Optional[str]:
+    if not opened_at or not now:
+        return None
+    delta = now - opened_at
+    total_minutes = int(delta.total_seconds() / 60)
+    if total_minutes < 0:
+        return None
+    if total_minutes < 60:
+        return f"{total_minutes}m"
+    if total_minutes < 1440:
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        return f"{hours}h{minutes}m"
+    days = total_minutes // 1440
+    hours = (total_minutes % 1440) // 60
+    return f"{days}d{hours}h"

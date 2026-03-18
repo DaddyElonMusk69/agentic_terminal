@@ -72,6 +72,14 @@
         <button
           class="rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted transition hover:text-text disabled:opacity-60"
           type="button"
+          :disabled="isPurgingPromptQueue"
+          @click="handlePromptQueuePurge"
+        >
+          {{ isPurgingPromptQueue ? "Purging..." : "Purge Prompt Queue" }}
+        </button>
+        <button
+          class="rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted transition hover:text-text disabled:opacity-60"
+          type="button"
           :disabled="isPurgingOutbox"
           @click="handleOutboxPurge"
         >
@@ -79,6 +87,9 @@
         </button>
         <span v-if="llmQueuePurgeMessage" class="text-[11px] text-muted">
           {{ llmQueuePurgeMessage }}
+        </span>
+        <span v-if="promptQueuePurgeMessage" class="text-[11px] text-muted">
+          {{ promptQueuePurgeMessage }}
         </span>
         <span v-if="outboxPurgeMessage" class="text-[11px] text-muted">
           {{ outboxPurgeMessage }}
@@ -329,6 +340,8 @@ const isPurgingOutbox = ref(false);
 const outboxPurgeMessage = ref<string | null>(null);
 const isPurgingLlmQueue = ref(false);
 const llmQueuePurgeMessage = ref<string | null>(null);
+const isPurgingPromptQueue = ref(false);
+const promptQueuePurgeMessage = ref<string | null>(null);
 
 const rangeToMs = (range: string) => {
   if (range === "1h") return 60 * 60 * 1000;
@@ -576,6 +589,29 @@ const handleLlmQueuePurge = async () => {
     llmQueuePurgeMessage.value = "LLM queue purge failed";
   } finally {
     isPurgingLlmQueue.value = false;
+  }
+};
+
+const handlePromptQueuePurge = async () => {
+  if (isPurgingPromptQueue.value) return;
+  isPurgingPromptQueue.value = true;
+  promptQueuePurgeMessage.value = null;
+  try {
+    const response = await fetch("/api/v1/automation/prompt-queue/purge", { method: "POST" });
+    if (!response.ok) {
+      throw new Error("Purge failed");
+    }
+    const payload = await response.json();
+    const result = payload?.data;
+    if (result) {
+      promptQueuePurgeMessage.value = `Purged ${result.purged} queued prompt requests`;
+    } else {
+      promptQueuePurgeMessage.value = "Prompt queue purge completed";
+    }
+  } catch (error) {
+    promptQueuePurgeMessage.value = "Prompt queue purge failed";
+  } finally {
+    isPurgingPromptQueue.value = false;
   }
 };
 

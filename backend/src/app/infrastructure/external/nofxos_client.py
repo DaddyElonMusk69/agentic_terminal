@@ -25,6 +25,8 @@ class NofXOSClient:
     DEFAULT_RETRY_MAX_DELAY = 4.0
     DEFAULT_RETRY_JITTER = 0.3
     DEFAULT_RATE_LIMIT_BACKOFF = 15.0
+    DEFAULT_MAX_KEEPALIVE_CONNECTIONS = 10
+    DEFAULT_MAX_CONNECTIONS = 20
     _rate_lock = threading.Lock()
     _rate_timestamps = deque()
     _rate_configured = False
@@ -44,16 +46,15 @@ class NofXOSClient:
         self._api_key = api_key or os.environ.get("NOFXOS_API_KEY")
         self._base_url = base_url or os.environ.get("NOFXOS_API_URL") or self.DEFAULT_BASE_URL
         self._timeout = _resolve_timeout(timeout, self.DEFAULT_TIMEOUT)
-        verify = False if _allow_insecure_ssl() else certifi.where()
-        self._client = httpx.Client(
-            timeout=self._timeout,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            },
-            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
-            verify=verify,
+        self._verify = False if _allow_insecure_ssl() else certifi.where()
+        self._headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        self._limits = httpx.Limits(
+            max_keepalive_connections=self.DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+            max_connections=self.DEFAULT_MAX_CONNECTIONS,
         )
         self._ensure_rate_config()
 
@@ -76,20 +77,19 @@ class NofXOSClient:
         for attempt in range(1, max_attempts + 1):
             try:
                 self._throttle()
-                response = self._client.get(url, params=params)
-                payload = response.text
-                if response.status_code != 200:
+                status_code, resolved_url, payload = self._request(url, params)
+                if status_code != 200:
                     logger.warning(
                         "NofXOS API HTTP error %s for %s payload=%s",
-                        response.status_code,
-                        response.url,
+                        status_code,
+                        resolved_url,
                         payload[:200],
                     )
-                    if attempt < max_attempts and _is_retryable_http(response.status_code):
+                    if attempt < max_attempts and _is_retryable_http(status_code):
                         time.sleep(
                             self._retry_delay(
                                 attempt,
-                                is_rate_limit=response.status_code in {418, 429},
+                                is_rate_limit=status_code in {418, 429},
                             )
                         )
                         continue
@@ -133,6 +133,18 @@ class NofXOSClient:
                     continue
                 return None
         return None
+
+    def _request(self, url: str, params: Dict[str, Any]) -> tuple[int, str, str]:
+        # Use a short-lived client for each request so long-running automation sessions
+        # do not get stuck behind a stale or exhausted shared connection pool.
+        with httpx.Client(
+            timeout=self._timeout,
+            headers=self._headers,
+            limits=self._limits,
+            verify=self._verify,
+        ) as client:
+            response = client.get(url, params=params)
+            return response.status_code, str(response.url), response.text
 
     def _normalize_symbol(self, symbol: str) -> str:
         clean = (

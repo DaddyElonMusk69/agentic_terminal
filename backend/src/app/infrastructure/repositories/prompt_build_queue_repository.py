@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.infrastructure.db.models.prompt_build_queue import PromptBuildRequestModel
@@ -74,6 +74,17 @@ class PromptBuildQueueRepository:
 
     async def mark_dropped(self, request_id: str, reason: str) -> None:
         await self._finalize(request_id, "dropped", result=None, error=reason)
+
+    async def delete_by_statuses(self, statuses: Iterable[str]) -> int:
+        status_values = [status for status in statuses if status]
+        if not status_values:
+            return 0
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                delete(PromptBuildRequestModel).where(PromptBuildRequestModel.status.in_(status_values))
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
 
     async def _finalize(
         self,

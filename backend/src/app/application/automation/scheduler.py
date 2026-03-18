@@ -25,6 +25,7 @@ class AutomationScheduler:
         llm_model: Optional[str] = None,
         llm_provider: Optional[str] = None,
         include_entry_timing_15m_chart: bool = False,
+        use_all_monitored_interval_charts: bool = False,
         session_id: Optional[str] = None,
     ) -> None:
         self._pipeline = pipeline
@@ -35,6 +36,7 @@ class AutomationScheduler:
         self._llm_model = llm_model
         self._llm_provider = llm_provider
         self._include_entry_timing_15m_chart = bool(include_entry_timing_15m_chart)
+        self._use_all_monitored_interval_charts = bool(use_all_monitored_interval_charts)
         self._session_id = session_id
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
@@ -67,6 +69,7 @@ class AutomationScheduler:
                     llm_model=self._llm_model,
                     llm_provider=self._llm_provider,
                     include_entry_timing_15m_chart=self._include_entry_timing_15m_chart,
+                    use_all_monitored_interval_charts=self._use_all_monitored_interval_charts,
                     session_id=self._session_id,
                     cycle_number=cycle_number,
                 )

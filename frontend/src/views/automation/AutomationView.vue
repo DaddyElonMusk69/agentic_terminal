@@ -178,12 +178,16 @@
                 Model
                 <select
                   class="mt-2 w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-text"
-                  :disabled="models.length === 0"
+                  :disabled="availableModels.length === 0"
                   :value="automationConfig.model"
                   @change="handleModelChange"
                 >
                   <option value="">Select model</option>
-                  <option v-for="model in models" :key="modelKey(model)" :value="modelValue(model)">
+                  <option
+                    v-for="model in availableModels"
+                    :key="modelKey(model)"
+                    :value="modelValue(model)"
+                  >
                     {{ modelLabel(model) }}
                   </option>
                 </select>
@@ -193,9 +197,9 @@
                 class="flex items-center justify-between rounded-md border border-border bg-panel/50 px-3 py-2 text-[11px] text-muted"
               >
                 <div>
-                  <div class="text-text">Add 15m Entry Timing Chart</div>
+                  <div class="text-text">Add 15m Timing Chart</div>
                   <div class="text-[10px] text-muted">
-                    Applies to entry-related prompts only.
+                    Applies to all prompts, including position management.
                   </div>
                 </div>
                 <input
@@ -205,6 +209,27 @@
                     updateConfigPersisted({
                       include_entry_timing_15m_chart:
                         automationConfig.include_entry_timing_15m_chart,
+                    })
+                  "
+                />
+              </label>
+
+              <label
+                class="flex items-center justify-between rounded-md border border-border bg-panel/50 px-3 py-2 text-[11px] text-muted"
+              >
+                <div>
+                  <div class="text-text">Use All Monitored Interval Charts</div>
+                  <div class="text-[10px] text-muted">
+                    When enabled, prompts include charts for every monitored interval instead of only the event-selected intervals.
+                  </div>
+                </div>
+                <input
+                  v-model="automationConfig.use_all_monitored_interval_charts"
+                  type="checkbox"
+                  @change="
+                    updateConfigPersisted({
+                      use_all_monitored_interval_charts:
+                        automationConfig.use_all_monitored_interval_charts,
                     })
                   "
                 />
@@ -1603,6 +1628,7 @@ type AutomationConfig = {
   ema_interval_seconds: number;
   quant_interval_seconds: number;
   include_entry_timing_15m_chart: boolean;
+  use_all_monitored_interval_charts: boolean;
   reverse_order_enabled: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
 };
@@ -1614,6 +1640,7 @@ type AutomationConfigPayload = {
   ema_interval_seconds?: number;
   quant_interval_seconds?: number;
   include_entry_timing_15m_chart?: boolean;
+  use_all_monitored_interval_charts?: boolean;
   reverse_order_enabled?: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
 };
@@ -1686,6 +1713,7 @@ const automationConfigDefaults: AutomationConfig = {
   ema_interval_seconds: 60,
   quant_interval_seconds: 60,
   include_entry_timing_15m_chart: false,
+  use_all_monitored_interval_charts: false,
   reverse_order_enabled: false,
   vegas_prompt_configs: {},
 };
@@ -2144,6 +2172,30 @@ const modelLabel = (model: ModelOption) => {
   return String(model.name ?? model.id ?? "");
 };
 
+const availableModels = computed<ModelOption[]>(() => {
+  const providerEntry = providers.value.find((item) => item.name === automationConfig.value.provider);
+  const result: ModelOption[] = [];
+  const seen = new Set<string>();
+  const append = (model: ModelOption | null | undefined) => {
+    if (model === null || model === undefined) return;
+    const value = modelValue(model);
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    result.push(model);
+  };
+
+  if (automationConfig.value.model) {
+    append(automationConfig.value.model);
+  }
+  (providerEntry?.models || []).forEach((model) => {
+    append(model);
+  });
+  models.value.forEach((model) => {
+    append(model);
+  });
+  return result;
+});
+
 const formatTimestamp = (value?: string | null) => {
   if (!value) return "--";
   const date = new Date(value);
@@ -2424,9 +2476,15 @@ const buildAutomationConfigPayload = () => ({
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
   include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
+  use_all_monitored_interval_charts: automationConfig.value.use_all_monitored_interval_charts,
   reverse_order_enabled: automationConfig.value.reverse_order_enabled,
   vegas_prompt_configs: automationConfig.value.vegas_prompt_configs || null,
 });
+
+const automationConfigPayloadSignature = (payload: AutomationConfigPayload) => JSON.stringify(payload);
+
+let automationConfigPersistInFlight = false;
+let automationConfigPersistQueued = false;
 
 const normalizePromptConfigs = (value: unknown) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -2449,6 +2507,9 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   if (typeof payload.include_entry_timing_15m_chart === "boolean") {
     updates.include_entry_timing_15m_chart = payload.include_entry_timing_15m_chart;
   }
+  if (typeof payload.use_all_monitored_interval_charts === "boolean") {
+    updates.use_all_monitored_interval_charts = payload.use_all_monitored_interval_charts;
+  }
   if (typeof payload.reverse_order_enabled === "boolean") {
     updates.reverse_order_enabled = payload.reverse_order_enabled;
   }
@@ -2467,18 +2528,36 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
 };
 
 const persistAutomationConfig = async () => {
+  if (automationConfigPersistInFlight) {
+    automationConfigPersistQueued = true;
+    return;
+  }
+
+  automationConfigPersistInFlight = true;
+  const payload = buildAutomationConfigPayload();
+  const payloadSignature = automationConfigPayloadSignature(payload);
+
   try {
     const response = await fetch("/api/v1/automation/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildAutomationConfigPayload()),
+      body: JSON.stringify(payload),
     });
     const data = await response.json();
-    if (response.ok && data?.data) {
+    const hasNewerLocalChanges =
+      automationConfigPersistQueued ||
+      automationConfigPayloadSignature(buildAutomationConfigPayload()) !== payloadSignature;
+    if (!hasNewerLocalChanges && response.ok && data?.data) {
       applyAutomationConfigPayload(data.data as AutomationConfigPayload);
     }
   } catch {
     // Ignore persistence errors.
+  } finally {
+    automationConfigPersistInFlight = false;
+    if (automationConfigPersistQueued) {
+      automationConfigPersistQueued = false;
+      void persistAutomationConfig();
+    }
   }
 };
 
@@ -2741,6 +2820,8 @@ const startAutomation = async () => {
         ema_interval_seconds: automationConfig.value.ema_interval_seconds,
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
         include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
+        use_all_monitored_interval_charts:
+          automationConfig.value.use_all_monitored_interval_charts,
         reverse_order_enabled: automationConfig.value.reverse_order_enabled,
         vegas_prompt_configs: automationConfig.value.vegas_prompt_configs || null,
       }),
@@ -2871,10 +2952,13 @@ const loadModels = async (provider: string) => {
     models.value = [];
     return;
   }
-  const cached = readModelCache(provider);
-  if (cached && cached.length > 0) {
-    models.value = cached;
-    return;
+  const normalized = provider.toLowerCase();
+  if (normalized !== "codex") {
+    const cached = readModelCache(provider);
+    if (cached && cached.length > 0) {
+      models.value = cached;
+      return;
+    }
   }
   const providerEntry = providers.value.find((item) => item.name === provider);
   if (providerEntry?.models && providerEntry.models.length > 0) {

@@ -30,7 +30,7 @@ def test_network_error_log_includes_exception_type(monkeypatch, caplog):
     def _raise_read_timeout(url, params):
         raise httpx.ReadTimeout("", request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(client._client, "get", _raise_read_timeout)
+    monkeypatch.setattr(client, "_request", _raise_read_timeout)
     caplog.set_level(logging.WARNING)
 
     result = client.get_coin_data("NEAR")
@@ -38,3 +38,21 @@ def test_network_error_log_includes_exception_type(monkeypatch, caplog):
     assert result is None
     assert "NofXOS API network error" in caplog.text
     assert "error_type=ReadTimeout" in caplog.text
+
+
+def test_pool_timeout_log_includes_exception_type(monkeypatch, caplog):
+    client = NofXOSClient(api_key="demo", timeout=1)
+    monkeypatch.setattr(client, "_retry_count", 0)
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    def _raise_pool_timeout(url, params):
+        raise httpx.PoolTimeout("", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(client, "_request", _raise_pool_timeout)
+    caplog.set_level(logging.WARNING)
+
+    result = client.get_coin_data("BTC")
+
+    assert result is None
+    assert "NofXOS API network error" in caplog.text
+    assert "error_type=PoolTimeout" in caplog.text

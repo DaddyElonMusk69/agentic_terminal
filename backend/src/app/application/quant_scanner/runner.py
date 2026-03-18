@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Awaitable, Callable, List, Optional
 
@@ -18,6 +19,14 @@ class QuantConfigLoadError(RuntimeError):
 
 
 class QuantScanRunError(RuntimeError):
+    pass
+
+
+class QuantScanAlreadyRunningError(RuntimeError):
+    pass
+
+
+class QuantScanCancelledError(RuntimeError):
     pass
 
 
@@ -63,8 +72,42 @@ class QuantScanRunner:
     ) -> None:
         self._config_service = config_service
         self._scanner_service = scanner_service
+        self._run_lock = asyncio.Lock()
+        self._active_task: asyncio.Task | None = None
+        self._cancel_requested = False
 
     async def run_scan(
+        self,
+        log_callback: Optional[LogCallback] = None,
+        signal_callback: Optional[SignalCallback] = None,
+        completed_callback: Optional[CompletedCallback] = None,
+        limit: int = 200,
+    ) -> List[dict]:
+        if self._run_lock.locked():
+            raise QuantScanAlreadyRunningError("Quant scan is already running")
+
+        async with self._run_lock:
+            self._cancel_requested = False
+            self._active_task = asyncio.current_task()
+            try:
+                return await self._run_scan_inner(
+                    log_callback=log_callback,
+                    signal_callback=signal_callback,
+                    completed_callback=completed_callback,
+                    limit=limit,
+                )
+            except asyncio.CancelledError as exc:
+                await _emit_completed(
+                    completed_callback,
+                    {"cancelled": True},
+                )
+                await _emit_log(log_callback, "Quant scan cancelled.", "warning")
+                raise QuantScanCancelledError("Quant scan cancelled") from exc
+            finally:
+                self._active_task = None
+                self._cancel_requested = False
+
+    async def _run_scan_inner(
         self,
         log_callback: Optional[LogCallback] = None,
         signal_callback: Optional[SignalCallback] = None,
@@ -111,6 +154,7 @@ class QuantScanRunner:
                 limit=limit,
                 log_callback=log_callback,
                 snapshot_callback=emit_signal,
+                cancel_check=self._is_cancel_requested,
             )
         except Exception as exc:
             await _emit_log(log_callback, f"⚠ Quant scan failed: {exc}", "error")
@@ -121,10 +165,28 @@ class QuantScanRunner:
 
         await _emit_completed(
             completed_callback,
-            {"count": len(results), "assets": config.assets, "timeframes": config.timeframes},
+            {
+                "count": len(results),
+                "assets": config.assets,
+                "timeframes": config.timeframes,
+                "cancelled": False,
+            },
         )
 
         await _emit_log(log_callback, "━━━ CYCLE #1 COMPLETE ━━━", "cycle-end")
         await _emit_log(log_callback, f"Results: {len(results)} snapshots", "info")
 
         return results
+
+    def is_running(self) -> bool:
+        return bool(self._active_task and not self._active_task.done())
+
+    def cancel_active_scan(self) -> bool:
+        task = self._active_task
+        if task is None or task.done():
+            return False
+        self._cancel_requested = True
+        return True
+
+    def _is_cancel_requested(self) -> bool:
+        return self._cancel_requested

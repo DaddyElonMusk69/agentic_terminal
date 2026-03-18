@@ -96,8 +96,12 @@ class PromptBuilderService:
 
         data_payload = _order_prompt_payload(data_payload)
 
-        intro = _safe_format(template.intro, **request.template_context)
-        response_format = _safe_format(template.response_format, **request.template_context)
+        template_context = await self._build_template_context(
+            request=request,
+            context_payload=context_payload,
+        )
+        intro = _safe_format(template.intro, **template_context)
+        response_format = _safe_format(template.response_format, **template_context)
         prompt_text = _assemble_prompt(intro, data_payload, response_format)
 
         return PromptBuildResult(
@@ -108,6 +112,42 @@ class PromptBuilderService:
             data=data_payload,
             chart_items=chart_items,
         )
+
+    async def _build_template_context(
+        self,
+        *,
+        request: PromptBuildRequest,
+        context_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        context = dict(request.template_context or {})
+
+        if request.trigger_reason != "position_management":
+            return context
+
+        ticker = _resolve_template_ticker(request, context)
+        if not ticker:
+            return context
+
+        position_context = _extract_position_template_context(
+            positions_payload=context_payload.get("open_positions"),
+            ticker=ticker,
+        )
+        if not _has_position_template_context(position_context):
+            position_context = await self._build_live_position_template_context(ticker)
+
+        for key, value in position_context.items():
+            if value is None or value == "":
+                continue
+            context[key] = value
+
+        return context
+
+    async def _build_live_position_template_context(self, ticker: str) -> Dict[str, Any]:
+        try:
+            snapshot = await self._portfolio_service.get_portfolio_snapshot()
+        except Exception:
+            return {}
+        return _extract_position_template_context_from_snapshot(snapshot, ticker)
 
     async def _build_context_payload(
         self,
@@ -435,10 +475,10 @@ def _safe_format(template: str, **kwargs) -> str:
         return ""
 
     def replace(match: re.Match[str]) -> str:
-        key = match.group(1)
+        key = match.group(1) or match.group(2)
         return str(kwargs.get(key, match.group(0)))
 
-    pattern = r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}"
+    pattern = r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}"
     return re.sub(pattern, replace, template)
 
 
@@ -1093,15 +1133,20 @@ def _build_open_positions_payload(
 
         payload[symbol] = {
             "side": position.direction.lower() if position.direction else None,
+            "direction": position.direction.upper() if position.direction else None,
             "margin_used": margin_used,
             "entry": position.entry_price,
+            "entry_price": position.entry_price,
+            "current_price": position.mark_price,
             "leverage": position.leverage,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
             "pnl": position.unrealized_pnl,
+            "pnl_display": position.unrealized_pnl,
             "roe": roe,
             "liquidation": position.liquidation_price,
             "held_for": held_for,
+            "duration": held_for,
             "opened_at": opened_at.isoformat() if opened_at else None,
             "peak_roe": peak_roe,
         }
@@ -1115,6 +1160,105 @@ def _days_left(goal_deadline: Optional[date]) -> Optional[int]:
     today = datetime.now(timezone.utc).date()
     delta = (goal_deadline - today).days
     return max(delta, 0)
+
+
+def _resolve_template_ticker(request: PromptBuildRequest, context: Dict[str, Any]) -> str:
+    ticker = str(context.get("ticker") or "").strip()
+    if ticker:
+        return ticker
+    for candidate in request.tickers:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _extract_position_template_context(
+    *,
+    positions_payload: Any,
+    ticker: str,
+) -> Dict[str, Any]:
+    if not isinstance(positions_payload, dict):
+        return {}
+    position = _find_position_payload(positions_payload, ticker)
+    if not isinstance(position, dict):
+        return {}
+    return {
+        "position_side": position.get("direction") or position.get("side"),
+        "direction": position.get("direction"),
+        "entry_price": position.get("entry_price") or position.get("entry"),
+        "current_price": position.get("current_price"),
+        "pnl_display": position.get("pnl_display") or position.get("pnl"),
+        "duration": position.get("duration") or position.get("held_for"),
+        "held_for": position.get("held_for") or position.get("duration"),
+        "opened_at": position.get("opened_at"),
+    }
+
+
+def _find_position_payload(positions_payload: Dict[str, Any], ticker: str) -> Optional[Dict[str, Any]]:
+    normalized_ticker = _normalize_position_lookup_symbol(ticker)
+    if not normalized_ticker:
+        return None
+    for key, value in positions_payload.items():
+        if _normalize_position_lookup_symbol(key) == normalized_ticker and isinstance(value, dict):
+            return value
+    return None
+
+
+def _normalize_position_lookup_symbol(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    symbol = value.strip().upper()
+    if not symbol:
+        return ""
+    if ":" in symbol:
+        symbol = symbol.split(":", 1)[0]
+    return symbol
+
+
+def _has_position_template_context(context: Dict[str, Any]) -> bool:
+    required = ("entry_price", "current_price", "pnl_display", "duration")
+    return any(context.get(key) not in (None, "") for key in required)
+
+
+def _extract_position_template_context_from_snapshot(
+    snapshot: Optional[Any],
+    ticker: str,
+) -> Dict[str, Any]:
+    if snapshot is None:
+        return {}
+    positions = getattr(snapshot, "positions", None) or []
+    normalized_ticker = _normalize_position_lookup_symbol(ticker)
+    for position in positions:
+        if _normalize_position_lookup_symbol(getattr(position, "symbol", None)) != normalized_ticker:
+            continue
+        direction = str(getattr(position, "direction", "") or "").upper() or None
+        opened_at = getattr(position, "opened_at", None)
+        return {
+            "position_side": direction,
+            "direction": direction,
+            "entry_price": _format_position_price(getattr(position, "entry_price", None)),
+            "current_price": _format_position_price(getattr(position, "mark_price", None)),
+            "pnl_display": _format_position_pnl(getattr(position, "unrealized_pnl", None)),
+            "duration": _format_duration(opened_at),
+            "held_for": _format_duration(opened_at),
+            "opened_at": opened_at.isoformat() if opened_at else None,
+        }
+    return {}
+
+
+def _format_position_price(value: Optional[float]) -> Optional[str]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    return f"${_format_trade_price(numeric)}"
+
+
+def _format_position_pnl(value: Optional[float]) -> Optional[str]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    return f"${numeric:,.2f}"
 
 
 def _has_vegas_tunnels(defaults: Dict[str, Any]) -> bool:
