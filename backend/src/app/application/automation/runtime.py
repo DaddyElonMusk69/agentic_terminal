@@ -43,6 +43,7 @@ class AutomationRuntimeConfig:
     quant_interval_seconds: int = 60
     provider: Optional[str] = None
     model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
     use_all_monitored_interval_charts: bool = False
     reverse_order_enabled: bool = False
@@ -81,6 +82,7 @@ class AutomationRuntime:
                 template_map=normalized.vegas_prompt_configs,
                 llm_model=normalized.model,
                 llm_provider=normalized.provider,
+                llm_reasoning_effort=normalized.reasoning_effort,
                 include_entry_timing_15m_chart=normalized.include_entry_timing_15m_chart,
                 use_all_monitored_interval_charts=normalized.use_all_monitored_interval_charts,
                 session_id=session_id,
@@ -117,6 +119,7 @@ class AutomationRuntime:
             "quant_interval_seconds": self._config.quant_interval_seconds,
             "provider": self._config.provider,
             "model": self._config.model,
+            "reasoning_effort": self._config.reasoning_effort,
             "include_entry_timing_15m_chart": self._config.include_entry_timing_15m_chart,
             "use_all_monitored_interval_charts": self._config.use_all_monitored_interval_charts,
             "reverse_order_enabled": self._config.reverse_order_enabled,
@@ -219,6 +222,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
     mode = normalize_execution_mode(config.execution_mode).value
     provider = config.provider.strip() if config.provider else None
     model = config.model.strip() if config.model else None
+    reasoning_effort = config.reasoning_effort.strip().lower() if config.reasoning_effort else None
     include_entry_timing_15m_chart = bool(config.include_entry_timing_15m_chart)
     use_all_monitored_interval_charts = bool(config.use_all_monitored_interval_charts)
     reverse_order_enabled = bool(config.reverse_order_enabled)
@@ -230,6 +234,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
         quant_interval_seconds=max(1, int(config.quant_interval_seconds)),
         provider=provider or None,
         model=model or None,
+        reasoning_effort=reasoning_effort or None,
         include_entry_timing_15m_chart=include_entry_timing_15m_chart,
         use_all_monitored_interval_charts=use_all_monitored_interval_charts,
         reverse_order_enabled=reverse_order_enabled,

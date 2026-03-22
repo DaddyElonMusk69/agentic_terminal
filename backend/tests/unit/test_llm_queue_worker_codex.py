@@ -41,8 +41,10 @@ class StubLlmPipeline:
     def __init__(self, result: LlmExecutionResult) -> None:
         self._result = result
         self.last_kwargs = None
+        self.last_request = None
 
     async def execute(self, request, **kwargs):
+        self.last_request = request
         self.last_kwargs = kwargs
         return self._result
 
@@ -148,6 +150,7 @@ async def test_codex_success_deletes_images_and_persists_discovery(tmp_path: Pat
     assert not image_path.exists()
     assert repository.done_result is not None
     assert pipeline.last_kwargs["protocol"] == "codex_cli"
+    assert pipeline.last_request.reasoning_effort == "medium"
     saved = await provider_repo.get_config("codex")
     assert saved is not None
     assert saved.settings["codex_last_success_model"] == "gpt-5.3-codex"
@@ -280,7 +283,42 @@ async def test_missing_provider_with_codex_model_infers_codex_protocol(tmp_path:
     assert repository.done_result is not None
     assert pipeline.last_kwargs["protocol"] == "codex_cli"
     assert pipeline.last_kwargs["provider"] == "codex"
+    assert pipeline.last_request.reasoning_effort == "medium"
     requested_events = [evt for evt in outbox.events if evt[0] == topics.LLM_REQUESTED]
     assert len(requested_events) == 1
     assert requested_events[0][1]["protocol"] == "codex_cli"
     assert requested_events[0][1]["provider"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_codex_payload_reasoning_effort_overrides_default(tmp_path: Path):
+    image_path = tmp_path / "to_delete.png"
+    image_path.write_bytes(b"img")
+
+    payload = {
+        "request_id": "req-1",
+        "provider": "codex",
+        "model": "gpt-5.4",
+        "reasoning_effort": "xhigh",
+        "prompt_text": "Analyze",
+        "data": {"chart_snapshots": [{"type": "input_image", "image_url": str(image_path)}]},
+    }
+    repository = StubLlmQueueRepository(_build_queue_item(payload))
+    pipeline = StubLlmPipeline(_build_execution_result(success=True, image_paths=[str(image_path)]))
+    outbox = StubOutbox()
+    provider_repo = StubProviderRepository()
+
+    worker = LlmQueueWorker(
+        repository=repository,
+        llm_pipeline=pipeline,
+        order_queue=StubOrderQueue(),
+        outbox=outbox,
+        provider_repository=provider_repo,
+    )
+    worker._codex_temp_images = CodexTempImageStore(tmp_path)
+    worker._codex_sweep_interval_seconds = 3600
+
+    handled = await worker.process_next()
+
+    assert handled is True
+    assert pipeline.last_request.reasoning_effort == "xhigh"

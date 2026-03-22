@@ -41,6 +41,7 @@ async def test_codex_protocol_uses_local_images(monkeypatch, tmp_path: Path):
     response = await service.call(request, protocol="codex_cli", provider="codex")
 
     assert captured["images"] == [local_image]
+    assert captured["reasoning_effort"] is None
     assert response.model == "gpt-5.3-codex"
     assert response.tokens_used == 123
     assert response.raw_response["protocol"] == "codex_cli"
@@ -85,7 +86,44 @@ async def test_codex_protocol_downloads_non_local_images(monkeypatch, tmp_path: 
     response = await service.call(request, protocol="codex_cli", provider="codex")
 
     assert len(captured["images"]) == 1
+    assert captured["reasoning_effort"] is None
     saved_path = Path(captured["images"][0])
     assert saved_path.exists()
     assert str(saved_path).startswith(str(tmp_path))
     assert response.raw_response["image_paths"] == [str(saved_path)]
+
+
+@pytest.mark.asyncio
+async def test_codex_protocol_passes_reasoning_effort(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    async def fake_execute_codex_cli(**kwargs):
+        captured.update(kwargs)
+        return CodexExecResult(
+            content="ok",
+            model="gpt-5.4",
+            tokens_used=1,
+            events=[],
+            stdout="{}",
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.application.llm_caller.service.execute_codex_cli", fake_execute_codex_cli)
+
+    service = LlmCallerService(
+        api_key="",
+        base_url="https://api.example.com/v1",
+        codex_temp_image_path=str(tmp_path),
+    )
+    request = LlmCallRequest(
+        prompt_text="analyze",
+        images=[],
+        model="gpt-5.4",
+        temperature=0.0,
+        max_tokens=128,
+        reasoning_effort="xhigh",
+    )
+
+    await service.call(request, protocol="codex_cli", provider="codex")
+
+    assert captured["reasoning_effort"] == "xhigh"

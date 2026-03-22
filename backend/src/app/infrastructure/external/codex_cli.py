@@ -27,6 +27,7 @@ async def execute_codex_cli(
     prompt_text: str,
     *,
     model: Optional[str],
+    reasoning_effort: Optional[str] = None,
     images: Iterable[str] | None = None,
     cli_path: str = "codex",
     timeout_seconds: int = 180,
@@ -50,6 +51,7 @@ async def execute_codex_cli(
             cli_path=cli_path,
             output_last_message=output_file,
             model=model,
+            reasoning_effort=reasoning_effort,
             images=images or [],
             include_ask_for_approval=include_ask_for_approval,
         )
@@ -125,6 +127,7 @@ def _build_codex_command(
     cli_path: str,
     output_last_message: str,
     model: Optional[str],
+    reasoning_effort: Optional[str],
     images: Iterable[str],
     include_ask_for_approval: bool = True,
 ) -> list[str]:
@@ -138,6 +141,9 @@ def _build_codex_command(
         "--output-last-message",
         output_last_message,
     ]
+    normalized_reasoning = _normalize_reasoning_effort(reasoning_effort)
+    if normalized_reasoning:
+        cmd.extend(["-c", f'model_reasoning_effort="{normalized_reasoning}"'])
     if include_ask_for_approval:
         cmd.extend(["--ask-for-approval", "never"])
 
@@ -178,6 +184,13 @@ def _remove_file_safely(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+def _normalize_reasoning_effort(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"minimal", "low", "medium", "high", "xhigh"}:
+        return normalized
+    return None
 
 
 def _parse_jsonl_events(stdout_text: str) -> list[dict[str, Any]]:

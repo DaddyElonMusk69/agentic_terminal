@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     binance_retry_jitter: float = 0.3
     binance_rate_limit_backoff: float = 15.0
     dynamic_assets_oi_source: str = "nofx"
+    local_timezone: str = "Asia/Shanghai"
 
     _env_path = Path(__file__).resolve().parents[3] / ".env"
     model_config = SettingsConfigDict(

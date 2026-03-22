@@ -193,6 +193,23 @@
                 </select>
               </label>
 
+              <label v-if="showCodexReasoningEffort" class="text-[11px] text-muted">
+                Reasoning Strength
+                <select
+                  class="mt-2 w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-text"
+                  :value="automationConfig.reasoning_effort"
+                  @change="handleReasoningEffortChange"
+                >
+                  <option
+                    v-for="option in codexReasoningOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </label>
+
               <label
                 class="flex items-center justify-between rounded-md border border-border bg-panel/50 px-3 py-2 text-[11px] text-muted"
               >
@@ -1625,6 +1642,7 @@ type AutomationConfig = {
   execution_mode: string;
   provider: string;
   model: string;
+  reasoning_effort: string;
   ema_interval_seconds: number;
   quant_interval_seconds: number;
   include_entry_timing_15m_chart: boolean;
@@ -1637,6 +1655,7 @@ type AutomationConfigPayload = {
   execution_mode?: string;
   provider?: string | null;
   model?: string | null;
+  reasoning_effort?: string | null;
   ema_interval_seconds?: number;
   quant_interval_seconds?: number;
   include_entry_timing_15m_chart?: boolean;
@@ -1710,12 +1729,19 @@ const automationConfigDefaults: AutomationConfig = {
   execution_mode: "dry_run",
   provider: "",
   model: "",
+  reasoning_effort: "",
   ema_interval_seconds: 60,
   quant_interval_seconds: 60,
   include_entry_timing_15m_chart: false,
   use_all_monitored_interval_charts: false,
   reverse_order_enabled: false,
   vegas_prompt_configs: {},
+};
+
+const normalizeReasoningEffort = (value: unknown) => {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().toLowerCase();
+  return ["minimal", "low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "";
 };
 
 const tradeGuardConfigDefaults: TradeGuardConfigForm = {
@@ -1742,6 +1768,14 @@ const storedAutomationConfig = readAutomationConfigStorage();
 let cachedAutomationConfig: AutomationConfig | null = storedAutomationConfig
   ? { ...automationConfigDefaults, ...storedAutomationConfig }
   : null;
+if (
+  cachedAutomationConfig &&
+  cachedAutomationConfig.provider.trim().toLowerCase() === "codex"
+)
+{
+  cachedAutomationConfig.reasoning_effort =
+    normalizeReasoningEffort(cachedAutomationConfig.reasoning_effort) || "medium";
+}
 
 type ProviderOption = {
   name: string;
@@ -1887,6 +1921,14 @@ const executionModes = [
   { label: "Live", value: "production" },
 ];
 
+const codexReasoningOptions = [
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+];
+
 const POSITION_GRACE_MS = 30000;
 
 const vegasPromptMappings = [
@@ -1914,6 +1956,10 @@ watch(
 
 const missingProviderModel = computed(
   () => !automationConfig.value.provider || !automationConfig.value.model,
+);
+
+const showCodexReasoningEffort = computed(
+  () => automationConfig.value.provider.trim().toLowerCase() === "codex",
 );
 
 const positionSymbols = computed(() =>
@@ -2475,6 +2521,7 @@ const buildAutomationConfigPayload = () => ({
   quant_interval_seconds: automationConfig.value.quant_interval_seconds,
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
+  reasoning_effort: automationConfig.value.reasoning_effort || null,
   include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
   use_all_monitored_interval_charts: automationConfig.value.use_all_monitored_interval_charts,
   reverse_order_enabled: automationConfig.value.reverse_order_enabled,
@@ -2519,8 +2566,16 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   if ("model" in payload) {
     updates.model = payload.model ? String(payload.model) : "";
   }
+  if ("reasoning_effort" in payload) {
+    updates.reasoning_effort = normalizeReasoningEffort(payload.reasoning_effort);
+  }
   if ("vegas_prompt_configs" in payload) {
     updates.vegas_prompt_configs = normalizePromptConfigs(payload.vegas_prompt_configs) || null;
+  }
+  const provider = updates.provider ?? automationConfig.value.provider;
+  const reasoning = updates.reasoning_effort ?? automationConfig.value.reasoning_effort;
+  if ((provider || "").trim().toLowerCase() === "codex" && !reasoning) {
+    updates.reasoning_effort = "medium";
   }
   if (Object.keys(updates).length > 0) {
     updateConfig(updates);
@@ -2761,7 +2816,11 @@ const handleProviderChange = async (event: Event) => {
   if (automationConfig.value.provider === provider) return;
   models.value = [];
   automationConfig.value.model = "";
-  updateConfigPersisted({ provider, model: "" });
+  const nextUpdates: Partial<AutomationConfig> = { provider, model: "" };
+  if (provider.trim().toLowerCase() === "codex" && !automationConfig.value.reasoning_effort) {
+    nextUpdates.reasoning_effort = "medium";
+  }
+  updateConfigPersisted(nextUpdates);
   await loadModels(provider);
 };
 
@@ -2769,6 +2828,12 @@ const handleModelChange = (event: Event) => {
   const model = (event.target as HTMLSelectElement).value;
   if (automationConfig.value.model === model) return;
   updateConfigPersisted({ model });
+};
+
+const handleReasoningEffortChange = (event: Event) => {
+  const reasoning_effort = normalizeReasoningEffort((event.target as HTMLSelectElement).value);
+  if (automationConfig.value.reasoning_effort === reasoning_effort) return;
+  updateConfigPersisted({ reasoning_effort });
 };
 
 const vegasPromptValue = (key: string) => {
@@ -2817,6 +2882,7 @@ const startAutomation = async () => {
         execution_mode: automationConfig.value.execution_mode,
         provider: automationConfig.value.provider,
         model: automationConfig.value.model,
+        reasoning_effort: automationConfig.value.reasoning_effort || null,
         ema_interval_seconds: automationConfig.value.ema_interval_seconds,
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
         include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,

@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import random
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     import ccxt.async_support as ccxt
@@ -26,6 +27,7 @@ from app.domain.portfolio.models import (
     FundingRateSnapshot,
     DailyPnlSnapshot,
 )
+from app.settings import get_settings
 
 _RETRY_MAX_ATTEMPTS = 3
 _RETRY_BASE_DELAY_SECONDS = 0.2
@@ -471,20 +473,29 @@ class CCXTConnector(ExchangeConnector):
         logger = logging.getLogger(__name__)
         try:
             async with self._client() as client:
-                now = datetime.now(timezone.utc)
-                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                start_timestamp_ms = int(start_of_day.timestamp() * 1000)
+                local_tz = _resolve_local_timezone()
+                now_local = datetime.now(local_tz)
+                start_of_day_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+                start_timestamp_ms = int(start_of_day_local.astimezone(timezone.utc).timestamp() * 1000)
                 exchange_id = (self._config.exchange_id or "").lower()
 
                 if exchange_id == "binance":
                     result = await self._get_binance_daily_pnl(client, start_timestamp_ms)
-                    if result is not None:
+                    if _daily_pnl_has_activity(result):
                         return result
+                    if result is not None:
+                        logger.info(
+                            "Binance income history returned no daily activity; falling back to trade reconstruction"
+                        )
 
                 if exchange_id == "okx":
                     result = await self._get_okx_daily_pnl(client, start_timestamp_ms)
-                    if result is not None:
+                    if _daily_pnl_has_activity(result):
                         return result
+                    if result is not None:
+                        logger.info(
+                            "OKX bills returned no daily activity; falling back to trade reconstruction"
+                        )
 
                 return await self._get_daily_pnl_from_trades(client, start_timestamp_ms)
         except Exception as exc:
@@ -513,7 +524,7 @@ class CCXTConnector(ExchangeConnector):
                 return None
 
             realized_pnl = 0.0
-            closed_positions = set()
+            realized_records = 0
             fills = []
 
             for record in income_records:
@@ -523,8 +534,8 @@ class CCXTConnector(ExchangeConnector):
                 symbol = record.get("symbol") or ""
                 timestamp = _to_timestamp_ms(record.get("time"))
                 realized_pnl += income
-                if income != 0 and symbol:
-                    closed_positions.add(symbol)
+                if income != 0:
+                    realized_records += 1
                 fills.append(
                     {
                         "symbol": symbol,
@@ -534,7 +545,7 @@ class CCXTConnector(ExchangeConnector):
                     }
                 )
 
-            trade_count = len(closed_positions)
+            trade_count = realized_records
             return DailyPnlSnapshot(
                 realized_pnl=round(realized_pnl, 2),
                 trade_count=trade_count,
@@ -568,7 +579,7 @@ class CCXTConnector(ExchangeConnector):
                 return None
 
             realized_pnl = 0.0
-            closed_positions = set()
+            realized_records = 0
             fills = []
 
             for bill in bills.get("data", []) or []:
@@ -580,8 +591,8 @@ class CCXTConnector(ExchangeConnector):
                 symbol = bill.get("instId") or ""
                 timestamp = _to_timestamp_ms(bill.get("ts"))
                 realized_pnl += pnl
-                if pnl != 0 and symbol:
-                    closed_positions.add(symbol)
+                if pnl != 0:
+                    realized_records += 1
                 fills.append(
                     {
                         "symbol": symbol,
@@ -591,7 +602,7 @@ class CCXTConnector(ExchangeConnector):
                     }
                 )
 
-            trade_count = len(closed_positions)
+            trade_count = realized_records
             logger.info(
                 "Daily PnL (OKX bills): $%.2f from %d records, %d positions closed",
                 realized_pnl,
@@ -637,7 +648,7 @@ class CCXTConnector(ExchangeConnector):
                 if symbol:
                     symbols.add(symbol)
 
-        if not symbols or not has.get("fetchMyTrades"):
+        if not has.get("fetchMyTrades"):
             return DailyPnlSnapshot(
                 realized_pnl=0.0,
                 trade_count=0,
@@ -646,13 +657,23 @@ class CCXTConnector(ExchangeConnector):
             )
 
         all_trades = []
-        for symbol in symbols:
+        if symbols:
+            for symbol in symbols:
+                try:
+                    trades = await client.fetch_my_trades(symbol=symbol, since=start_timestamp_ms)
+                    if trades:
+                        all_trades.extend(trades)
+                except Exception as exc:
+                    logger.debug("Could not fetch trades for %s: %s", symbol, exc)
+        else:
             try:
-                trades = await client.fetch_my_trades(symbol=symbol, since=start_timestamp_ms)
+                trades = await client.fetch_my_trades(since=start_timestamp_ms, limit=200)
                 if trades:
                     all_trades.extend(trades)
+            except TypeError:
+                logger.debug("Exchange requires symbol for fetch_my_trades during daily PnL reconstruction")
             except Exception as exc:
-                logger.debug("Could not fetch trades for %s: %s", symbol, exc)
+                logger.debug("Could not fetch trades without symbol for daily PnL: %s", exc)
 
         if not all_trades:
             return DailyPnlSnapshot(
@@ -950,6 +971,29 @@ def _extract_fee_cost(trade: Any) -> float:
                 total += cost
         return total
     return 0.0
+
+
+def _daily_pnl_has_activity(snapshot: Optional[DailyPnlSnapshot]) -> bool:
+    if snapshot is None:
+        return False
+    if abs(float(snapshot.realized_pnl or 0.0)) > 0:
+        return True
+    if int(snapshot.trade_count or 0) > 0:
+        return True
+    return bool(snapshot.fills)
+
+
+def _resolve_local_timezone():
+    configured = (get_settings().local_timezone or "").strip()
+    if configured:
+        try:
+            return ZoneInfo(configured)
+        except ZoneInfoNotFoundError:
+            logging.getLogger(__name__).warning(
+                "Invalid BACKEND_LOCAL_TIMEZONE=%s; falling back to system local timezone",
+                configured,
+            )
+    return datetime.now().astimezone().tzinfo or timezone.utc
 
 
 def _extract_ticker_price(ticker: Any) -> Optional[float]:
@@ -1403,13 +1447,24 @@ async def _fetch_ccxt_recent_trades(
             if symbol:
                 symbols.add(symbol)
 
-    if not symbols or not has.get("fetchMyTrades"):
+    if not has.get("fetchMyTrades"):
         return []
 
     all_trades: List[dict] = []
-    for symbol in symbols:
+    if symbols:
+        for symbol in symbols:
+            try:
+                trades = await client.fetch_my_trades(symbol=symbol, limit=50)
+            except Exception:
+                trades = []
+            for trade in trades or []:
+                if isinstance(trade, dict):
+                    all_trades.append(trade)
+    else:
         try:
-            trades = await client.fetch_my_trades(symbol=symbol, limit=50)
+            trades = await client.fetch_my_trades(since=since_ms, limit=max(limit, 50))
+        except TypeError:
+            trades = []
         except Exception:
             trades = []
         for trade in trades or []:

@@ -33,6 +33,7 @@ class AutomationStartRequest(BaseModel):
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     provider: Optional[str] = None
     model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
     use_all_monitored_interval_charts: bool = False
     reverse_order_enabled: bool = False
@@ -47,6 +48,7 @@ class AutomationStateResponse(BaseModel):
     quant_interval_seconds: int
     provider: Optional[str] = None
     model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
     use_all_monitored_interval_charts: bool = False
     reverse_order_enabled: bool = False
@@ -70,6 +72,7 @@ class AutomationConfigPayload(BaseModel):
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     provider: Optional[str] = None
     model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
     use_all_monitored_interval_charts: bool = False
     reverse_order_enabled: bool = False
@@ -82,6 +85,7 @@ class AutomationConfigView(BaseModel):
     quant_interval_seconds: int
     provider: Optional[str] = None
     model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     include_entry_timing_15m_chart: bool = False
     use_all_monitored_interval_charts: bool = False
     reverse_order_enabled: bool = False
@@ -361,6 +365,7 @@ async def get_automation_config(request: Request) -> AutomationConfigResponse:
         quant_interval_seconds=config.quant_interval_seconds,
         provider=config.provider,
         model=config.model,
+        reasoning_effort=config.reasoning_effort,
         include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts=config.use_all_monitored_interval_charts,
         reverse_order_enabled=config.reverse_order_enabled,
@@ -381,6 +386,7 @@ async def update_automation_config(
         quant_interval_seconds=payload.quant_interval_seconds,
         provider=payload.provider,
         model=payload.model,
+        reasoning_effort=payload.reasoning_effort,
         include_entry_timing_15m_chart=payload.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts=payload.use_all_monitored_interval_charts,
         reverse_order_enabled=payload.reverse_order_enabled,
@@ -392,6 +398,7 @@ async def update_automation_config(
         quant_interval_seconds=config.quant_interval_seconds,
         provider=config.provider,
         model=config.model,
+        reasoning_effort=config.reasoning_effort,
         include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts=config.use_all_monitored_interval_charts,
         reverse_order_enabled=config.reverse_order_enabled,
@@ -419,6 +426,7 @@ async def start_automation(
         quant_interval_seconds=payload.quant_interval_seconds,
         provider=payload.provider,
         model=payload.model,
+        reasoning_effort=payload.reasoning_effort,
         include_entry_timing_15m_chart=payload.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts=payload.use_all_monitored_interval_charts,
         reverse_order_enabled=payload.reverse_order_enabled,
@@ -437,6 +445,7 @@ async def start_automation(
             "quant_interval_seconds": config.quant_interval_seconds,
             "provider": config.provider,
             "model": config.model,
+            "reasoning_effort": config.reasoning_effort,
             "include_entry_timing_15m_chart": config.include_entry_timing_15m_chart,
             "use_all_monitored_interval_charts": config.use_all_monitored_interval_charts,
             "reverse_order_enabled": config.reverse_order_enabled,
@@ -452,6 +461,7 @@ async def start_automation(
                 quant_interval_seconds=config.quant_interval_seconds,
                 provider=config.provider,
                 model=config.model,
+                reasoning_effort=config.reasoning_effort,
                 include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
                 use_all_monitored_interval_charts=config.use_all_monitored_interval_charts,
                 reverse_order_enabled=config.reverse_order_enabled,
@@ -469,6 +479,7 @@ async def start_automation(
         "quant_interval_seconds": config.quant_interval_seconds,
         "provider": config.provider,
         "model": config.model,
+        "reasoning_effort": config.reasoning_effort,
         "include_entry_timing_15m_chart": config.include_entry_timing_15m_chart,
         "use_all_monitored_interval_charts": config.use_all_monitored_interval_charts,
         "reverse_order_enabled": config.reverse_order_enabled,

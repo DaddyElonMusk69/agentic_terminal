@@ -10,6 +10,7 @@ from app.application.bus.outbox_service import OutboxService
 from app.application.circuit_breaker.service import CircuitBreakerService
 from app.application.trade_executor.service import TradeExecutorService
 from app.application.trade_guard.service import TradeGuardService
+from app.application.position_origin.service import PositionOriginService
 from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.infrastructure.repositories.order_queue_repository import OrderQueueRepository, OrderQueueItem
 from app.application.portfolio.service import PortfolioService
@@ -24,6 +25,7 @@ class OrderQueueWorker:
         trade_executor: TradeExecutorService,
         outbox: OutboxService,
         portfolio_service: Optional[PortfolioService] = None,
+        position_origin_service: Optional[PositionOriginService] = None,
         policy: Optional[OrderQueuePolicy] = None,
     ) -> None:
         self._repository = repository
@@ -32,6 +34,7 @@ class OrderQueueWorker:
         self._trade_executor = trade_executor
         self._outbox = outbox
         self._portfolio_service = portfolio_service
+        self._position_origin_service = position_origin_service
         self._policy = policy or OrderQueuePolicy()
 
     async def process_next(self) -> bool:
@@ -267,6 +270,10 @@ class OrderQueueWorker:
 
         if execution_result.success:
             await self._repository.mark_done(item.id, result_payload)
+            await self._sync_position_origin_metadata(
+                final_order=final_order,
+                execution_result=execution_result,
+            )
             await self._outbox.enqueue_event(
                 topics.TRADE_EXECUTED,
                 _with_session(
@@ -298,6 +305,50 @@ class OrderQueueWorker:
             )
 
         return True
+
+    async def _sync_position_origin_metadata(
+        self,
+        *,
+        final_order: dict,
+        execution_result: Any,
+    ) -> None:
+        if self._position_origin_service is None or self._portfolio_service is None:
+            return
+        if not isinstance(final_order, dict):
+            return
+
+        action = str(final_order.get("action") or "").upper()
+        symbol = final_order.get("symbol")
+        if not symbol or not _is_filled_status(getattr(execution_result, "status", None)):
+            return
+
+        try:
+            account = await self._portfolio_service.get_active_account()
+        except Exception:
+            return
+        if account is None:
+            return
+
+        if action in _OPEN_ACTIONS:
+            try:
+                await self._position_origin_service.upsert(
+                    account_id=account.id,
+                    symbol=symbol,
+                    anchor_frame=final_order.get("anchor_frame"),
+                    active_tunnel=final_order.get("active_tunnel"),
+                )
+            except Exception:
+                return
+            return
+
+        if action == ExecutionAction.CLOSE.value:
+            try:
+                await self._position_origin_service.delete(
+                    account_id=account.id,
+                    symbol=symbol,
+                )
+            except Exception:
+                return
 
     async def _fetch_portfolio(self) -> tuple[Optional[dict], Optional[list]]:
         if self._portfolio_service is None:
@@ -430,3 +481,16 @@ def _with_session(payload: dict, session_id: Optional[str]) -> dict:
         payload = dict(payload)
         payload["session_id"] = session_id
     return payload
+
+
+_OPEN_ACTIONS = {
+    ExecutionAction.OPEN_LONG.value,
+    ExecutionAction.OPEN_SHORT.value,
+    ExecutionAction.OPEN_LONG_LIMIT.value,
+    ExecutionAction.OPEN_SHORT_LIMIT.value,
+}
+
+
+def _is_filled_status(value: Any) -> bool:
+    status = str(value or "").strip().lower()
+    return status in {"filled", "closed", "done"}

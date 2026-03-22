@@ -19,6 +19,7 @@ class AutomationConfigModel(Base):
     quant_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(20), nullable=True)
     include_entry_timing_15m_chart: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     use_all_monitored_interval_charts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     reverse_order_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

@@ -11,9 +11,12 @@ from app.application.ai_providers.service import (
     DEFAULT_PROVIDERS,
     merge_codex_discovered_models,
 )
-from app.application.automation.llm_queue_service import LlmQueuePolicy
+from app.application.automation.config_service import (
+    AutomationConfigService,
+    DEFAULT_CODEX_REASONING_EFFORT,
+)
 from app.application.automation.order_queue_service import OrderQueueService
-from app.application.automation.config_service import AutomationConfigService
+from app.application.automation.llm_queue_service import LlmQueuePolicy
 from app.application.automation import topics
 from app.application.bus.outbox_service import OutboxService
 from app.application.llm_caller.service import extract_chart_images
@@ -116,6 +119,11 @@ class LlmQueueWorker:
         max_tokens = payload.get("max_tokens")
         if max_tokens is None:
             max_tokens = settings.llm_max_tokens
+        reasoning_effort = await self._resolve_reasoning_effort(
+            payload.get("reasoning_effort"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+        )
 
         request = LlmCallRequest(
             prompt_text=prompt_text,
@@ -123,6 +131,7 @@ class LlmQueueWorker:
             model=payload.get("model") or settings.llm_model,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
 
         resolved_provider = _normalize_provider(payload.get("provider"))
@@ -320,6 +329,31 @@ class LlmQueueWorker:
 
         return True
 
+    async def _resolve_reasoning_effort(
+        self,
+        value: object,
+        *,
+        provider: object,
+        model: object,
+    ) -> Optional[str]:
+        normalized = _normalize_reasoning_effort_value(value)
+        resolved_provider = _normalize_provider(provider)
+        resolved_model = str(model or "").strip()
+        if normalized:
+            return normalized
+        if resolved_provider != "codex" and _infer_protocol_from_model(resolved_model) != "codex_cli":
+            return None
+        if self._automation_config_service is not None:
+            try:
+                config = await self._automation_config_service.get_config()
+            except Exception:
+                config = None
+            if config is not None:
+                normalized = _normalize_reasoning_effort_value(config.reasoning_effort)
+                if normalized:
+                    return normalized
+        return DEFAULT_CODEX_REASONING_EFFORT
+
     async def _maybe_sweep_codex_images(self) -> None:
         now = datetime.now(timezone.utc)
         if self._last_codex_sweep_at is not None:
@@ -440,6 +474,15 @@ def _infer_protocol_from_model(model: Optional[str]) -> Optional[str]:
         return None
     if "codex" in normalized:
         return "codex_cli"
+    return None
+
+
+def _normalize_reasoning_effort_value(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"minimal", "low", "medium", "high", "xhigh"}:
+        return normalized
     return None
 
 

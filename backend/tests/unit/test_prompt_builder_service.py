@@ -4,6 +4,8 @@ import pytest
 
 from app.application.prompt_builder.service import PromptBuilderService, PromptBuildError
 from app.domain.chart_generator.models import AtrOverlay
+from app.domain.position_origin.models import ActivePositionOriginRecord
+from app.domain.position_origin.symbols import normalize_position_origin_symbol
 from app.domain.prompt_builder.models import ChartRequest, PromptBuildRequest, PromptTemplate
 from app.domain.quant_scanner.models import QuantSnapshot
 from app.domain.portfolio.models import FundingRateSnapshot, MarketCandle, MarketDataPoint, Position
@@ -60,11 +62,13 @@ class StubPortfolioState:
 
 
 class StubPortfolioSnapshot:
+    account = type("Account", (), {"id": "acc-1"})()
     state = StubPortfolioState()
     positions = []
 
 
 class StubPortfolioSnapshotWithPosition:
+    account = type("Account", (), {"id": "acc-1"})()
     state = StubPortfolioState()
 
     def __init__(self) -> None:
@@ -117,6 +121,25 @@ class StubRiskConfig:
 class StubRiskConfigService:
     async def get_config(self):
         return StubRiskConfig()
+
+
+class StubPositionOriginService:
+    def __init__(self, rows: dict[str, ActivePositionOriginRecord] | None = None) -> None:
+        self._rows = rows or {}
+        self.prune_calls: list[tuple[str, list[str]]] = []
+
+    async def prune_missing(self, account_id: str, live_symbols):  # noqa: ANN001
+        self.prune_calls.append((account_id, list(live_symbols)))
+        return 0
+
+    async def get_many(self, account_id: str, symbols):  # noqa: ANN001
+        del account_id
+        output = {}
+        for symbol in symbols:
+            normalized = normalize_position_origin_symbol(symbol)
+            if normalized in self._rows:
+                output[normalized] = self._rows[normalized]
+        return output
 
 
 class StubUploader:
@@ -389,3 +412,153 @@ async def test_prompt_builder_formats_position_management_template_context():
     assert "Current: $3.4100" in result.prompt_text
     assert "Unrealized PnL: $1.75" in result.prompt_text
     assert "Duration: " in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_includes_persisted_position_origin_metadata():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": ["anchor_frame", "active_tunnel"],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+        position_origin_service=StubPositionOriginService(
+            {
+                "TON": ActivePositionOriginRecord(
+                    account_id="acc-1",
+                    symbol="TON",
+                    anchor_frame="4h",
+                    active_tunnel="fast",
+                )
+            }
+        ),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-origin",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    positions = result.data["open_positions"]
+    assert positions["TON/USDT"]["anchor_frame"] == "4h"
+    assert positions["TON/USDT"]["active_tunnel"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_fills_missing_position_management_fields_from_live_snapshot():
+    template = PromptTemplate(
+        id=1,
+        name="pm-filtered",
+        intro=(
+            "You have an open {direction} position on {ticker}. "
+            "Entry: ${entry_price} | Current: ${current_price} | "
+            "Unrealized PnL: {pnl_display} | Duration: {duration}"
+        ),
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": ["pnl", "held_for"],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm-filtered",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "Entry: $$3.2500" not in result.prompt_text
+    assert "Entry: $$3.4100" not in result.prompt_text
+    assert "Entry: $$0.00" not in result.prompt_text
+    assert "Entry: $$" not in result.prompt_text
+    assert "Entry: $3.2500" in result.prompt_text
+    assert "Current: $3.4100" in result.prompt_text
+    assert "${current_price}" not in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_fills_signal_frame_and_active_tunnel_in_rich_text():
+    template = PromptTemplate(
+        id=1,
+        name="pm-origin-rich-text",
+        intro=(
+            "Original signal frame: {signal_frame} | "
+            "Active tunnel at entry: {active_tunnel}"
+        ),
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={"data_selections": ["quantitative_signals"]},
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+        position_origin_service=StubPositionOriginService(
+            {
+                "TON": ActivePositionOriginRecord(
+                    account_id="acc-1",
+                    symbol="TON",
+                    anchor_frame="4h",
+                    active_tunnel="fast",
+                )
+            }
+        ),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm-origin-rich-text",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "Original signal frame: 4h" in result.prompt_text
+    assert "Active tunnel at entry: fast" in result.prompt_text

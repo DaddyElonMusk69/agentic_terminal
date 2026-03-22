@@ -92,6 +92,7 @@ class LlmCallerService:
         result = await execute_codex_cli(
             prompt_text=request.prompt_text,
             model=request.model,
+            reasoning_effort=request.reasoning_effort,
             images=image_paths,
             cli_path=self._codex_cli_path,
             timeout_seconds=self._codex_cli_timeout_seconds,

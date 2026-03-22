@@ -41,6 +41,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             model.quant_interval_seconds = config.quant_interval_seconds
             model.provider = config.provider
             model.model = config.model
+            model.reasoning_effort = config.reasoning_effort
             model.include_entry_timing_15m_chart = config.include_entry_timing_15m_chart
             model.use_all_monitored_interval_charts = config.use_all_monitored_interval_charts
             model.reverse_order_enabled = config.reverse_order_enabled
@@ -57,6 +58,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             quant_interval_seconds=model.quant_interval_seconds,
             provider=model.provider,
             model=model.model,
+            reasoning_effort=model.reasoning_effort,
             include_entry_timing_15m_chart=bool(model.include_entry_timing_15m_chart),
             use_all_monitored_interval_charts=bool(model.use_all_monitored_interval_charts),
             reverse_order_enabled=bool(model.reverse_order_enabled),

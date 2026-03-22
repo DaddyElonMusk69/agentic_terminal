@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from app.application.chart_preview.service import ChartPreviewService
 from app.application.portfolio.service import PortfolioService
+from app.application.position_origin.service import PositionOriginService
 from app.application.risk_management.config_service import RiskManagementConfigService
 from app.domain.chart_generator.models import (
     AtrOverlay,
@@ -25,6 +26,7 @@ from app.domain.prompt_builder.models import (
     PromptBuildResult,
     PromptTemplate,
 )
+from app.domain.position_origin.symbols import normalize_position_origin_symbol
 from app.infrastructure.external.codex_temp_images import CodexTempImageStore
 
 
@@ -41,6 +43,7 @@ class PromptBuilderService:
         uploader_service: ImageUploaderService,
         portfolio_service: PortfolioService,
         risk_config_service: RiskManagementConfigService,
+        position_origin_service: PositionOriginService | None = None,
         codex_temp_images: CodexTempImageStore | None = None,
         upload_concurrency: int = 4,
         recent_trades_limit: int = 10,
@@ -53,6 +56,7 @@ class PromptBuilderService:
         self._upload_concurrency = max(1, int(upload_concurrency))
         self._portfolio_service = portfolio_service
         self._risk_config_service = risk_config_service
+        self._position_origin_service = position_origin_service
         self._recent_trades_limit = max(1, int(recent_trades_limit))
         self._peak_roe_tracker: Dict[str, float] = {}
 
@@ -132,8 +136,11 @@ class PromptBuilderService:
             positions_payload=context_payload.get("open_positions"),
             ticker=ticker,
         )
-        if not _has_position_template_context(position_context):
-            position_context = await self._build_live_position_template_context(ticker)
+        live_position_context = await self._build_live_position_template_context(ticker)
+        position_context = _merge_position_template_context(
+            position_context,
+            live_position_context,
+        )
 
         for key, value in position_context.items():
             if value is None or value == "":
@@ -147,7 +154,29 @@ class PromptBuilderService:
             snapshot = await self._portfolio_service.get_portfolio_snapshot()
         except Exception:
             return {}
-        return _extract_position_template_context_from_snapshot(snapshot, ticker)
+        context = _extract_position_template_context_from_snapshot(snapshot, ticker)
+        if self._position_origin_service is None or snapshot is None:
+            return context
+
+        account_id = getattr(getattr(snapshot, "account", None), "id", None)
+        try:
+            origin_rows = await self._position_origin_service.get_many(account_id, [ticker])
+        except Exception:
+            return context
+
+        origin = origin_rows.get(normalize_position_origin_symbol(ticker))
+        if origin is None:
+            return context
+
+        active_tunnel = _format_active_tunnel_template_value(getattr(origin, "active_tunnel", None))
+        return _merge_position_template_context(
+            {
+                "anchor_frame": getattr(origin, "anchor_frame", None),
+                "signal_frame": getattr(origin, "anchor_frame", None),
+                "active_tunnel": active_tunnel,
+            },
+            context,
+        )
 
     async def _build_context_payload(
         self,
@@ -234,6 +263,20 @@ class PromptBuilderService:
             progress_pct = (account_value / goal_usd) * 100.0
 
         data: Dict[str, Any] = {}
+        position_origin_payload: Dict[str, Any] = {}
+
+        if (
+            "open_positions" in selections
+            and snapshot is not None
+            and self._position_origin_service is not None
+        ):
+            account_id = getattr(getattr(snapshot, "account", None), "id", None)
+            live_symbols = [getattr(position, "symbol", None) for position in (snapshot.positions or [])]
+            try:
+                await self._position_origin_service.prune_missing(account_id, live_symbols)
+                position_origin_payload = await self._position_origin_service.get_many(account_id, live_symbols)
+            except Exception:
+                position_origin_payload = {}
 
         if "portfolio_overview" in selections:
             portfolio_overview = {
@@ -314,6 +357,7 @@ class PromptBuilderService:
                 snapshot_error,
                 open_orders,
                 self._peak_roe_tracker,
+                position_origin_payload,
             )
             allowed_fields = field_selections.get("open_positions")
             if allowed_fields:
@@ -1093,6 +1137,7 @@ def _build_open_positions_payload(
     error_message: Optional[str],
     open_orders: List[dict],
     peak_roe_tracker: Dict[str, float],
+    position_origin_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     if snapshot is None:
         return {"status": error_message or "No active account configured"}
@@ -1105,6 +1150,7 @@ def _build_open_positions_payload(
     payload: Dict[str, Any] = {}
     for position in positions:
         symbol = position.symbol
+        normalized_symbol = normalize_position_origin_symbol(symbol)
         margin_used = position.margin
         if margin_used is None and position.entry_price and position.leverage:
             try:
@@ -1130,6 +1176,7 @@ def _build_open_positions_payload(
         stop_loss, take_profit = _extract_sl_tp(order_index.get(symbol, []))
         opened_at = position.opened_at
         held_for = _format_duration(opened_at)
+        origin = position_origin_payload.get(normalized_symbol)
 
         payload[symbol] = {
             "side": position.direction.lower() if position.direction else None,
@@ -1149,6 +1196,8 @@ def _build_open_positions_payload(
             "duration": held_for,
             "opened_at": opened_at.isoformat() if opened_at else None,
             "peak_roe": peak_roe,
+            "anchor_frame": getattr(origin, "anchor_frame", None),
+            "active_tunnel": getattr(origin, "active_tunnel", None),
         }
 
     return payload
@@ -1186,12 +1235,16 @@ def _extract_position_template_context(
     return {
         "position_side": position.get("direction") or position.get("side"),
         "direction": position.get("direction"),
+        "entry": position.get("entry") or position.get("entry_price"),
         "entry_price": position.get("entry_price") or position.get("entry"),
         "current_price": position.get("current_price"),
         "pnl_display": position.get("pnl_display") or position.get("pnl"),
         "duration": position.get("duration") or position.get("held_for"),
         "held_for": position.get("held_for") or position.get("duration"),
         "opened_at": position.get("opened_at"),
+        "anchor_frame": position.get("anchor_frame"),
+        "signal_frame": position.get("signal_frame") or position.get("anchor_frame"),
+        "active_tunnel": _format_active_tunnel_template_value(position.get("active_tunnel")),
     }
 
 
@@ -1206,19 +1259,7 @@ def _find_position_payload(positions_payload: Dict[str, Any], ticker: str) -> Op
 
 
 def _normalize_position_lookup_symbol(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    symbol = value.strip().upper()
-    if not symbol:
-        return ""
-    if ":" in symbol:
-        symbol = symbol.split(":", 1)[0]
-    return symbol
-
-
-def _has_position_template_context(context: Dict[str, Any]) -> bool:
-    required = ("entry_price", "current_price", "pnl_display", "duration")
-    return any(context.get(key) not in (None, "") for key in required)
+    return normalize_position_origin_symbol(value)
 
 
 def _extract_position_template_context_from_snapshot(
@@ -1237,6 +1278,7 @@ def _extract_position_template_context_from_snapshot(
         return {
             "position_side": direction,
             "direction": direction,
+            "entry": _format_position_price(getattr(position, "entry_price", None)),
             "entry_price": _format_position_price(getattr(position, "entry_price", None)),
             "current_price": _format_position_price(getattr(position, "mark_price", None)),
             "pnl_display": _format_position_pnl(getattr(position, "unrealized_pnl", None)),
@@ -1259,6 +1301,35 @@ def _format_position_pnl(value: Optional[float]) -> Optional[str]:
     if numeric is None:
         return None
     return f"${numeric:,.2f}"
+
+
+def _format_active_tunnel_template_value(value: Any) -> Optional[str]:
+    if isinstance(value, list):
+        for item in value:
+            normalized = str(item).strip()
+            if normalized:
+                return normalized
+        return None
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _merge_position_template_context(
+    primary: Dict[str, Any],
+    fallback: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not primary:
+        return dict(fallback)
+    if not fallback:
+        return dict(primary)
+
+    merged = dict(primary)
+    for key, value in fallback.items():
+        if merged.get(key) in (None, ""):
+            merged[key] = value
+    return merged
 
 
 def _has_vegas_tunnels(defaults: Dict[str, Any]) -> bool:

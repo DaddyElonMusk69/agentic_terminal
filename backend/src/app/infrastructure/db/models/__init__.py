@@ -1,5 +1,6 @@
 from app.infrastructure.db.models.base import Base
 from app.infrastructure.db.models.exchange import ExchangeAccountModel, ExchangeCredentialModel
+from app.infrastructure.db.models.position_origin import ActivePositionOriginModel
 from app.infrastructure.db.models.account_setup import AccountSetupModel
 from app.infrastructure.db.models.outbox import OutboxMessageModel
 from app.infrastructure.db.models.llm_queue import LlmQueueRequestModel
@@ -34,6 +35,7 @@ __all__ = [
     "Base",
     "ExchangeAccountModel",
     "ExchangeCredentialModel",
+    "ActivePositionOriginModel",
     "AccountSetupModel",
     "OutboxMessageModel",
     "LlmQueueRequestModel",

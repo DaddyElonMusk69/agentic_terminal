@@ -39,6 +39,8 @@ class ExecutionIdea:
     position_pct: Optional[float] = None
     stop_loss_roe: Optional[float] = None
     take_profit_roe: Optional[float] = None
+    anchor_frame: Optional[str] = None
+    active_tunnel: Optional[str] = None
 
     def to_dict(self) -> Dict:
         return {
@@ -61,6 +63,8 @@ class ExecutionIdea:
             "position_pct": self.position_pct,
             "stop_loss_roe": self.stop_loss_roe,
             "take_profit_roe": self.take_profit_roe,
+            "anchor_frame": self.anchor_frame,
+            "active_tunnel": self.active_tunnel,
         }
 
     @classmethod
@@ -93,6 +97,8 @@ class ExecutionIdea:
             position_pct=_safe_float(payload.get("position_pct")),
             stop_loss_roe=_safe_float(payload.get("stop_loss_roe")),
             take_profit_roe=_safe_float(payload.get("take_profit_roe")),
+            anchor_frame=_safe_trimmed_str(payload.get("anchor_frame")),
+            active_tunnel=_safe_active_tunnel(payload.get("active_tunnel")),
         )
 
 
@@ -118,6 +124,23 @@ def _safe_str(value: Any) -> Optional[str]:
     if value is None:
         return None
     return str(value)
+
+
+def _safe_trimmed_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _safe_active_tunnel(value: Any) -> Optional[str]:
+    if isinstance(value, list):
+        for item in value:
+            normalized = _safe_trimmed_str(item)
+            if normalized:
+                return normalized
+        return None
+    return _safe_trimmed_str(value)
 
 
 @dataclass(frozen=True)

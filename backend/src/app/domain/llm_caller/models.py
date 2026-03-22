@@ -14,6 +14,7 @@ class LlmCallRequest:
     model: str
     temperature: float
     max_tokens: Optional[int] = None
+    reasoning_effort: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ from app.application.prompt_builder.service import PromptBuilderService
 from app.application.quant_scanner.dependencies import get_quant_scanner_service
 from app.application.chart_preview.dependencies import get_chart_preview_service
 from app.application.portfolio.dependencies import get_portfolio_service
+from app.application.position_origin.dependencies import get_position_origin_service
 from app.application.risk_management.dependencies import get_risk_management_config_service
 from app.infrastructure.db import get_sessionmaker
 from app.infrastructure.external.codex_temp_images import CodexTempImageStore
@@ -30,6 +31,7 @@ def get_prompt_builder_service() -> PromptBuilderService:
         uploader_service=uploader_service,
         portfolio_service=portfolio_service,
         risk_config_service=risk_config_service,
+        position_origin_service=get_position_origin_service(),
         codex_temp_images=codex_temp_images,
         upload_concurrency=settings.prompt_image_upload_concurrency,
     )

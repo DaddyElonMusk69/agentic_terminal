@@ -32,3 +32,32 @@ def test_fails_on_invalid_response():
     worker = LlmResponseWorker()
     result = worker.parse(response)
     assert result.success is False
+
+
+def test_parses_anchor_frame_and_active_tunnel():
+    response = (
+        'JSON_ARRAY [{"action":"OPEN_LONG","symbol":"BTC","anchor_frame":"4h",'
+        '"active_tunnel":"fast"}]'
+    )
+    worker = LlmResponseWorker()
+    result = worker.parse(response)
+    assert result.success is True
+    assert result.ideas[0].anchor_frame == "4h"
+    assert result.ideas[0].active_tunnel == "fast"
+
+
+def test_execution_idea_round_trips_origin_metadata():
+    payload = {
+        "action": "OPEN_SHORT",
+        "symbol": "ETH",
+        "anchor_frame": "2h",
+        "active_tunnel": "slow",
+    }
+    worker = LlmResponseWorker()
+    result = worker.parse(f"JSON_ARRAY [{payload}]".replace("'", '"'))
+    assert result.success is True
+
+    idea = result.ideas[0]
+    round_trip = idea.to_dict()
+    assert round_trip["anchor_frame"] == "2h"
+    assert round_trip["active_tunnel"] == "slow"

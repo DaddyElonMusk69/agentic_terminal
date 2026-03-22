@@ -173,6 +173,8 @@ class LlmResponseWorker:
             tier=tier,
             position_pct=self._safe_float(data.get("position_pct")),
             take_profit_roe=self._safe_float(data.get("take_profit_roe")),
+            anchor_frame=self._safe_trimmed_str(data.get("anchor_frame")),
+            active_tunnel=self._safe_active_tunnel(data.get("active_tunnel")),
         )
 
     def _safe_float(self, value: Any) -> Optional[float]:
@@ -195,6 +197,21 @@ class LlmResponseWorker:
         if value is None:
             return None
         return str(value)
+
+    def _safe_trimmed_str(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    def _safe_active_tunnel(self, value: Any) -> Optional[str]:
+        if isinstance(value, list):
+            for item in value:
+                normalized = self._safe_trimmed_str(item)
+                if normalized:
+                    return normalized
+            return None
+        return self._safe_trimmed_str(value)
 
     def extract_considerations(self, response: str) -> List[Dict[str, Any]]:
         if not response:

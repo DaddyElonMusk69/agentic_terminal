@@ -11,6 +11,8 @@ from app.domain.automation.models import AutomationConfig
 MIN_INTERVAL_SECONDS = 5
 MAX_INTERVAL_SECONDS = 3600
 DEFAULT_INTERVAL_SECONDS = 60
+CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+DEFAULT_CODEX_REASONING_EFFORT = "medium"
 
 
 class AutomationConfigService:
@@ -30,6 +32,7 @@ class AutomationConfigService:
         quant_interval_seconds: int,
         provider: Optional[str],
         model: Optional[str],
+        reasoning_effort: Optional[str] = None,
         include_entry_timing_15m_chart: bool = False,
         use_all_monitored_interval_charts: bool = False,
         reverse_order_enabled: bool = False,
@@ -41,6 +44,7 @@ class AutomationConfigService:
             quant_interval_seconds=quant_interval_seconds,
             provider=provider,
             model=model,
+            reasoning_effort=reasoning_effort,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
             use_all_monitored_interval_charts=use_all_monitored_interval_charts,
             reverse_order_enabled=reverse_order_enabled,
@@ -56,6 +60,7 @@ class AutomationConfigService:
             quant_interval_seconds=DEFAULT_INTERVAL_SECONDS,
             provider=None,
             model=None,
+            reasoning_effort=None,
             include_entry_timing_15m_chart=False,
             use_all_monitored_interval_charts=False,
             reverse_order_enabled=False,
@@ -66,6 +71,7 @@ class AutomationConfigService:
         mode = normalize_execution_mode(config.execution_mode).value
         provider = config.provider.strip() if config.provider else None
         model = config.model.strip() if config.model else None
+        reasoning_effort = _normalize_reasoning_effort(config.reasoning_effort, provider=provider)
         ema_interval = _normalize_interval(config.ema_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         quant_interval = _normalize_interval(config.quant_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
@@ -79,6 +85,7 @@ class AutomationConfigService:
             quant_interval_seconds=quant_interval,
             provider=provider or None,
             model=model or None,
+            reasoning_effort=reasoning_effort,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
             use_all_monitored_interval_charts=use_all_monitored_interval_charts,
             reverse_order_enabled=reverse_order_enabled,
@@ -122,3 +129,16 @@ def _normalize_bool(value: object) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _normalize_reasoning_effort(value: object, *, provider: Optional[str]) -> Optional[str]:
+    provider_key = (provider or "").strip().lower()
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+    else:
+        normalized = ""
+    if normalized not in CODEX_REASONING_EFFORTS:
+        normalized = ""
+    if provider_key == "codex":
+        return normalized or DEFAULT_CODEX_REASONING_EFFORT
+    return normalized or None

@@ -91,6 +91,7 @@ class PromptPipelineWorker:
 
                 model = item.payload.get("model")
                 provider = item.payload.get("provider")
+                reasoning_effort = item.payload.get("reasoning_effort")
 
                 await self._llm_queue.enqueue(
                     {
@@ -103,6 +104,7 @@ class PromptPipelineWorker:
                         "execution_mode": execution_mode.value,
                         "model": model,
                         "provider": provider,
+                        "reasoning_effort": reasoning_effort,
                         "tickers": request.tickers,
                         "cycle_number": item.payload.get("cycle_number"),
                     }

@@ -43,6 +43,43 @@ async def test_execute_codex_cli_parses_json_usage_and_last_message(monkeypatch,
     assert "--json" in captured["cmd"]
     assert "--image" in captured["cmd"]
     assert "--model" in captured["cmd"]
+    assert "-c" not in captured["cmd"]
+
+
+@pytest.mark.asyncio
+async def test_execute_codex_cli_applies_reasoning_effort_override(monkeypatch):
+    captured = {}
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+
+        class _Process:
+            returncode = 0
+
+            async def communicate(self, input=None):
+                output_path = cmd[cmd.index("--output-last-message") + 1]
+                Path(output_path).write_text("OK", encoding="utf-8")
+                return b"", b""
+
+        return _Process()
+
+    monkeypatch.setattr(
+        "app.infrastructure.external.codex_cli.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    result = await execute_codex_cli(
+        prompt_text="Say OK",
+        model="gpt-5.4",
+        reasoning_effort="high",
+        images=[],
+        cli_path="codex",
+        timeout_seconds=30,
+    )
+
+    assert result.content == "OK"
+    assert "-c" in captured["cmd"]
+    assert 'model_reasoning_effort="high"' in captured["cmd"]
 
 
 @pytest.mark.asyncio

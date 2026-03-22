@@ -1,0 +1,30 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.infrastructure.db.models.base import Base
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class ActivePositionOriginModel(Base):
+    __tablename__ = "active_position_origin"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("exchange_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    anchor_frame: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_tunnel: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "symbol", name="uq_active_position_origin_account_symbol"),
+    )

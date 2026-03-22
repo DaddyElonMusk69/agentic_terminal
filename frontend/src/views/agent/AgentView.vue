@@ -732,6 +732,8 @@ const contextCategories = [
       { id: "held_for", label: "Held For" },
       { id: "opened_at", label: "Opened At" },
       { id: "peak_roe", label: "Peak ROE" },
+      { id: "anchor_frame", label: "Anchor Frame" },
+      { id: "active_tunnel", label: "Active Tunnel" },
       { id: "status", label: "Status" },
     ],
   },
