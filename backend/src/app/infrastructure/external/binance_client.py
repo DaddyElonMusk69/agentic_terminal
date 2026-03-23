@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Binance REST API client for market data, order book, and derivatives signal feeds."""
+
 import json
 import logging
 import os

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Dynamic asset resolver backed by NOFX OS ranking and netflow endpoints."""
+
 import asyncio
 import os
 from typing import Any, Dict, List, Optional

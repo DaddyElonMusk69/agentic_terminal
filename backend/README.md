@@ -1,6 +1,20 @@
 # Backend (FastAPI + Socket.IO)
 
-This backend is standalone and can run from `/backend` without the legacy Flask server or frontend.
+This backend runs independently and can be started directly from `backend/` during local development.
+
+## What This Is
+
+The backend is the execution engine for an autonomous crypto trading agent.
+It runs a four-stage pipeline:
+
+**SCAN -> SIGNAL -> DECIDE -> EXECUTE**
+
+1. **Scan** — EMA and quant scanners collect market structure, OI, and related inputs
+2. **Signal** — the EMA state manager detects resonance conditions and emits trigger events
+3. **Decide** — the prompt builder assembles context, the LLM makes a decision, and the parser extracts structured execution ideas
+4. **Execute** — the trade guard validates the idea, the circuit breaker is the final safety gate, and the CCXT executor places the order
+
+All major stages communicate through an event bus and queue-backed workers. See [ARCHITECTURE.md](ARCHITECTURE.md) for full design details.
 
 ## Local Development
 
@@ -27,7 +41,6 @@ python3 -m pip install -e "backend[test]"
 ```bash
 PYTHONPATH=backend/src BACKEND_DATABASE_URL=postgresql+asyncpg://localhost/trading_backend \
   alembic -c backend/alembic.ini upgrade head
-  alembic upgrade head
 ```
 
 5) Start the server:
@@ -36,12 +49,12 @@ PYTHONPATH=backend/src BACKEND_DATABASE_URL=postgresql+asyncpg://localhost/tradi
 PYTHONPATH=backend/src uvicorn app.main:app --reload --port 8101
 ```
 
-6) Run the server without sleep(backend/ path):
+6) Keep the backend process awake on macOS (run from `backend/`):
 ```bash
 caffeinate -dimsu uvicorn --env-file .env --app-dir src app.main:app --reload --port 8101
 ```
 
-7) Start the frontend(frontend/ path):
+7) Optional: start the frontend (run from `frontend/`):
 ```bash
 npm run dev
 ```

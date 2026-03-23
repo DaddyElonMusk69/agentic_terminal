@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Temporary image store and cleanup helpers for Codex prompt image attachments."""
+
 import re
 import time
 from pathlib import Path

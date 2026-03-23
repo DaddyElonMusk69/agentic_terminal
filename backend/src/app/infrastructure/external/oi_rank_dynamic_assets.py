@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Dynamic asset resolver that combines cached OI rank data with NOFX OS sources."""
+
 from typing import Any, Dict, List, Optional
 
 from app.application.oi_rank.service import OiRankService
@@ -90,4 +92,3 @@ def _dedup_preserve_order(items: List[str]) -> List[str]:
             seen.add(item)
             result.append(item)
     return result
-

@@ -1,3 +1,18 @@
+<!--
+  AutomationView.vue
+  ==================
+  Main control panel for the autonomous trading pipeline.
+
+  This is the primary operator interface. It provides:
+  - Session controls for prompt_test / dry_run / production execution modes
+  - AI configuration and prompt mapping controls
+  - Live automation log and queue-stage visibility
+  - Position monitoring with real-time PnL and trade history
+  - Session replay hooks through the shared automation and agent stores
+
+  Data flow:
+  Pinia stores <-> Socket.IO services <-> FastAPI backend <-> queue workers / event bus
+-->
 <template>
   <div class="flex h-full min-h-0 flex-1 flex-col gap-3 overflow-hidden">
     <div

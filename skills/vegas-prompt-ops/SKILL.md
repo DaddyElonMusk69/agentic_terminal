@@ -1,7 +1,7 @@
 ---
-
-## name: vegas-prompt-ops
-description: Analyze automated trading sessions for Vegas state events and iteratively improve prompt templates with safe rollouts and instant rollback. Use when diagnosing losses, checking prompt/event behavior drift, comparing old vs active template mappings, releasing candidate prompt maps, or reverting to a known-good map after performance declines.
+name: vegas-prompt-ops
+description: Analyze automated trading sessions for Vegas state events and iteratively improve prompt templates with safe rollouts and instant rollback.
+---
 
 # Vegas Prompt Ops
 
@@ -86,4 +86,3 @@ Use this skill to run a repeatable prompt-ops loop:
 ## References
 
 - `references/metric_checklist.md` for pass/fail rules and iteration cadence.
-

@@ -1,11 +1,11 @@
 # Trading Dashboard Frontend
 
-New Vue 3 + Tailwind + Headless UI app that runs alongside the legacy Flask UI.
+Vue 3 + TypeScript dashboard providing real-time visibility into every stage of the autonomous trading pipeline.
 
 ## Overview
-- Separate frontend app served by Vite (default: http://127.0.0.1:5174).
-- Backend API is expected at http://127.0.0.1:8101 in local development.
-- Legacy UI remains intact; this app is for the new UI migration.
+- Separate frontend app served by Vite (default: http://127.0.0.1:5174)
+- Backend API is expected at http://127.0.0.1:8101 in local development
+- Connects to the backend over HTTP and Socket.IO for live pipeline telemetry
 
 ## Tech Stack
 - Vue 3 + TypeScript
@@ -56,7 +56,7 @@ frontend/
 ## Sockets
 Socket clients live in `src/services/` and are wired in `src/layouts/AppShell.vue`.
 
-Current events (legacy-compatible):
+Key Socket.IO events:
 - EMA scanner: `start_scan`, `stop_scan`, `scanner_log`, `ema_scan_results`, `scan_complete`
 - Quant scanner (OI/CVD): `oi_cvd_*` events
 - Automation: `automation_state`, `automation_log`, `position_update`, `trade_executed`, `circuit_breaker`
@@ -73,7 +73,13 @@ Exchange selection:
 - Tokens live in `src/styles/tokens.css`.
 - Dark theme is default; `data-theme="light"` switches to light tokens.
 
-## TODO / Next
-- Wire real chart data for all results.
-- Add Vegas State sidebar data to match legacy UI.
-- Continue porting Quant scanner details and Agent context builder.
+## Views
+
+| View | Description |
+|---|---|
+| **EMA Scanner** | Real-time resonance detection across monitored assets and intervals |
+| **Quant Scanner** | OI, CVD, and related quant metrics ranked by signal strength |
+| **Automation** | Main control panel for the pipeline: start, stop, inspect logs, and monitor decisions |
+| **Agent** | Session inspector for replaying full prompt and response cycles |
+| **Observability** | Queue and bus visibility for pipeline-stage monitoring |
+| **Settings** | Exchange accounts, scanners, prompts, trade guard, and risk configuration |

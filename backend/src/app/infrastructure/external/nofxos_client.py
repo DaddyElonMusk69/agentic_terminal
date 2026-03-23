@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""NOFX OS API client for third-party netflow and signal feed integration."""
+
 import json
 import logging
 import os

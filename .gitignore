@@ -52,3 +52,15 @@ pnpm-debug.log*
 
 # Logs
 *.log
+
+# Session data
+session_log*.json
+
+# Backend temp
+backend/tmp/
+
+# Test artifacts
+backend/test.png
+
+# Local planning notes
+agent_task_list.md

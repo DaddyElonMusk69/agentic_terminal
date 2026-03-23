@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Codex CLI adapter for multimodal prompt execution through the local Codex binary."""
+
 import asyncio
 import json
 import os

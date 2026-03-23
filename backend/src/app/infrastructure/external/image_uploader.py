@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Pluggable image uploader supporting filesystem and hosted image backends."""
+
 import asyncio
 import base64
 import random

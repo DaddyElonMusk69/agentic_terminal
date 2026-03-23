@@ -52,7 +52,7 @@ Data Stores
   - PostgreSQL for durable state and configuration
   - Redis for caching, coordination, and realtime fanout
 
-## Proposed Directory Layout
+## Directory Layout
 
 backend/
   src/
@@ -250,29 +250,6 @@ critical stage. EMA and Quant scanners run on independent intervals.
 - Add a regression test for each bug fix.
 - Mark slow realtime socket integration tests to keep the default test run fast.
 
-## Initial Milestones
-1) Scaffold FastAPI + Socket.IO app with health checks and config.
-2) Define API and realtime schemas for the first context.
-3) Add PostgreSQL + Alembic migrations.
-4) Add Redis + pub/sub for realtime fanout.
-5) Introduce a worker queue and a single background job.
-
-## Module Task List
-- Portfolio & exchange (API contract defined, validation status + account management endpoints)
-- Consolidated socket channel (in progress: base server + ping)
-- Background jobs (in progress: Taskiq worker + outbox dispatch)
-- Market data ingestion (pending)
-- EMA scanner (in progress: core service + tests)
-- Quant scanner (in progress: data fetch/cache + CLI)
-- Chart generator (in progress: unified renderer)
-- Automation pipelines (pending)
-- Trade guard (in progress: core rules + config)
-- Circuit breaker (in progress: skeleton pass-through)
-- Trade executor (in progress: CCXT wrapper)
-- AI agent (pending)
-- Prompt builder (pending)
-- Config & settings (pending)
-
 ## Module Inventory (Built So Far)
 - Portfolio & exchange (active account + CCXT connector + DB-backed accounts)
 - EMA scanner (EMA + BB signals)
@@ -297,7 +274,7 @@ critical stage. EMA and Quant scanners run on independent intervals.
 - Image uploader config (`image_uploader_config`)
 - EMA scanner config (`ema_scanner_config`, `ema_scanner_lines`, monitored lists)
 - Market settings (`monitored_assets`, `monitored_intervals`)
-- AI provider config (`agent_provider_configs`)
+- Model provider config (`agent_provider_configs`)
 - EMA state manager config (`ema_state_manager_config`)
 - Account setup (`account_setup` with `portfolio_exposure_pct`)
 - Trade guard config (`trade_guard_config`)
@@ -332,7 +309,7 @@ and `bb_signal_intervals`. Key rules:
 - BB filters only consider 8h+ intervals due to `_is_interval_gte_4h` threshold
   of 480 minutes (note the legacy mismatch between comments and behavior).
 
-### Legacy Prompt Builder Request Shaping (Vegas)
+### Legacy Prompt Builder Request Shaping
 This is the logic that decides which intervals and charts to request based on
 the trigger reason (from `PromptWorker.build_vegas_prompt`):
 - NEW_RESONANCE / RESONANCE_INCREASE / STRUCTURE_SHIFT / RESONANCE_REFRESH

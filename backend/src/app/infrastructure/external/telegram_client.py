@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Telegram Bot API client for trade alerts and automation session notifications."""
+
 import logging
 from typing import Optional
 
