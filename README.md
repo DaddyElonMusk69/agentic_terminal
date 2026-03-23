@@ -35,7 +35,7 @@ flowchart TD
     G -->|"Improved decision policy"| C
 ```
 
-## What Makes This Interesting
+## Agent execution performance through scaffolding
 
 - The system has demonstrated a live 30% to 50% monthly growth profile through intraday autonomous trading
 - Real money on the line: the agentic flywheel is validated by live PnL, not offline benchmarks or backtest
@@ -45,7 +45,7 @@ flowchart TD
 - Exchange execution is abstracted behind adapter boundaries, similar to MCP server design
 - Real-time frontend visibility through a Vue 3 dashboard and Socket.IO event stream for every major pipeline stage
 
-## Tuning As A Core System Capability
+## Agentic flywheel As A Core System Capability
 
 The strongest result of the project is not that an LLM can trade. It is that the trading behavior can be systematically improved.
 
@@ -116,13 +116,16 @@ Prompt tuning is treated as an operational workflow. The system exposes the conf
 
 ![Agent Tuning](screenshots/Agent%20Tuning.png)
 
+### Model Configuration
+
+![Model Config](screenshots/Model%20Config.png)
+
 ### More UI Screens
 
 - [Context + Instruction Builder](screenshots/Context%20%2B%20Instruction%20Builder.png)
 - [EMA Scanner](screenshots/EMA%20Scanner.png)
 - [Quant Scanner](screenshots/Quant%20Scanner.png)
 - [System State](screenshots/System%20State.png)
-- [Model Config](screenshots/Model%20Config.png)
 - [Exchange Accounts](screenshots/Exchange%20Accounts.png)
 
 ## Quick Start
