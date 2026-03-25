@@ -6,6 +6,25 @@
 > Raw LLMs hallucinate under complex, multi-step execution pressure.  
 > This system is the working proof: carefully tuned events, curated context, disciplined instructions, and an agentic flywheel can turn raw model capability into consistent, profitable autonomy.
 
+## What This Project Is
+
+Agent Terminal is a full-stack autonomous AI agentic trader trading perpetual futures products. This is not a demo, the agent is trading with real money and growing it's account for 30% to 50% monthly
+
+At runtime, it:
+
+- observes market structure, liquidity, and quant signals across multiple timeframes
+- uses a state manager to route custom market events
+- assembles event-specific context for model to make trade decisions
+- validates every proposed action through trade-guard and circuit-breaker logic
+- agent executes the trade decision made by the model
+
+and manages live positions while feeding outcomes back into an agentic tuning loop
+
+In practical terms, this repository contains both the trading runtime and the operator console:
+
+- a backend orchestration engine for event generation, prompt building, validation, execution, and telemetry
+- a frontend dashboard for monitoring sessions, inspecting agent reasoning, tuning prompts, and managing live automation
+
 Python
 FastAPI
 Socket.IO

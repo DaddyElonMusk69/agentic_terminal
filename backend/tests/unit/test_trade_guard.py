@@ -1,3 +1,7 @@
+import pytest
+
+from app.application.trade_guard.service import TradeGuardService
+from app.domain.risk_management.models import DEFAULT_RISK_MANAGEMENT_CONFIG
 from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.domain.trade_guard.models import LeverageTier, PositionTierRange, TradeGuardConfig
 from app.domain.trade_guard.rules import create_default_guard
@@ -137,3 +141,146 @@ def test_update_sl_uses_open_orders_when_symbol_formats_differ():
     result = guard.validate(decision, open_positions=open_positions, open_orders=open_orders)
     assert result.is_valid is True
     assert result.decision.action == ExecutionAction.HOLD
+
+
+def test_take_profit_prefers_ui_min_roe_over_model_roe():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.08,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=1,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=1,
+        position_size_usd=100.0,
+        confidence=70,
+        take_profit_roe=0.15,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.take_profit == 108.0
+
+
+def test_take_profit_uses_model_roe_when_ui_min_is_zero():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.0,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=1,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=1,
+        position_size_usd=100.0,
+        confidence=70,
+        take_profit_roe=0.12,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.take_profit == 112.0
+
+
+def test_take_profit_falls_back_to_system_default_when_ui_min_and_model_roe_missing():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.0,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=1,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=1,
+        position_size_usd=100.0,
+        confidence=70,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.take_profit == 105.0
+
+
+class _InMemoryTradeGuardConfigRepository:
+    def __init__(self) -> None:
+        self.config: TradeGuardConfig | None = None
+
+    async def get_config(self) -> TradeGuardConfig | None:
+        return self.config
+
+    async def upsert(self, config: TradeGuardConfig) -> TradeGuardConfig:
+        self.config = config
+        return config
+
+
+class _StubRiskConfigService:
+    async def get_config(self):
+        return DEFAULT_RISK_MANAGEMENT_CONFIG
+
+
+@pytest.mark.asyncio
+async def test_trade_guard_service_preserves_zero_tp_min_roe():
+    repository = _InMemoryTradeGuardConfigRepository()
+    service = TradeGuardService(repository, _StubRiskConfigService())
+
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.0,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=1,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+
+    updated = await service.update_config(config)
+    reloaded = await service.get_config()
+
+    assert updated.tp_min_roe == 0.0
+    assert reloaded.tp_min_roe == 0.0

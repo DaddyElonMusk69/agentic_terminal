@@ -84,6 +84,7 @@ class TradeGuardService:
             config.tp_max_roe,
             DEFAULT_TRADE_GUARD_CONFIG.tp_min_roe,
             DEFAULT_TRADE_GUARD_CONFIG.tp_max_roe,
+            allow_zero_min=True,
         )
         dust_threshold = _normalize_positive(
             config.dust_threshold_usd,
@@ -133,7 +134,13 @@ def _normalize_positive(value: float, fallback: float) -> float:
     return parsed
 
 
-def _normalize_roe_pair(min_value: float, max_value: float, default_min: float, default_max: float) -> tuple:
+def _normalize_roe_pair(
+    min_value: float,
+    max_value: float,
+    default_min: float,
+    default_max: float,
+    allow_zero_min: bool = False,
+) -> tuple:
     try:
         min_parsed = float(min_value)
     except (TypeError, ValueError):
@@ -143,7 +150,10 @@ def _normalize_roe_pair(min_value: float, max_value: float, default_min: float, 
     except (TypeError, ValueError):
         max_parsed = default_max
 
-    if min_parsed <= 0:
+    if allow_zero_min:
+        if min_parsed < 0:
+            min_parsed = 0.0
+    elif min_parsed <= 0:
         min_parsed = default_min
     if max_parsed <= 0:
         max_parsed = default_max

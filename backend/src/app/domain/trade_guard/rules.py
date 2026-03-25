@@ -13,7 +13,7 @@ from app.domain.trade_guard.guard import (
     TradeGuard,
     ValidationRule,
 )
-from app.domain.trade_guard.models import TradeGuardConfig
+from app.domain.trade_guard.models import DEFAULT_TRADE_GUARD_CONFIG, TradeGuardConfig
 
 
 class ActionRequiredRule(ValidationRule):
@@ -761,8 +761,9 @@ class TakeProfitROEModifier(ModifierRule):
     @property
     def description(self) -> str:
         return (
-            "Recalculates take_profit using live price and take_profit_roe "
-            f"({self._min_roe*100:.0f}%-{self._max_roe*100:.0f}%)"
+            "Recalculates take_profit using live price with precedence "
+            "configured tp_min_roe -> model take_profit_roe -> default tp_min_roe "
+            f"(max {self._max_roe*100:.0f}%)"
         )
 
     def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
@@ -778,51 +779,43 @@ class TakeProfitROEModifier(ModifierRule):
             return self._no_change(decision, f"Could not fetch price for {decision.symbol}")
 
         original_tp = decision.take_profit
-        take_profit_roe = decision.take_profit_roe
+        configured_min_roe = self._min_roe if self._min_roe > 0 else None
+        default_min_roe = DEFAULT_TRADE_GUARD_CONFIG.tp_min_roe
+        max_roe = self._max_roe if self._max_roe > 0 else DEFAULT_TRADE_GUARD_CONFIG.tp_max_roe
+        fallback_min_roe = configured_min_roe if configured_min_roe is not None else default_min_roe
+        if max_roe < fallback_min_roe:
+            max_roe = fallback_min_roe
+
+        model_take_profit_roe = decision.take_profit_roe
         invalid_roe = None
-        if take_profit_roe is not None and take_profit_roe <= 0:
-            invalid_roe = take_profit_roe
-            take_profit_roe = None
+        if model_take_profit_roe is not None and model_take_profit_roe <= 0:
+            invalid_roe = model_take_profit_roe
+            model_take_profit_roe = None
 
         clamp_reason = None
         llm_roe = None
         direction = "LONG" if decision.action in self.LONG_ACTIONS else "SHORT"
         is_long = decision.action in self.LONG_ACTIONS
 
-        if take_profit_roe is not None:
-            llm_roe = take_profit_roe
-            if take_profit_roe < self._min_roe:
-                clamped_roe = self._min_roe
+        if configured_min_roe is not None:
+            clamped_roe = fallback_min_roe
+            clamp_reason = "configured tp_min_roe"
+        elif model_take_profit_roe is not None:
+            llm_roe = model_take_profit_roe
+            if model_take_profit_roe < fallback_min_roe:
+                clamped_roe = fallback_min_roe
                 clamp_reason = "too small"
-            elif take_profit_roe > self._max_roe:
-                clamped_roe = self._max_roe
+            elif model_take_profit_roe > max_roe:
+                clamped_roe = max_roe
                 clamp_reason = "too large"
             else:
-                clamped_roe = take_profit_roe
-        elif original_tp is not None and original_tp > 0:
-            if is_long:
-                llm_roe = (original_tp - current_price) / current_price * leverage
-            else:
-                llm_roe = (current_price - original_tp) / current_price * leverage
-
-            if self._min_roe <= llm_roe <= self._max_roe:
-                return self._no_change(
-                    decision,
-                    f"{direction} TP OK: {original_tp:.5g} (ROE: {llm_roe*100:.1f}%)",
-                )
-
-            if llm_roe < self._min_roe:
-                clamped_roe = self._min_roe
-                clamp_reason = "too small"
-            else:
-                clamped_roe = self._max_roe
-                clamp_reason = "too large"
+                clamped_roe = model_take_profit_roe
         else:
-            clamped_roe = self._min_roe
+            clamped_roe = default_min_roe
             if invalid_roe is not None:
                 clamp_reason = f"invalid take_profit_roe: {invalid_roe}"
             else:
-                clamp_reason = "not specified"
+                clamp_reason = "default tp_min_roe"
 
         if is_long:
             calculated_tp = current_price * (1 + (clamped_roe / leverage))
