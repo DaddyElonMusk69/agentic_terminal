@@ -75,6 +75,14 @@ class ExchangeConnector(Protocol):
     ) -> List[dict]:
         ...
 
+    async def fetch_recent_completed_trades(
+        self,
+        limit: int = 10,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> List[dict]:
+        ...
+
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> List[MarketCandle]:
         ...
 

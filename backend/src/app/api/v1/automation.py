@@ -141,6 +141,8 @@ class AutomationSessionSummary(BaseModel):
     prompt_count: int = 0
     prompt_rate_per_hour: Optional[float] = None
     duration_seconds: Optional[int] = None
+    new_resonance_prompt_version: Optional[int] = None
+    position_management_prompt_version: Optional[int] = None
 
 
 class AutomationSessionList(BaseModel):
@@ -290,6 +292,7 @@ def _normalize_close_symbol(symbol: str) -> str:
 
 
 def _to_session_summary(session) -> AutomationSessionSummary:
+    prompt_snapshot = session.config_snapshot if isinstance(session.config_snapshot, dict) else {}
     return AutomationSessionSummary(
         id=session.id,
         started_at=_format_dt(session.started_at),
@@ -307,7 +310,24 @@ def _to_session_summary(session) -> AutomationSessionSummary:
             session.prompt_count or 0,
         ),
         duration_seconds=_duration_seconds(session.started_at, session.ended_at),
+        new_resonance_prompt_version=_extract_prompt_version(prompt_snapshot, "new_resonance"),
+        position_management_prompt_version=_extract_prompt_version(
+            prompt_snapshot,
+            "position_management",
+        ),
     )
+
+
+def _extract_prompt_version(config_snapshot: dict, key: str) -> Optional[int]:
+    prompt_configs = config_snapshot.get("vegas_prompt_configs")
+    if not isinstance(prompt_configs, dict):
+        return None
+    raw_value = prompt_configs.get(key)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _to_log_entry(log) -> AutomationLogEntry:

@@ -199,7 +199,7 @@ class PromptBuilderService:
         needs_daily_pnl = bool(selections & {"account_state", "recent_completed_trades"})
         needs_risk_config = bool(selections & {"portfolio_overview", "trade_mandate", "account_state"})
         needs_open_orders = bool(selections & {"open_positions"})
-        needs_recent_trades = bool(selections & {"recent_completed_trades"})
+        needs_recent_completed_trades = bool(selections & {"recent_completed_trades"})
 
         snapshot = None
         snapshot_error = None
@@ -224,13 +224,15 @@ class PromptBuilderService:
             except Exception:
                 open_orders = []
 
-        recent_trades: List[dict] = []
-        recent_trades_error = None
-        if needs_recent_trades:
+        recent_completed_trades: List[dict] = []
+        recent_completed_trades_error = None
+        if needs_recent_completed_trades:
             try:
-                recent_trades = await self._portfolio_service.get_recent_trades(self._recent_trades_limit)
+                recent_completed_trades = await self._portfolio_service.get_recent_completed_trades(
+                    self._recent_trades_limit
+                )
             except Exception as exc:
-                recent_trades_error = str(exc)
+                recent_completed_trades_error = str(exc)
 
         risk_config = None
         if needs_risk_config:
@@ -342,8 +344,8 @@ class PromptBuilderService:
 
         if "recent_completed_trades" in selections:
             trades_payload = _build_recent_trades_payload(
-                recent_trades,
-                recent_trades_error,
+                recent_completed_trades,
+                recent_completed_trades_error,
             )
             trades_payload = _filter_fields_if_needed(
                 trades_payload,

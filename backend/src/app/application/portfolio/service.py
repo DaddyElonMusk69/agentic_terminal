@@ -174,6 +174,23 @@ class PortfolioService:
                 pass
         return await fetcher(limit)
 
+    async def get_recent_completed_trades(
+        self,
+        limit: int = 10,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> List[dict]:
+        connector = await self.get_active_connector()
+        fetcher = getattr(connector, "fetch_recent_completed_trades", None)
+        if not callable(fetcher):
+            return []
+        if start_time is not None or end_time is not None:
+            try:
+                return await fetcher(limit=limit, start_time=start_time, end_time=end_time)
+            except TypeError:
+                pass
+        return await fetcher(limit)
+
     async def validate_account(self, account_id: str) -> ExchangeAccount:
         account = await self._repo.get_account(account_id)
         if not account:

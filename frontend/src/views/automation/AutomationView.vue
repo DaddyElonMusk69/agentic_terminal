@@ -1188,6 +1188,9 @@
                         <div class="mt-1 break-words text-[11px] text-muted">
                           {{ session.provider || "--" }}/{{ session.model || "--" }}
                         </div>
+                        <div class="mt-1 break-words text-[10px] text-muted">
+                          {{ formatSessionPromptSummary(session) }}
+                        </div>
                         <div class="mt-2 grid grid-cols-2 gap-2 text-[10px] text-muted">
                           <span>{{ session.total_cycles ?? 0 }} cycles</span>
                           <span>{{ session.total_trades ?? 0 }} trades</span>
@@ -1317,6 +1320,18 @@
                         <div class="text-[10px] uppercase tracking-wide text-muted">Total PnL</div>
                         <div :class="pnlClass(sessionDetail.session.total_pnl)">
                           {{ formatUsd(sessionDetail.session.total_pnl) }}
+                        </div>
+                      </div>
+                      <div>
+                        <div class="text-[10px] uppercase tracking-wide text-muted">New Resonance Prompt</div>
+                        <div class="text-text">
+                          {{ formatPromptVersion(sessionDetail.session.new_resonance_prompt_version) }}
+                        </div>
+                      </div>
+                      <div>
+                        <div class="text-[10px] uppercase tracking-wide text-muted">Position Mgmt Prompt</div>
+                        <div class="text-text">
+                          {{ formatPromptVersion(sessionDetail.session.position_management_prompt_version) }}
                         </div>
                       </div>
                     </div>
@@ -1845,6 +1860,8 @@ type SessionItem = {
   prompt_count?: number;
   prompt_rate_per_hour?: number | null;
   duration_seconds?: number | null;
+  new_resonance_prompt_version?: number | null;
+  position_management_prompt_version?: number | null;
 };
 
 type SessionDetail = {
@@ -2330,6 +2347,17 @@ const formatRate = (value?: number | null) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return value >= 10 ? value.toFixed(0) : value.toFixed(1);
 };
+
+const formatPromptVersion = (value?: number | null) => {
+  if (!value) return "--";
+  const match = promptConfigs.value.find((config) => config.id === value);
+  return match ? `${match.name} (#${value})` : `#${value}`;
+};
+
+const formatSessionPromptSummary = (session: SessionItem) =>
+  `NR: ${formatPromptVersion(session.new_resonance_prompt_version)} · PM: ${formatPromptVersion(
+    session.position_management_prompt_version,
+  )}`;
 
 const pnlClass = (value?: number | null) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "text-muted";

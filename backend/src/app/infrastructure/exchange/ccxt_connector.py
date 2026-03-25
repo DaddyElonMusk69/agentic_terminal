@@ -200,6 +200,58 @@ class CCXTConnector(ExchangeConnector):
                 limit=limit,
             )
 
+    async def fetch_recent_completed_trades(
+        self,
+        limit: int = 10,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> List[dict]:
+        limit = max(1, min(int(limit or 10), 1000))
+        async with self._client() as client:
+            now = datetime.now(timezone.utc)
+            seven_days_ms = int((now - timedelta(days=7)).timestamp() * 1000)
+            since_ms = _to_timestamp_ms(start_time) or seven_days_ms
+            until_ms = _to_timestamp_ms(end_time)
+            if until_ms is not None and until_ms < since_ms:
+                since_ms, until_ms = until_ms, since_ms
+            exchange_id = (self._config.exchange_id or "").lower()
+
+            if exchange_id == "binance":
+                positions = await _fetch_binance_recent_completed_positions(
+                    client,
+                    since_ms=since_ms,
+                    until_ms=until_ms,
+                    limit=limit,
+                )
+                if positions:
+                    return positions
+
+            positions = await _fetch_ccxt_recent_completed_positions(
+                client,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                limit=limit,
+            )
+            if positions:
+                return positions
+
+            if exchange_id == "binance" and hasattr(client, "fapiPrivateGetIncome"):
+                trades = await _fetch_binance_income_trades(
+                    client,
+                    since_ms=since_ms,
+                    until_ms=until_ms,
+                    limit=limit,
+                )
+                if trades:
+                    return trades
+
+            return await _fetch_ccxt_recent_trades(
+                client,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                limit=limit,
+            )
+
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> List[MarketCandle]:
         async with self._client() as client:
             candles = await client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -1368,21 +1420,11 @@ async def _fetch_binance_income_trades(
     until_ms: int | None,
     limit: int,
 ) -> List[dict]:
-    try:
-        params = {
-            "incomeType": "REALIZED_PNL",
-            "startTime": since_ms,
-            "limit": 1000,
-        }
-        if until_ms is not None:
-            params["endTime"] = until_ms
-        income_records = await client.fapiPrivateGetIncome(params)
-    except Exception:
-        income_records = []
-    if not isinstance(income_records, list):
-        return []
-
-    income_records.sort(key=lambda item: _to_timestamp_ms(item.get("time") or 0) or 0, reverse=True)
+    income_records = await _fetch_binance_realized_pnl_records(
+        client,
+        since_ms=since_ms,
+        until_ms=until_ms,
+    )
     trades: List[dict] = []
     for record in income_records:
         if len(trades) >= limit:
@@ -1416,6 +1458,80 @@ async def _fetch_binance_income_trades(
         )
 
     return trades
+
+
+async def _fetch_binance_realized_pnl_records(
+    client: Any,
+    since_ms: int,
+    until_ms: int | None,
+) -> List[dict]:
+    try:
+        params = {
+            "incomeType": "REALIZED_PNL",
+            "startTime": since_ms,
+            "limit": 1000,
+        }
+        if until_ms is not None:
+            params["endTime"] = until_ms
+        income_records = await client.fapiPrivateGetIncome(params)
+    except Exception:
+        income_records = []
+    if not isinstance(income_records, list):
+        return []
+
+    income_records.sort(key=lambda item: _to_timestamp_ms(item.get("time") or 0) or 0, reverse=True)
+    return income_records
+
+
+async def _fetch_binance_recent_completed_positions(
+    client: Any,
+    since_ms: int,
+    until_ms: int | None,
+    limit: int,
+) -> List[dict]:
+    income_records = await _fetch_binance_realized_pnl_records(
+        client,
+        since_ms=since_ms,
+        until_ms=until_ms,
+    )
+    if not income_records:
+        return []
+
+    symbols: List[str] = []
+    seen_symbols: set[str] = set()
+    max_symbols = max(limit * 4, 12)
+    for record in income_records:
+        if not isinstance(record, dict):
+            continue
+        symbol = _normalize_income_symbol(record.get("symbol") or "")
+        if not symbol or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        symbols.append(symbol)
+        if len(symbols) >= max_symbols:
+            break
+
+    trades = await _fetch_ccxt_trade_history(
+        client,
+        since_ms=since_ms,
+        limit=max(limit * 50, 200),
+        symbols=symbols or None,
+    )
+    positions = _aggregate_completed_positions_from_trades(
+        trades,
+        since_ms=since_ms,
+        until_ms=until_ms,
+        limit=limit,
+    )
+    if positions:
+        return positions
+
+    return await _fetch_binance_income_trades(
+        client,
+        since_ms=since_ms,
+        until_ms=until_ms,
+        limit=limit,
+    )
 
 
 async def _fetch_ccxt_recent_trades(
@@ -1511,6 +1627,342 @@ async def _fetch_ccxt_recent_trades(
         )
 
     return closed_trades
+
+
+async def _fetch_ccxt_recent_completed_positions(
+    client: Any,
+    since_ms: int,
+    until_ms: int | None,
+    limit: int,
+) -> List[dict]:
+    trades = await _fetch_ccxt_trade_history(
+        client,
+        since_ms=since_ms,
+        limit=max(limit * 50, 200),
+        symbols=None,
+    )
+    return _aggregate_completed_positions_from_trades(
+        trades,
+        since_ms=since_ms,
+        until_ms=until_ms,
+        limit=limit,
+    )
+
+
+async def _fetch_ccxt_trade_history(
+    client: Any,
+    since_ms: int,
+    limit: int,
+    symbols: Optional[List[str]] = None,
+) -> List[dict]:
+    has = getattr(client, "has", {}) or {}
+    if not has.get("fetchMyTrades"):
+        return []
+
+    fetch_limit = max(50, min(int(limit or 200), 1000))
+    candidate_symbols: List[str] = []
+    seen_symbols: set[str] = set()
+
+    def add_symbol(raw_symbol: Any) -> None:
+        if not raw_symbol:
+            return
+        symbol = str(raw_symbol).strip()
+        if not symbol or symbol in seen_symbols:
+            return
+        seen_symbols.add(symbol)
+        candidate_symbols.append(symbol)
+
+    if symbols:
+        for symbol in symbols:
+            add_symbol(symbol)
+    else:
+        if has.get("fetchPositions"):
+            try:
+                positions = await client.fetch_positions()
+            except Exception:
+                positions = []
+            for position in positions or []:
+                if isinstance(position, dict):
+                    add_symbol(position.get("symbol"))
+
+        if has.get("fetchClosedOrders"):
+            try:
+                closed_orders = await client.fetch_closed_orders(since=since_ms)
+            except Exception:
+                closed_orders = []
+            for order in closed_orders or []:
+                if isinstance(order, dict):
+                    add_symbol(order.get("symbol"))
+
+    all_trades: List[dict] = []
+    if candidate_symbols:
+        for raw_symbol in candidate_symbols:
+            market_symbol = _resolve_recent_trade_symbol(client, raw_symbol)
+            try:
+                trades = await client.fetch_my_trades(
+                    symbol=market_symbol,
+                    since=since_ms,
+                    limit=fetch_limit,
+                )
+            except TypeError:
+                try:
+                    trades = await client.fetch_my_trades(symbol=market_symbol, limit=fetch_limit)
+                except Exception:
+                    trades = []
+            except Exception:
+                trades = []
+
+            for trade in trades or []:
+                if isinstance(trade, dict):
+                    all_trades.append(trade)
+    else:
+        try:
+            trades = await client.fetch_my_trades(since=since_ms, limit=fetch_limit)
+        except TypeError:
+            try:
+                trades = await client.fetch_my_trades(limit=fetch_limit)
+            except Exception:
+                trades = []
+        except Exception:
+            trades = []
+
+        for trade in trades or []:
+            if isinstance(trade, dict):
+                all_trades.append(trade)
+
+    all_trades.sort(key=lambda trade: _to_timestamp_ms(trade.get("timestamp")) or 0)
+    return all_trades
+
+
+def _resolve_recent_trade_symbol(client: Any, raw_symbol: str) -> str:
+    candidates = _symbol_candidates(client, raw_symbol)
+    markets = getattr(client, "markets", {}) or {}
+    for candidate in candidates:
+        if candidate in markets:
+            return candidate
+    return candidates[0] if candidates else raw_symbol
+
+
+def _aggregate_completed_positions_from_trades(
+    trades: List[dict],
+    *,
+    since_ms: int,
+    until_ms: int | None,
+    limit: int,
+) -> List[dict]:
+    if not trades:
+        return []
+
+    epsilon = 1e-8
+    states: Dict[str, Dict[str, Any]] = {}
+    completed: List[dict] = []
+
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        timestamp = _to_timestamp_ms(trade.get("timestamp"))
+        if timestamp is None:
+            continue
+        if until_ms is not None and timestamp > until_ms:
+            continue
+
+        symbol = _normalize_ccxt_symbol(trade.get("symbol") or "")
+        side = str(trade.get("side") or "").lower()
+        amount = _to_float(trade.get("amount")) or 0.0
+        price = _to_float(trade.get("price")) or 0.0
+        if not symbol or side not in {"buy", "sell"} or amount <= 0 or price <= 0:
+            continue
+
+        delta = amount if side == "buy" else -amount
+        state = states.get(symbol)
+
+        if state is None or abs(state["size"]) < epsilon:
+            states[symbol] = _new_completed_position_state(
+                symbol=symbol,
+                delta=delta,
+                price=price,
+                timestamp=timestamp,
+            )
+            continue
+
+        size = float(state["size"])
+        if size * delta > 0:
+            _add_to_completed_position_state(state, delta=delta, price=price)
+            continue
+
+        close_qty = min(abs(size), abs(delta))
+        if close_qty <= epsilon:
+            continue
+
+        state["realized_pnl"] += _extract_trade_realized_pnl(
+            trade,
+            avg_entry=float(state["avg_entry"]),
+            exit_price=price,
+            close_qty=close_qty,
+            current_size=size,
+            trade_amount=amount,
+        )
+        state["closed_qty_total"] += close_qty
+        state["exit_notional_total"] += close_qty * price
+        state["last_close_time"] = timestamp
+        state["last_close_ref"] = _build_completed_position_close_ref(trade, symbol, timestamp)
+
+        new_size = size + delta
+        if abs(new_size) < epsilon:
+            emitted = _finalize_completed_position_state(state)
+            if emitted is not None and emitted.get("exit_time") is not None:
+                exit_time = int(emitted["exit_time"])
+                if exit_time >= since_ms and (until_ms is None or exit_time <= until_ms):
+                    completed.append(emitted)
+            states.pop(symbol, None)
+            continue
+
+        if size * new_size < 0:
+            emitted = _finalize_completed_position_state(state)
+            if emitted is not None and emitted.get("exit_time") is not None:
+                exit_time = int(emitted["exit_time"])
+                if exit_time >= since_ms and (until_ms is None or exit_time <= until_ms):
+                    completed.append(emitted)
+
+            remaining_delta = new_size
+            states[symbol] = _new_completed_position_state(
+                symbol=symbol,
+                delta=remaining_delta,
+                price=price,
+                timestamp=timestamp,
+            )
+            continue
+
+        state["size"] = new_size
+
+    completed.sort(key=lambda item: _to_timestamp_ms(item.get("exit_time")) or 0, reverse=True)
+    return completed[:limit]
+
+
+def _new_completed_position_state(
+    *,
+    symbol: str,
+    delta: float,
+    price: float,
+    timestamp: int,
+) -> Dict[str, Any]:
+    abs_delta = abs(delta)
+    direction = "long" if delta > 0 else "short"
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "size": delta,
+        "avg_entry": price,
+        "opened_at": timestamp,
+        "entry_qty_total": abs_delta,
+        "entry_notional_total": abs_delta * price,
+        "closed_qty_total": 0.0,
+        "exit_notional_total": 0.0,
+        "realized_pnl": 0.0,
+        "max_abs_size": abs_delta,
+        "last_close_time": None,
+        "last_close_ref": None,
+    }
+
+
+def _add_to_completed_position_state(state: Dict[str, Any], *, delta: float, price: float) -> None:
+    current_size = abs(float(state["size"]))
+    add_size = abs(delta)
+    new_size = current_size + add_size
+    if new_size <= 0:
+        return
+    state["avg_entry"] = ((float(state["avg_entry"]) * current_size) + (price * add_size)) / new_size
+    state["size"] = float(state["size"]) + delta
+    state["entry_qty_total"] += add_size
+    state["entry_notional_total"] += add_size * price
+    state["max_abs_size"] = max(float(state["max_abs_size"]), abs(float(state["size"])))
+
+
+def _extract_trade_realized_pnl(
+    trade: dict,
+    *,
+    avg_entry: float,
+    exit_price: float,
+    close_qty: float,
+    current_size: float,
+    trade_amount: float,
+) -> float:
+    fee_cost = _extract_fee_cost(trade)
+    fee_share = fee_cost * (close_qty / trade_amount) if trade_amount > 0 else fee_cost
+    info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
+    realized = _to_float(
+        info.get("realizedPnl")
+        or info.get("closedPnl")
+        or trade.get("realizedPnl")
+        or trade.get("closedPnl")
+    )
+    if realized is not None:
+        return realized - fee_share
+    if current_size > 0:
+        return ((exit_price - avg_entry) * close_qty) - fee_share
+    return ((avg_entry - exit_price) * close_qty) - fee_share
+
+
+def _build_completed_position_close_ref(trade: dict, symbol: str, timestamp: int) -> str:
+    info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
+    raw_ref = (
+        info.get("orderId")
+        or trade.get("order")
+        or trade.get("id")
+        or info.get("id")
+        or info.get("tradeId")
+    )
+    if raw_ref is None:
+        return f"{symbol}:{timestamp}"
+    return f"{symbol}:{raw_ref}:{timestamp}"
+
+
+def _finalize_completed_position_state(state: Dict[str, Any]) -> Optional[dict]:
+    closed_qty = _to_float(state.get("closed_qty_total")) or 0.0
+    exit_time = _to_timestamp_ms(state.get("last_close_time"))
+    if closed_qty <= 0 or exit_time is None:
+        return None
+
+    entry_qty_total = _to_float(state.get("entry_qty_total")) or 0.0
+    entry_notional_total = _to_float(state.get("entry_notional_total")) or 0.0
+    exit_notional_total = _to_float(state.get("exit_notional_total")) or 0.0
+    max_abs_size = _to_float(state.get("max_abs_size")) or 0.0
+    pnl = _to_float(state.get("realized_pnl")) or 0.0
+    entry_price = (
+        (entry_notional_total / entry_qty_total)
+        if entry_qty_total > 0
+        else _to_float(state.get("avg_entry"))
+    )
+    exit_price = (exit_notional_total / closed_qty) if closed_qty > 0 else None
+    reference_notional = None
+    if entry_price is not None and max_abs_size > 0:
+        reference_notional = max_abs_size * entry_price
+
+    roi_pct = None
+    if reference_notional and reference_notional > 0:
+        roi_pct = (pnl / reference_notional) * 100.0
+
+    opened_at = _to_timestamp_ms(state.get("opened_at"))
+    duration_minutes = 0
+    if opened_at is not None and exit_time >= opened_at:
+        duration_minutes = int((exit_time - opened_at) / 60000)
+
+    return {
+        "symbol": state.get("symbol"),
+        "order_id": state.get("last_close_ref"),
+        "direction": state.get("direction"),
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "size": max_abs_size or closed_qty,
+        "size_usd": reference_notional,
+        "position_size_usd": reference_notional,
+        "pnl": pnl,
+        "roi_pct": roi_pct,
+        "entry_time": opened_at,
+        "exit_time": exit_time,
+        "duration_minutes": duration_minutes,
+        "is_win": pnl > 0,
+    }
 
 
 def _normalize_ccxt_symbol(value: Any) -> str:

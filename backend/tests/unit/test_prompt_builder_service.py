@@ -106,10 +106,32 @@ class StubPortfolioService:
     async def get_recent_trades(self, limit):  # noqa: ANN001
         return []
 
+    async def get_recent_completed_trades(self, limit):  # noqa: ANN001
+        del limit
+        return []
+
 
 class StubPortfolioServiceWithPosition(StubPortfolioService):
     async def get_portfolio_snapshot(self):
         return StubPortfolioSnapshotWithPosition()
+
+
+class StubPortfolioServiceWithCompletedTrades(StubPortfolioService):
+    async def get_recent_completed_trades(self, limit):  # noqa: ANN001
+        assert limit == 10
+        return [
+            {
+                "symbol": "BTC",
+                "direction": "long",
+                "entry_price": 100000,
+                "exit_price": 101500,
+                "pnl": 15.0,
+                "roi_pct": 1.5,
+                "entry_time": 1700000000000,
+                "exit_time": 1700003600000,
+                "duration_minutes": 60,
+            }
+        ]
 
 
 class StubRiskConfig:
@@ -562,3 +584,41 @@ async def test_prompt_builder_fills_signal_frame_and_active_tunnel_in_rich_text(
 
     assert "Original signal frame: 4h" in result.prompt_text
     assert "Active tunnel at entry: fast" in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_uses_completed_position_history_for_recent_completed_trades():
+    template = PromptTemplate(
+        id=1,
+        name="recent-completed",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={"data_selections": ["recent_completed_trades"]},
+        is_default=True,
+    )
+    snapshot = _build_snapshot("BTC")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithCompletedTrades(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-completed-trades",
+        template_id=1,
+        trigger_reason="new_resonance",
+        tickers=["BTC"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    completed = result.data["recent_completed_trades"]["recent_completed_trades"]
+    assert len(completed) == 1
+    assert "BTC long" in completed[0]
+    assert "Entry 100000.0 Exit 101500.0" in completed[0]
+    assert "Profit: +15.00 USDT" in completed[0]
