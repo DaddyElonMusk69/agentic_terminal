@@ -172,6 +172,7 @@ class LlmResponseWorker:
             leverage=leverage,
             tier=tier,
             position_pct=self._safe_float(data.get("position_pct")),
+            stop_loss_roe=self._safe_float(data.get("stop_loss_roe")),
             take_profit_roe=self._safe_float(data.get("take_profit_roe")),
             anchor_frame=self._safe_trimmed_str(data.get("anchor_frame")),
             active_tunnel=self._safe_active_tunnel(data.get("active_tunnel")),

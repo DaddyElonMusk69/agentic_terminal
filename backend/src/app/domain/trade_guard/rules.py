@@ -155,16 +155,33 @@ class UpdateSLFieldsRule(ValidationRule):
 
     @property
     def description(self) -> str:
-        return "Validates UPDATE_SL action has valid new_stop_loss"
+        return "Validates UPDATE_SL action has valid new_stop_loss or stop_loss_roe"
 
     def check(self, context: GuardContext) -> RuleResult:
         decision = context.decision
         if decision.action != ExecutionAction.UPDATE_SL:
             return self._pass("Not an UPDATE_SL action")
-        if decision.new_stop_loss is None:
-            return self._fail("UPDATE_SL action requires new_stop_loss")
-        if decision.new_stop_loss <= 0:
-            return self._fail(f"new_stop_loss must be > 0, got {decision.new_stop_loss}")
+
+        if decision.new_stop_loss is not None:
+            if decision.new_stop_loss <= 0:
+                return self._fail(f"new_stop_loss must be > 0, got {decision.new_stop_loss}")
+            return self._pass()
+
+        if decision.stop_loss_roe is None:
+            return self._fail("UPDATE_SL action requires new_stop_loss or stop_loss_roe")
+
+        position = _resolve_open_position(context.open_positions, decision.symbol)
+        if position is None:
+            return self._fail("UPDATE_SL with stop_loss_roe requires an open position")
+
+        entry_price = _safe_float(position.get("entry_price"))
+        if entry_price is None or entry_price <= 0:
+            return self._fail("UPDATE_SL with stop_loss_roe requires position entry_price")
+
+        leverage = _resolve_position_leverage(position)
+        if leverage is None or leverage <= 0:
+            return self._fail("UPDATE_SL with stop_loss_roe requires position leverage")
+
         return self._pass()
 
 
@@ -848,6 +865,63 @@ class TakeProfitROEModifier(ModifierRule):
         )
 
 
+class UpdateStopLossROEModifier(ModifierRule):
+    @property
+    def name(self) -> str:
+        return "update_stop_loss_roe"
+
+    @property
+    def description(self) -> str:
+        return "Converts UPDATE_SL stop_loss_roe into a concrete new_stop_loss price"
+
+    def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
+        if decision.action != ExecutionAction.UPDATE_SL:
+            return self._no_change(decision, "Not an UPDATE_SL action")
+
+        if decision.new_stop_loss is not None:
+            return self._no_change(decision, "new_stop_loss already provided")
+
+        target_roe = decision.stop_loss_roe
+        if target_roe is None:
+            return self._no_change(decision, "No stop_loss_roe provided")
+
+        position = _resolve_open_position(context.open_positions, decision.symbol)
+        if position is None:
+            return self._no_change(decision, "No open position available")
+
+        direction = _resolve_position_side(context.open_positions, decision.symbol)
+        entry_price = _safe_float(position.get("entry_price"))
+        leverage = _resolve_position_leverage(position)
+
+        if direction not in ("long", "short"):
+            return self._no_change(decision, "Could not resolve position direction")
+        if entry_price is None or entry_price <= 0:
+            return self._no_change(decision, "No valid entry_price available")
+        if leverage is None or leverage <= 0:
+            return self._no_change(decision, "No valid leverage available")
+
+        new_stop_loss = _calculate_stop_loss_from_roe(
+            target_roe=target_roe,
+            entry_price=entry_price,
+            leverage=leverage,
+            direction=direction,
+        )
+        if new_stop_loss is None or new_stop_loss <= 0:
+            return self._no_change(decision, "Failed to calculate new_stop_loss from stop_loss_roe")
+
+        updated_decision = replace(decision, new_stop_loss=new_stop_loss)
+        return self._modified(
+            updated_decision,
+            field_name="new_stop_loss",
+            original_value=None,
+            new_value=new_stop_loss,
+            reason=(
+                f"Converted stop_loss_roe {target_roe*100:.2f}% to stop {new_stop_loss:.5g} "
+                f"(entry: {entry_price}, lev: {leverage}x, side: {direction})"
+            ),
+        )
+
+
 class TightenStopLossModifier(ModifierRule):
     @property
     def name(self) -> str:
@@ -1003,6 +1077,7 @@ def create_default_guard(
     guard.register_modifier(ExchangeMinimumOrderSizeModifier())
     guard.register_modifier(StopLossROEModifier(min_roe=config.sl_min_roe, max_roe=config.sl_max_roe))
     guard.register_modifier(TakeProfitROEModifier(min_roe=config.tp_min_roe, max_roe=config.tp_max_roe))
+    guard.register_modifier(UpdateStopLossROEModifier())
     guard.register_modifier(TightenStopLossModifier())
     guard.register_modifier(ReduceToDustCloseModifier(dust_threshold_usd=config.dust_threshold_usd))
 
@@ -1027,7 +1102,7 @@ def _resolve_previous_stop_loss(
     return None
 
 
-def _resolve_position_side(open_positions: Optional[list], symbol: str) -> Optional[str]:
+def _resolve_open_position(open_positions: Optional[list], symbol: str) -> Optional[dict]:
     if not open_positions or not symbol:
         return None
     target = _normalize_symbol(symbol)
@@ -1037,16 +1112,57 @@ def _resolve_position_side(open_positions: Optional[list], symbol: str) -> Optio
         pos_symbol = _normalize_symbol(pos.get("symbol"))
         if target and pos_symbol and pos_symbol != target:
             continue
-        side = str(pos.get("direction") or pos.get("side") or "").lower()
-        if side in ("long", "short"):
-            return side
-        size = _safe_float(pos.get("size"))
-        if size is not None:
-            if size > 0:
-                return "long"
-            if size < 0:
-                return "short"
+        return pos
     return None
+
+
+def _resolve_position_side(open_positions: Optional[list], symbol: str) -> Optional[str]:
+    position = _resolve_open_position(open_positions, symbol)
+    if not position:
+        return None
+    side = str(position.get("direction") or position.get("side") or "").lower()
+    if side in ("long", "short"):
+        return side
+    size = _safe_float(position.get("size"))
+    if size is not None:
+        if size > 0:
+            return "long"
+        if size < 0:
+            return "short"
+    return None
+
+
+def _resolve_position_leverage(position: dict) -> Optional[float]:
+    leverage = _safe_float(position.get("leverage"))
+    if leverage is not None and leverage > 0:
+        return leverage
+
+    margin = _safe_float(position.get("margin"))
+    entry_price = _safe_float(position.get("entry_price"))
+    size = _safe_float(position.get("size"))
+    if margin is None or margin <= 0 or entry_price is None or entry_price <= 0 or size is None:
+        return None
+
+    notional = abs(size) * entry_price
+    if notional <= 0:
+        return None
+    return notional / margin
+
+
+def _calculate_stop_loss_from_roe(
+    *,
+    target_roe: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> Optional[float]:
+    if leverage <= 0 or entry_price <= 0 or direction not in ("long", "short"):
+        return None
+    if direction == "long":
+        stop_price = entry_price * (1 + (target_roe / leverage))
+    else:
+        stop_price = entry_price * (1 - (target_roe / leverage))
+    return float(f"{stop_price:.5g}")
 
 
 def _extract_stop_prices(orders: list, symbol: str) -> List[float]:

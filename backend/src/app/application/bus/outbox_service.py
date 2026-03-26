@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import logging
+import math
 from typing import Any, Awaitable, Callable, Dict, Optional
 from uuid import uuid4
 
@@ -49,6 +50,8 @@ class OutboxService:
 def _serialize_payload(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     if isinstance(value, dict):
         return {key: _serialize_payload(val) for key, val in value.items()}
     if isinstance(value, list):

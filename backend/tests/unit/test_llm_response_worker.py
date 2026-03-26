@@ -61,3 +61,12 @@ def test_execution_idea_round_trips_origin_metadata():
     round_trip = idea.to_dict()
     assert round_trip["anchor_frame"] == "2h"
     assert round_trip["active_tunnel"] == "slow"
+
+
+def test_parses_stop_loss_roe_for_update_sl():
+    response = 'JSON_ARRAY [{"action":"UPDATE_SL","symbol":"BTC","stop_loss_roe":0.005}]'
+    worker = LlmResponseWorker()
+    result = worker.parse(response)
+    assert result.success is True
+    assert result.ideas[0].action.value == "UPDATE_SL"
+    assert result.ideas[0].stop_loss_roe == 0.005
