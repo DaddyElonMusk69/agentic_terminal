@@ -210,6 +210,73 @@ def test_update_sl_requires_position_context_for_stop_loss_roe():
     assert "requires an open position" in result.errors[0]
 
 
+def test_update_tp_converts_take_profit_roe_to_price_for_long():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_TP,
+        symbol="BTC",
+        take_profit_roe=0.02,
+    )
+    open_positions = [
+        {
+            "symbol": "BTC",
+            "direction": "long",
+            "size": 1,
+            "entry_price": 100.0,
+            "mark_price": 101.0,
+            "leverage": 5,
+        }
+    ]
+
+    result = guard.validate(decision, open_positions=open_positions)
+
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.UPDATE_TP
+    assert result.decision.new_take_profit == 100.4
+
+
+def test_update_tp_converts_take_profit_roe_to_price_for_short():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_TP,
+        symbol="BTC",
+        take_profit_roe=0.015,
+    )
+    open_positions = [
+        {
+            "symbol": "BTC",
+            "direction": "short",
+            "size": -1,
+            "entry_price": 100.0,
+            "mark_price": 99.0,
+            "leverage": 5,
+        }
+    ]
+
+    result = guard.validate(decision, open_positions=open_positions)
+
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.UPDATE_TP
+    assert result.decision.new_take_profit == 99.7
+
+
+def test_update_tp_requires_position_context_for_take_profit_roe():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_TP,
+        symbol="BTC",
+        take_profit_roe=0.01,
+    )
+
+    result = guard.validate(decision, open_positions=[])
+
+    assert result.is_valid is False
+    assert "requires an open position" in result.errors[0]
+
+
 def test_take_profit_prefers_ui_min_roe_over_model_roe():
     config = TradeGuardConfig(
         min_confidence=60.0,

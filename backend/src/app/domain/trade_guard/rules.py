@@ -196,16 +196,35 @@ class UpdateTPFieldsRule(ValidationRule):
 
     @property
     def description(self) -> str:
-        return "Validates UPDATE_TP action has valid new_take_profit"
+        return "Validates UPDATE_TP action has valid new_take_profit or take_profit_roe"
 
     def check(self, context: GuardContext) -> RuleResult:
         decision = context.decision
         if decision.action != ExecutionAction.UPDATE_TP:
             return self._pass("Not an UPDATE_TP action")
-        if decision.new_take_profit is None:
-            return self._fail("UPDATE_TP action requires new_take_profit")
-        if decision.new_take_profit <= 0:
-            return self._fail(f"new_take_profit must be > 0, got {decision.new_take_profit}")
+
+        if decision.new_take_profit is not None:
+            if decision.new_take_profit <= 0:
+                return self._fail(f"new_take_profit must be > 0, got {decision.new_take_profit}")
+            return self._pass()
+
+        if decision.take_profit_roe is None:
+            return self._fail("UPDATE_TP action requires new_take_profit or take_profit_roe")
+        if decision.take_profit_roe <= 0:
+            return self._fail(f"take_profit_roe must be > 0, got {decision.take_profit_roe}")
+
+        position = _resolve_open_position(context.open_positions, decision.symbol)
+        if position is None:
+            return self._fail("UPDATE_TP with take_profit_roe requires an open position")
+
+        entry_price = _safe_float(position.get("entry_price"))
+        if entry_price is None or entry_price <= 0:
+            return self._fail("UPDATE_TP with take_profit_roe requires position entry_price")
+
+        leverage = _resolve_position_leverage(position)
+        if leverage is None or leverage <= 0:
+            return self._fail("UPDATE_TP with take_profit_roe requires position leverage")
+
         return self._pass()
 
 
@@ -922,6 +941,63 @@ class UpdateStopLossROEModifier(ModifierRule):
         )
 
 
+class UpdateTakeProfitROEModifier(ModifierRule):
+    @property
+    def name(self) -> str:
+        return "update_take_profit_roe"
+
+    @property
+    def description(self) -> str:
+        return "Converts UPDATE_TP take_profit_roe into a concrete new_take_profit price"
+
+    def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
+        if decision.action != ExecutionAction.UPDATE_TP:
+            return self._no_change(decision, "Not an UPDATE_TP action")
+
+        if decision.new_take_profit is not None:
+            return self._no_change(decision, "new_take_profit already provided")
+
+        target_roe = decision.take_profit_roe
+        if target_roe is None:
+            return self._no_change(decision, "No take_profit_roe provided")
+
+        position = _resolve_open_position(context.open_positions, decision.symbol)
+        if position is None:
+            return self._no_change(decision, "No open position available")
+
+        direction = _resolve_position_side(context.open_positions, decision.symbol)
+        entry_price = _safe_float(position.get("entry_price"))
+        leverage = _resolve_position_leverage(position)
+
+        if direction not in ("long", "short"):
+            return self._no_change(decision, "Could not resolve position direction")
+        if entry_price is None or entry_price <= 0:
+            return self._no_change(decision, "No valid entry_price available")
+        if leverage is None or leverage <= 0:
+            return self._no_change(decision, "No valid leverage available")
+
+        new_take_profit = _calculate_take_profit_from_roe(
+            target_roe=target_roe,
+            entry_price=entry_price,
+            leverage=leverage,
+            direction=direction,
+        )
+        if new_take_profit is None or new_take_profit <= 0:
+            return self._no_change(decision, "Failed to calculate new_take_profit from take_profit_roe")
+
+        updated_decision = replace(decision, new_take_profit=new_take_profit)
+        return self._modified(
+            updated_decision,
+            field_name="new_take_profit",
+            original_value=None,
+            new_value=new_take_profit,
+            reason=(
+                f"Converted take_profit_roe {target_roe*100:.2f}% to target {new_take_profit:.5g} "
+                f"(entry: {entry_price}, lev: {leverage}x, side: {direction})"
+            ),
+        )
+
+
 class TightenStopLossModifier(ModifierRule):
     @property
     def name(self) -> str:
@@ -1078,6 +1154,7 @@ def create_default_guard(
     guard.register_modifier(StopLossROEModifier(min_roe=config.sl_min_roe, max_roe=config.sl_max_roe))
     guard.register_modifier(TakeProfitROEModifier(min_roe=config.tp_min_roe, max_roe=config.tp_max_roe))
     guard.register_modifier(UpdateStopLossROEModifier())
+    guard.register_modifier(UpdateTakeProfitROEModifier())
     guard.register_modifier(TightenStopLossModifier())
     guard.register_modifier(ReduceToDustCloseModifier(dust_threshold_usd=config.dust_threshold_usd))
 
@@ -1163,6 +1240,22 @@ def _calculate_stop_loss_from_roe(
     else:
         stop_price = entry_price * (1 - (target_roe / leverage))
     return float(f"{stop_price:.5g}")
+
+
+def _calculate_take_profit_from_roe(
+    *,
+    target_roe: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> Optional[float]:
+    if leverage <= 0 or entry_price <= 0 or direction not in ("long", "short"):
+        return None
+    if direction == "long":
+        take_profit = entry_price * (1 + (target_roe / leverage))
+    else:
+        take_profit = entry_price * (1 - (target_roe / leverage))
+    return float(f"{take_profit:.5g}")
 
 
 def _extract_stop_prices(orders: list, symbol: str) -> List[float]:

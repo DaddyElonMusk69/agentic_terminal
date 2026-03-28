@@ -70,3 +70,12 @@ def test_parses_stop_loss_roe_for_update_sl():
     assert result.success is True
     assert result.ideas[0].action.value == "UPDATE_SL"
     assert result.ideas[0].stop_loss_roe == 0.005
+
+
+def test_parses_take_profit_roe_for_update_tp():
+    response = 'JSON_ARRAY [{"action":"UPDATE_TP","symbol":"BTC","take_profit_roe":0.02}]'
+    worker = LlmResponseWorker()
+    result = worker.parse(response)
+    assert result.success is True
+    assert result.ideas[0].action.value == "UPDATE_TP"
+    assert result.ideas[0].take_profit_roe == 0.02
