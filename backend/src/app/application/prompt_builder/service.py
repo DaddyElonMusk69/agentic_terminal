@@ -998,6 +998,32 @@ def _extract_sl_tp(orders: List[dict]) -> tuple[Optional[float], Optional[float]
     return stop_loss, take_profit
 
 
+def _calculate_price_target_roe_pct(
+    *,
+    target_price: Optional[float],
+    entry_price: Optional[float],
+    reference_price: Optional[float],
+    leverage: Optional[float],
+    direction: Optional[str],
+) -> Optional[float]:
+    if (
+        target_price is None
+        or entry_price is None
+        or reference_price is None
+        or leverage is None
+        or entry_price <= 0
+        or leverage <= 0
+        or direction not in {"long", "short"}
+    ):
+        return None
+
+    if direction == "long":
+        roe = ((target_price - reference_price) / entry_price) * leverage * 100.0
+    else:
+        roe = ((reference_price - target_price) / entry_price) * leverage * 100.0
+    return roe
+
+
 def _safe_float(value: Any) -> Optional[float]:
     try:
         if value is None:
@@ -1190,6 +1216,20 @@ def _build_open_positions_payload(
             "leverage": position.leverage,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
+            "current_take_profit_roe_pct": _calculate_price_target_roe_pct(
+                target_price=take_profit,
+                entry_price=position.entry_price,
+                reference_price=position.entry_price,
+                leverage=position.leverage,
+                direction=position.direction.lower() if position.direction else None,
+            ),
+            "remaining_take_profit_roe_pct": _calculate_price_target_roe_pct(
+                target_price=take_profit,
+                entry_price=position.entry_price,
+                reference_price=position.mark_price,
+                leverage=position.leverage,
+                direction=position.direction.lower() if position.direction else None,
+            ),
             "pnl": position.unrealized_pnl,
             "pnl_display": position.unrealized_pnl,
             "roe": roe,

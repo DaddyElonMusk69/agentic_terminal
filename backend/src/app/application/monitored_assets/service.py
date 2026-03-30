@@ -48,20 +48,36 @@ class MonitoredAssetsService:
         await self._position_repository.sync_assets(symbols)
 
     async def _resolve_base_assets(self, force_refresh: bool = False) -> List[str]:
+        us_stock_session_assets = _normalize_assets(
+            await self._market_settings.list_us_stock_assets()
+        )
+        us_stock_market_open = self._market_settings.is_us_stock_market_open()
         state = await self._dynamic_assets.resolve_assets(force_refresh=force_refresh)
         if state.enabled and state.binance_active:
             if state.assets:
-                return _normalize_assets(state.assets)
+                return _append_us_stock_session_assets(
+                    _normalize_assets(state.assets),
+                    us_stock_session_assets,
+                    us_stock_market_open,
+                )
             manual = await self._market_settings.list_assets()
             manual_assets = _normalize_assets(manual)
             if state.is_stale:
                 logger.warning("Dynamic assets stale; falling back to manual list.")
             else:
                 logger.warning("Dynamic assets unavailable; falling back to manual list.")
-            return manual_assets
+            return _append_us_stock_session_assets(
+                manual_assets,
+                us_stock_session_assets,
+                us_stock_market_open,
+            )
 
         manual = await self._market_settings.list_assets()
-        return _normalize_assets(manual)
+        return _append_us_stock_session_assets(
+            _normalize_assets(manual),
+            us_stock_session_assets,
+            us_stock_market_open,
+        )
 
 
 def _merge_assets(base_assets: Iterable[str], extras: Iterable[str]) -> List[str]:
@@ -87,6 +103,16 @@ def _merge_assets(base_assets: Iterable[str], extras: Iterable[str]) -> List[str
 
 def _normalize_assets(assets: Iterable[str]) -> List[str]:
     return _merge_assets(assets, [])
+
+
+def _append_us_stock_session_assets(
+    base_assets: Iterable[str],
+    us_stock_assets: Iterable[str],
+    market_open: bool,
+) -> List[str]:
+    if not market_open:
+        return _normalize_assets(base_assets)
+    return _merge_assets(base_assets, us_stock_assets)
 
 
 def _extract_position_symbols(positions: Sequence[object]) -> List[str]:

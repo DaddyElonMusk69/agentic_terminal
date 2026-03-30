@@ -32,6 +32,16 @@ class MonitoredIntervalsResponse(BaseModel):
     meta: Optional[ApiMeta] = None
 
 
+class UsStockAssetsData(BaseModel):
+    assets: List[str]
+    market_open: bool
+
+
+class UsStockAssetsResponse(BaseModel):
+    data: UsStockAssetsData
+    meta: Optional[ApiMeta] = None
+
+
 class PriceRequest(BaseModel):
     assets: Optional[List[str]] = None
 
@@ -84,6 +94,13 @@ async def list_assets(
     return MonitoredAssetsResponse(data=assets, meta=_meta(request))
 
 
+@router.get("/manual-assets", response_model=MonitoredAssetsResponse)
+async def list_manual_assets(request: Request) -> MonitoredAssetsResponse:
+    service = get_market_settings_service()
+    assets = await service.list_assets()
+    return MonitoredAssetsResponse(data=assets, meta=_meta(request))
+
+
 @router.post("/monitored-assets", response_model=MonitoredAssetsResponse)
 async def add_asset(payload: AssetPayload, request: Request) -> MonitoredAssetsResponse:
     service = get_market_settings_service()
@@ -96,6 +113,59 @@ async def remove_asset(symbol: str, request: Request) -> MonitoredAssetsResponse
     service = get_market_settings_service()
     assets = await service.remove_asset(symbol)
     return MonitoredAssetsResponse(data=assets, meta=_meta(request))
+
+
+@router.post("/manual-assets", response_model=MonitoredAssetsResponse)
+async def add_manual_asset(payload: AssetPayload, request: Request) -> MonitoredAssetsResponse:
+    service = get_market_settings_service()
+    assets = await service.add_asset(payload.symbol)
+    return MonitoredAssetsResponse(data=assets, meta=_meta(request))
+
+
+@router.delete("/manual-assets/{symbol}", response_model=MonitoredAssetsResponse)
+async def remove_manual_asset(symbol: str, request: Request) -> MonitoredAssetsResponse:
+    service = get_market_settings_service()
+    assets = await service.remove_asset(symbol)
+    return MonitoredAssetsResponse(data=assets, meta=_meta(request))
+
+
+@router.get("/us-stock-assets", response_model=UsStockAssetsResponse)
+async def list_us_stock_assets(request: Request) -> UsStockAssetsResponse:
+    service = get_market_settings_service()
+    assets = await service.list_us_stock_assets()
+    return UsStockAssetsResponse(
+        data=UsStockAssetsData(
+            assets=assets,
+            market_open=service.is_us_stock_market_open(),
+        ),
+        meta=_meta(request),
+    )
+
+
+@router.post("/us-stock-assets", response_model=UsStockAssetsResponse)
+async def add_us_stock_asset(payload: AssetPayload, request: Request) -> UsStockAssetsResponse:
+    service = get_market_settings_service()
+    assets = await service.add_us_stock_asset(payload.symbol)
+    return UsStockAssetsResponse(
+        data=UsStockAssetsData(
+            assets=assets,
+            market_open=service.is_us_stock_market_open(),
+        ),
+        meta=_meta(request),
+    )
+
+
+@router.delete("/us-stock-assets/{symbol}", response_model=UsStockAssetsResponse)
+async def remove_us_stock_asset(symbol: str, request: Request) -> UsStockAssetsResponse:
+    service = get_market_settings_service()
+    assets = await service.remove_us_stock_asset(symbol)
+    return UsStockAssetsResponse(
+        data=UsStockAssetsData(
+            assets=assets,
+            market_open=service.is_us_stock_market_open(),
+        ),
+        meta=_meta(request),
+    )
 
 
 @router.get("/monitored-intervals", response_model=MonitoredIntervalsResponse)

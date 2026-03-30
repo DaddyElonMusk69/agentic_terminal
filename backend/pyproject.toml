@@ -10,6 +10,7 @@ dependencies = [
   "pydantic-settings>=2.2",
   "ccxt>=4.0",
   "pandas>=2.2",
+  "pandas_market_calendars>=4.4",
   "matplotlib>=3.8",
   "mplfinance>=0.12",
   "sqlalchemy>=2.0",

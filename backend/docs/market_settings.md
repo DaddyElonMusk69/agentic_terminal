@@ -3,6 +3,10 @@
 This module stores the shared monitored asset list and monitored interval list
 used by scanners, automation, and charting.
 
+There are now two manual asset sources:
+- Manual base assets
+- US stock session assets
+
 ## Defaults
 - Assets: `BTC`
 - Intervals: `2h`
@@ -12,6 +16,12 @@ defaults out of the box.
 
 ## API (v1)
 - `GET /api/v1/market/monitored-assets`
+- `GET /api/v1/market/manual-assets`
+- `POST /api/v1/market/manual-assets`
+- `DELETE /api/v1/market/manual-assets/{symbol}`
+- `GET /api/v1/market/us-stock-assets`
+- `POST /api/v1/market/us-stock-assets`
+- `DELETE /api/v1/market/us-stock-assets/{symbol}`
 - `POST /api/v1/market/monitored-assets`
 - `DELETE /api/v1/market/monitored-assets/{symbol}`
 - `GET /api/v1/market/monitored-intervals`
@@ -24,6 +34,13 @@ Add asset:
 ```json
 {
   "symbol": "BTC"
+}
+```
+
+Add US stock session asset:
+```json
+{
+  "symbol": "AAPL"
 }
 ```
 
@@ -40,6 +57,11 @@ Responses return a list of strings in the `data` field.
 `GET /api/v1/market/monitored-assets` returns the effective list:
 - Dynamic list when enabled and active.
 - Manual list otherwise.
+- US stock session assets appended during NYSE market hours.
+
+Implementation notes:
+- Uses `pandas_market_calendars` when available for holiday-aware and early-close-aware session gating.
+- Falls back to a weekday `09:30-16:00` America/New_York check if that dependency is not installed.
 
 Optional query:
 - `include_positions=true` to append open positions.

@@ -277,6 +277,74 @@ def test_update_tp_requires_position_context_for_take_profit_roe():
     assert "requires an open position" in result.errors[0]
 
 
+def test_update_tp_caps_extension_to_one_percent_roe_per_cycle():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_TP,
+        symbol="BTC",
+        take_profit_roe=0.05,
+    )
+    open_positions = [
+        {
+            "symbol": "BTC",
+            "direction": "long",
+            "size": 1,
+            "entry_price": 100.0,
+            "mark_price": 101.0,
+            "leverage": 5,
+        }
+    ]
+    open_orders = [
+        {
+            "symbol": "BTC",
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": 100.4,
+            "status": "NEW",
+        }
+    ]
+
+    result = guard.validate(decision, open_positions=open_positions, open_orders=open_orders)
+
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.UPDATE_TP
+    assert result.decision.new_take_profit == 100.6
+
+
+def test_update_tp_within_one_percent_roe_delta_is_not_clamped():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_TP,
+        symbol="BTC",
+        take_profit_roe=0.028,
+    )
+    open_positions = [
+        {
+            "symbol": "BTC",
+            "direction": "long",
+            "size": 1,
+            "entry_price": 100.0,
+            "mark_price": 101.0,
+            "leverage": 5,
+        }
+    ]
+    open_orders = [
+        {
+            "symbol": "BTC",
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": 100.4,
+            "status": "NEW",
+        }
+    ]
+
+    result = guard.validate(decision, open_positions=open_positions, open_orders=open_orders)
+
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.UPDATE_TP
+    assert result.decision.new_take_profit == 100.56
+
+
 def test_take_profit_prefers_ui_min_roe_over_model_roe():
     config = TradeGuardConfig(
         min_confidence=60.0,

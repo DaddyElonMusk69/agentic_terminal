@@ -86,6 +86,24 @@
                 >
               </div>
             </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <div class="text-[10px] uppercase tracking-wide text-muted">US Session Assets</div>
+                <span class="text-[10px] text-muted">
+                  {{ usStockMarketOpen ? "Open" : "Closed" }}
+                </span>
+              </div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                <span
+                  v-for="asset in usStockAssets"
+                  :key="`us-stock-${asset}`"
+                  class="rounded-full border border-border bg-panel px-2 py-0.5 text-[10px] text-text"
+                >
+                  {{ asset }}
+                </span>
+                <span v-if="usStockAssets.length === 0" class="text-[10px] text-muted">None</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -130,44 +148,103 @@
           </div>
         </div>
 
-        <div class="mt-4 space-y-3">
-          <div v-if="!dynamicEnabled" class="flex flex-wrap gap-2">
-            <input
-              v-model="assetInput"
-              class="w-40 flex-1 rounded-md border border-border bg-panel px-3 py-2 text-xs"
-              type="text"
-              placeholder="Add asset (e.g., BTC)"
-              maxlength="10"
-              @keydown.enter.prevent="addAsset"
-            />
-            <button
-              class="rounded-md border border-border bg-accent px-3 py-2 text-xs font-medium text-base"
-              type="button"
-              :disabled="isAddingAsset || !assetInput.trim()"
-              @click="addAsset"
-            >
-              Add Asset
-            </button>
+        <div class="mt-4 space-y-4">
+          <div class="rounded-md border border-border bg-panel/40 p-3">
+            <div class="text-sm font-medium text-text">Manual Base List</div>
+            <p class="mt-1 text-[11px] text-muted">
+              Used when Dynamic Mode is off or when the dynamic list is unavailable.
+            </p>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <input
+                v-model="assetInput"
+                class="w-40 flex-1 rounded-md border border-border bg-panel px-3 py-2 text-xs"
+                type="text"
+                placeholder="Add base asset (e.g., BTC)"
+                maxlength="10"
+                @keydown.enter.prevent="addAsset"
+              />
+              <button
+                class="rounded-md border border-border bg-accent px-3 py-2 text-xs font-medium text-base"
+                type="button"
+                :disabled="isAddingAsset || !assetInput.trim()"
+                @click="addAsset"
+              >
+                Add Base Asset
+              </button>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <span
+                v-for="asset in manualAssets"
+                :key="`manual-${asset}`"
+                class="flex items-center gap-2 rounded-full border border-border bg-panel px-3 py-1 text-xs"
+              >
+                <span class="font-mono text-text">{{ asset }}</span>
+                <button
+                  class="text-muted hover:text-negative"
+                  type="button"
+                  @click="removeAsset(asset)"
+                >
+                  x
+                </button>
+              </span>
+              <span v-if="manualAssets.length === 0" class="text-xs text-muted">
+                No manual base assets configured.
+              </span>
+            </div>
           </div>
 
-          <div class="flex flex-wrap gap-2">
-            <span
-              v-for="asset in assets"
-              :key="asset"
-              class="flex items-center gap-2 rounded-full border border-border bg-panel px-3 py-1 text-xs"
-            >
-              <span class="font-mono text-text">{{ asset }}</span>
+          <div class="rounded-md border border-border bg-panel/40 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-sm font-medium text-text">US Stock Session Assets</div>
+                <p class="mt-1 text-[11px] text-muted">
+                  Appended only during regular US stock market hours. Enter plain tickers such as
+                  <span class="font-mono">AAPL</span> or <span class="font-mono">AMN</span>.
+                </p>
+              </div>
+              <BaseBadge>{{ usStockMarketOpen ? "US Session Open" : "US Session Closed" }}</BaseBadge>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <input
+                v-model="usStockAssetInput"
+                class="w-40 flex-1 rounded-md border border-border bg-panel px-3 py-2 text-xs"
+                type="text"
+                placeholder="Add US stock ticker (e.g., AAPL)"
+                maxlength="10"
+                @keydown.enter.prevent="addUsStockAsset"
+              />
               <button
-                v-if="!dynamicEnabled"
-                class="text-muted hover:text-negative"
+                class="rounded-md border border-border bg-accent px-3 py-2 text-xs font-medium text-base"
                 type="button"
-                @click="removeAsset(asset)"
+                :disabled="isAddingUsStockAsset || !usStockAssetInput.trim()"
+                @click="addUsStockAsset"
               >
-                x
+                Add US Session Asset
               </button>
-              <span v-else class="text-[10px] uppercase text-muted">Auto</span>
-            </span>
-            <span v-if="assets.length === 0" class="text-xs text-muted">No assets configured.</span>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <span
+                v-for="asset in usStockAssets"
+                :key="`us-session-${asset}`"
+                class="flex items-center gap-2 rounded-full border border-border bg-panel px-3 py-1 text-xs"
+              >
+                <span class="font-mono text-text">{{ asset }}</span>
+                <button
+                  class="text-muted hover:text-negative"
+                  type="button"
+                  @click="removeUsStockAsset(asset)"
+                >
+                  x
+                </button>
+              </span>
+              <span v-if="usStockAssets.length === 0" class="text-xs text-muted">
+                No US stock session assets configured.
+              </span>
+            </div>
           </div>
         </div>
       </template>
@@ -278,16 +355,20 @@ const buildDynamicSources = (value?: Partial<DynamicSources> | null) => ({
 });
 
 const assets = ref<string[]>([]);
+const manualAssets = ref<string[]>([]);
+const usStockAssets = ref<string[]>([]);
 const baseAssets = ref<string[]>([]);
 const openPositions = ref<string[]>([]);
 const removedHighVolAssets = ref<string[]>([]);
 const intervals = ref<string[]>([]);
 const assetInput = ref("");
+const usStockAssetInput = ref("");
 const intervalInput = ref("");
 const error = ref("");
 const statusMessage = ref("");
 const statusTone = ref<"info" | "success" | "error">("info");
 const isAddingAsset = ref(false);
+const isAddingUsStockAsset = ref(false);
 const isAddingInterval = ref(false);
 const isUpdatingDynamic = ref(false);
 const isRefreshingAssets = ref(false);
@@ -299,6 +380,7 @@ const isBinanceActive = ref(false);
 const dynamicOiSource = ref("nofx");
 const dynamicSources = ref<DynamicSources>(buildDynamicSources());
 const dynamicRefreshMinutes = ref(10);
+const usStockMarketOpen = ref(false);
 let unsubscribeMarketCache: (() => void) | null = null;
 
 const statusToneClass = computed(() => {
@@ -352,7 +434,8 @@ const refreshAssets = async (force = false) => {
     const response = await fetch(url);
     const data = await response.json();
     if (Array.isArray(data?.data)) {
-      assets.value = data.data;
+      assets.value = normalizeAssetList(data.data);
+      await loadManualAssetSources();
       await loadAssetsBreakdown(force);
       persistMarketCache();
       return true;
@@ -365,6 +448,9 @@ const refreshAssets = async (force = false) => {
 
 const applyMarketCache = (data: MarketCacheData) => {
   assets.value = Array.isArray(data.assets) ? [...data.assets] : [];
+  manualAssets.value = Array.isArray(data.manualAssets) ? [...data.manualAssets] : [];
+  usStockAssets.value = Array.isArray(data.usStockAssets) ? [...data.usStockAssets] : [];
+  usStockMarketOpen.value = Boolean(data.usStockMarketOpen);
   intervals.value = Array.isArray(data.intervals) ? [...data.intervals] : [];
   dynamicEnabled.value = Boolean(data.dynamicEnabled);
   hasApiKey.value = Boolean(data.hasApiKey);
@@ -379,6 +465,9 @@ const applyMarketCache = (data: MarketCacheData) => {
 const persistMarketCache = () => {
   writeMarketCache({
     assets: [...assets.value],
+    manualAssets: [...manualAssets.value],
+    usStockAssets: [...usStockAssets.value],
+    usStockMarketOpen: usStockMarketOpen.value,
     intervals: [...intervals.value],
     dynamicEnabled: dynamicEnabled.value,
     hasApiKey: hasApiKey.value,
@@ -397,6 +486,27 @@ const normalizeAssetList = (list: string[]) =>
         .filter((item) => item),
     ),
   );
+
+const loadManualAssetSources = async () => {
+  try {
+    const [manualResponse, usStockResponse] = await Promise.all([
+      fetch("/api/v1/market/manual-assets"),
+      fetch("/api/v1/market/us-stock-assets"),
+    ]);
+    const [manualData, usStockData] = await Promise.all([
+      manualResponse.json(),
+      usStockResponse.json(),
+    ]);
+
+    manualAssets.value = Array.isArray(manualData?.data) ? normalizeAssetList(manualData.data) : [];
+    usStockAssets.value = Array.isArray(usStockData?.data?.assets)
+      ? normalizeAssetList(usStockData.data.assets)
+      : [];
+    usStockMarketOpen.value = Boolean(usStockData?.data?.market_open);
+  } catch {
+    // Keep the last known state if these auxiliary requests fail during refresh.
+  }
+};
 
 const loadAssetsBreakdown = async (force = false) => {
   const baseUrl = force
@@ -449,16 +559,27 @@ const loadMarketSettings = async (force = false) => {
     const requests: Promise<Response>[] = [
       fetch("/api/v1/market/dynamic-assets"),
       fetch(assetsUrl),
+      fetch("/api/v1/market/manual-assets"),
+      fetch("/api/v1/market/us-stock-assets"),
     ];
     if (shouldFetchCore) {
       requests.push(fetch("/api/v1/market/monitored-intervals"));
     }
 
-    const [dynamicRes, assetsRes, intervalsRes] = await Promise.all(requests);
+    const [dynamicRes, assetsRes, manualRes, usStockRes, intervalsRes] = await Promise.all(requests);
     const dynamicData = await dynamicRes.json();
-    const assetsData = await assetsRes.json();
+    const [assetsData, manualData, usStockData] = await Promise.all([
+      assetsRes.json(),
+      manualRes.json(),
+      usStockRes.json(),
+    ]);
 
-    assets.value = Array.isArray(assetsData?.data) ? assetsData.data : [];
+    assets.value = Array.isArray(assetsData?.data) ? normalizeAssetList(assetsData.data) : [];
+    manualAssets.value = Array.isArray(manualData?.data) ? normalizeAssetList(manualData.data) : [];
+    usStockAssets.value = Array.isArray(usStockData?.data?.assets)
+      ? normalizeAssetList(usStockData.data.assets)
+      : [];
+    usStockMarketOpen.value = Boolean(usStockData?.data?.market_open);
 
     if (shouldFetchCore && intervalsRes) {
       const intervalsData = await intervalsRes.json();
@@ -550,7 +671,7 @@ const addAsset = async () => {
   if (!ticker) return;
   isAddingAsset.value = true;
   try {
-    const response = await fetch("/api/v1/market/monitored-assets", {
+    const response = await fetch("/api/v1/market/manual-assets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol: ticker }),
@@ -559,10 +680,11 @@ const addAsset = async () => {
     if (!response.ok) {
       throw new Error(data?.error?.message || "Failed to add asset.");
     }
-    assets.value = Array.isArray(data?.data)
-      ? data.data
-      : [ticker, ...assets.value.filter((item) => item !== ticker)];
+    manualAssets.value = Array.isArray(data?.data)
+      ? normalizeAssetList(data.data)
+      : normalizeAssetList([ticker, ...manualAssets.value]);
     assetInput.value = "";
+    await refreshAssets();
     setStatus(`${ticker} added.`, "success");
     persistMarketCache();
   } catch (err) {
@@ -576,7 +698,7 @@ const removeAsset = async (ticker: string) => {
   if (!ticker) return;
   try {
     const response = await fetch(
-      `/api/v1/market/monitored-assets/${encodeURIComponent(ticker)}`,
+      `/api/v1/market/manual-assets/${encodeURIComponent(ticker)}`,
       {
         method: "DELETE",
       },
@@ -585,13 +707,68 @@ const removeAsset = async (ticker: string) => {
     if (!response.ok) {
       throw new Error(data?.error?.message || "Failed to remove asset.");
     }
-    assets.value = Array.isArray(data?.data)
-      ? data.data
-      : assets.value.filter((item) => item !== ticker);
+    manualAssets.value = Array.isArray(data?.data)
+      ? normalizeAssetList(data.data)
+      : manualAssets.value.filter((item) => item !== ticker);
+    await refreshAssets();
     setStatus(`${ticker} removed.`, "success");
     persistMarketCache();
   } catch (err) {
     setStatus(err instanceof Error ? err.message : "Failed to remove asset.", "error");
+  }
+};
+
+const addUsStockAsset = async () => {
+  const ticker = usStockAssetInput.value.trim().toUpperCase();
+  if (!ticker) return;
+  isAddingUsStockAsset.value = true;
+  try {
+    const response = await fetch("/api/v1/market/us-stock-assets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: ticker }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "Failed to add US stock asset.");
+    }
+    usStockAssets.value = Array.isArray(data?.data?.assets)
+      ? normalizeAssetList(data.data.assets)
+      : normalizeAssetList([ticker, ...usStockAssets.value]);
+    usStockMarketOpen.value = Boolean(data?.data?.market_open);
+    usStockAssetInput.value = "";
+    await refreshAssets();
+    setStatus(`${ticker} added to US session assets.`, "success");
+    persistMarketCache();
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : "Failed to add US stock asset.", "error");
+  } finally {
+    isAddingUsStockAsset.value = false;
+  }
+};
+
+const removeUsStockAsset = async (ticker: string) => {
+  if (!ticker) return;
+  try {
+    const response = await fetch(
+      `/api/v1/market/us-stock-assets/${encodeURIComponent(ticker)}`,
+      {
+        method: "DELETE",
+      },
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "Failed to remove US stock asset.");
+    }
+    usStockAssets.value = Array.isArray(data?.data?.assets)
+      ? normalizeAssetList(data.data.assets)
+      : usStockAssets.value.filter((item) => item !== ticker);
+    usStockMarketOpen.value = Boolean(data?.data?.market_open);
+    await refreshAssets();
+    setStatus(`${ticker} removed from US session assets.`, "success");
+    persistMarketCache();
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : "Failed to remove US stock asset.", "error");
   }
 };
 

@@ -116,6 +116,18 @@ class StubPortfolioServiceWithPosition(StubPortfolioService):
         return StubPortfolioSnapshotWithPosition()
 
 
+class StubPortfolioServiceWithPositionAndTpOrder(StubPortfolioServiceWithPosition):
+    async def get_open_orders(self):
+        return [
+            {
+                "symbol": "TON/USDT",
+                "type": "TAKE_PROFIT_MARKET",
+                "stopPrice": 3.5,
+                "status": "NEW",
+            }
+        ]
+
+
 class StubPortfolioServiceWithCompletedTrades(StubPortfolioService):
     async def get_recent_completed_trades(self, limit):  # noqa: ANN001
         assert limit == 10
@@ -535,6 +547,52 @@ async def test_prompt_builder_fills_missing_position_management_fields_from_live
     assert "Entry: $3.2500" in result.prompt_text
     assert "Current: $3.4100" in result.prompt_text
     assert "${current_price}" not in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_includes_current_take_profit_roe_fields():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": [
+                    "take_profit",
+                    "current_take_profit_roe_pct",
+                    "remaining_take_profit_roe_pct",
+                ],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPositionAndTpOrder(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-tp-roe",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["TON/USDT"]
+    assert position["take_profit"] == 3.5
+    assert position["current_take_profit_roe_pct"] == 46.15
+    assert position["remaining_take_profit_roe_pct"] == 16.62
 
 
 @pytest.mark.asyncio

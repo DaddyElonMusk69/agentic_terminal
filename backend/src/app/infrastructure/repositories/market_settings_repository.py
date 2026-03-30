@@ -7,6 +7,10 @@ from app.domain.market_settings.interfaces import MarketSettingsRepository
 from app.infrastructure.db.models.ema_scanner import MonitoredAssetModel, MonitoredIntervalModel
 
 
+# Keep the second manual source in the existing asset table to avoid a schema fork.
+US_STOCK_ASSET_PREFIX = "__US_STOCK__:"
+
+
 class SqlMarketSettingsRepository(MarketSettingsRepository):
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         self._sessionmaker = sessionmaker
@@ -16,7 +20,22 @@ class SqlMarketSettingsRepository(MarketSettingsRepository):
             result = await session.execute(
                 select(MonitoredAssetModel.symbol).order_by(MonitoredAssetModel.symbol)
             )
-            return [row[0] for row in result.fetchall()]
+            return [
+                row[0]
+                for row in result.fetchall()
+                if isinstance(row[0], str) and not row[0].startswith(US_STOCK_ASSET_PREFIX)
+            ]
+
+    async def list_us_stock_assets(self) -> List[str]:
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(MonitoredAssetModel.symbol).order_by(MonitoredAssetModel.symbol)
+            )
+            return [
+                row[0][len(US_STOCK_ASSET_PREFIX) :]
+                for row in result.fetchall()
+                if isinstance(row[0], str) and row[0].startswith(US_STOCK_ASSET_PREFIX)
+            ]
 
     async def list_intervals(self) -> List[str]:
         async with self._sessionmaker() as session:
@@ -37,10 +56,28 @@ class SqlMarketSettingsRepository(MarketSettingsRepository):
                 session.add(MonitoredAssetModel(symbol=symbol))
                 await session.commit()
 
+    async def add_us_stock_asset(self, symbol: str) -> None:
+        prefixed_symbol = f"{US_STOCK_ASSET_PREFIX}{symbol}"
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(MonitoredAssetModel.id).where(MonitoredAssetModel.symbol == prefixed_symbol)
+            )
+            if result.scalar() is None:
+                session.add(MonitoredAssetModel(symbol=prefixed_symbol))
+                await session.commit()
+
     async def remove_asset(self, symbol: str) -> None:
         async with self._sessionmaker() as session:
             await session.execute(
                 delete(MonitoredAssetModel).where(MonitoredAssetModel.symbol == symbol)
+            )
+            await session.commit()
+
+    async def remove_us_stock_asset(self, symbol: str) -> None:
+        prefixed_symbol = f"{US_STOCK_ASSET_PREFIX}{symbol}"
+        async with self._sessionmaker() as session:
+            await session.execute(
+                delete(MonitoredAssetModel).where(MonitoredAssetModel.symbol == prefixed_symbol)
             )
             await session.commit()
 

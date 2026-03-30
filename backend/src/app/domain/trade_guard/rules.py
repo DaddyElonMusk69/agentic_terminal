@@ -998,6 +998,86 @@ class UpdateTakeProfitROEModifier(ModifierRule):
         )
 
 
+class LimitTakeProfitExtensionModifier(ModifierRule):
+    def __init__(self, max_delta_roe: float = 0.01) -> None:
+        self._max_delta_roe = max_delta_roe
+
+    @property
+    def name(self) -> str:
+        return "limit_take_profit_extension"
+
+    @property
+    def description(self) -> str:
+        return f"Caps UPDATE_TP extensions to +{self._max_delta_roe*100:.1f}% ROE per cycle"
+
+    def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
+        if decision.action != ExecutionAction.UPDATE_TP:
+            return self._no_change(decision, "Not an UPDATE_TP action")
+
+        new_take_profit = decision.new_take_profit
+        if new_take_profit is None or new_take_profit <= 0:
+            return self._no_change(decision, "No valid new_take_profit")
+
+        previous_take_profit = _resolve_previous_take_profit(decision, context)
+        if previous_take_profit is None or previous_take_profit <= 0:
+            return self._no_change(decision, "No previous take profit available")
+
+        position = _resolve_open_position(context.open_positions, decision.symbol)
+        direction = _resolve_position_side(context.open_positions, decision.symbol)
+        entry_price = _safe_float(position.get("entry_price")) if position else None
+        leverage = _resolve_position_leverage(position) if position else None
+
+        if direction not in ("long", "short"):
+            return self._no_change(decision, "Could not resolve position direction")
+        if entry_price is None or entry_price <= 0:
+            return self._no_change(decision, "No valid entry_price available")
+        if leverage is None or leverage <= 0:
+            return self._no_change(decision, "No valid leverage available")
+
+        previous_tp_roe = _calculate_take_profit_roe_from_price(
+            target_price=previous_take_profit,
+            entry_price=entry_price,
+            leverage=leverage,
+            direction=direction,
+        )
+        requested_tp_roe = _calculate_take_profit_roe_from_price(
+            target_price=new_take_profit,
+            entry_price=entry_price,
+            leverage=leverage,
+            direction=direction,
+        )
+
+        if previous_tp_roe is None or requested_tp_roe is None:
+            return self._no_change(decision, "Failed to resolve TP ROE values")
+        if previous_tp_roe <= 0:
+            return self._no_change(decision, "Previous TP ROE is not positive")
+
+        max_allowed_roe = previous_tp_roe + self._max_delta_roe
+        if requested_tp_roe <= max_allowed_roe:
+            return self._no_change(decision, "TP extension within allowed ROE delta")
+
+        clamped_take_profit = _calculate_take_profit_from_roe(
+            target_roe=max_allowed_roe,
+            entry_price=entry_price,
+            leverage=leverage,
+            direction=direction,
+        )
+        if clamped_take_profit is None or clamped_take_profit <= 0:
+            return self._no_change(decision, "Failed to clamp take profit")
+
+        updated_decision = replace(decision, new_take_profit=clamped_take_profit)
+        return self._modified(
+            updated_decision,
+            field_name="new_take_profit",
+            original_value=new_take_profit,
+            new_value=clamped_take_profit,
+            reason=(
+                f"Clamped TP extension from {requested_tp_roe*100:.2f}% to {max_allowed_roe*100:.2f}% ROE "
+                f"(previous: {previous_tp_roe*100:.2f}%)"
+            ),
+        )
+
+
 class TightenStopLossModifier(ModifierRule):
     @property
     def name(self) -> str:
@@ -1155,6 +1235,7 @@ def create_default_guard(
     guard.register_modifier(TakeProfitROEModifier(min_roe=config.tp_min_roe, max_roe=config.tp_max_roe))
     guard.register_modifier(UpdateStopLossROEModifier())
     guard.register_modifier(UpdateTakeProfitROEModifier())
+    guard.register_modifier(LimitTakeProfitExtensionModifier())
     guard.register_modifier(TightenStopLossModifier())
     guard.register_modifier(ReduceToDustCloseModifier(dust_threshold_usd=config.dust_threshold_usd))
 
@@ -1174,6 +1255,23 @@ def _resolve_previous_stop_loss(
         return _select_stop_price(stop_prices, direction, current_price)
 
     fallback = decision.stop_loss
+    if fallback is not None and fallback > 0:
+        return float(fallback)
+    return None
+
+
+def _resolve_previous_take_profit(
+    decision: ExecutionIdea,
+    context: GuardContext,
+) -> Optional[float]:
+    symbol = decision.symbol
+    direction = _resolve_position_side(context.open_positions, symbol)
+
+    take_profit_prices = _extract_take_profit_prices(context.open_orders or [], symbol)
+    if take_profit_prices:
+        return _select_take_profit_price(take_profit_prices, direction)
+
+    fallback = decision.take_profit
     if fallback is not None and fallback > 0:
         return float(fallback)
     return None
@@ -1258,6 +1356,20 @@ def _calculate_take_profit_from_roe(
     return float(f"{take_profit:.5g}")
 
 
+def _calculate_take_profit_roe_from_price(
+    *,
+    target_price: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> Optional[float]:
+    if leverage <= 0 or entry_price <= 0 or target_price <= 0 or direction not in ("long", "short"):
+        return None
+    if direction == "long":
+        return (target_price - entry_price) / entry_price * leverage
+    return (entry_price - target_price) / entry_price * leverage
+
+
 def _extract_stop_prices(orders: list, symbol: str) -> List[float]:
     prices: List[float] = []
     target = _normalize_symbol(symbol)
@@ -1296,6 +1408,44 @@ def _extract_stop_prices(orders: list, symbol: str) -> List[float]:
     return prices
 
 
+def _extract_take_profit_prices(orders: list, symbol: str) -> List[float]:
+    prices: List[float] = []
+    target = _normalize_symbol(symbol)
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        order_symbol = _normalize_symbol(order.get("symbol") or info.get("symbol"))
+        if target and order_symbol and order_symbol != target:
+            continue
+
+        order_type = str(
+            order.get("type")
+            or order.get("orderType")
+            or info.get("type")
+            or info.get("orderType")
+            or ""
+        ).lower()
+
+        stop_price = _safe_float(
+            order.get("stopPrice")
+            or order.get("triggerPrice")
+            or order.get("triggerPx")
+            or info.get("stopPrice")
+            or info.get("triggerPrice")
+            or info.get("triggerPx")
+        )
+        if stop_price is None:
+            continue
+
+        if "take" not in order_type and "profit" not in order_type:
+            continue
+
+        prices.append(stop_price)
+
+    return prices
+
+
 def _select_stop_price(
     stop_prices: List[float],
     direction: Optional[str],
@@ -1310,6 +1460,19 @@ def _select_stop_price(
     if current_price is not None:
         return min(stop_prices, key=lambda price: abs(current_price - price))
     return stop_prices[0]
+
+
+def _select_take_profit_price(
+    take_profit_prices: List[float],
+    direction: Optional[str],
+) -> Optional[float]:
+    if not take_profit_prices:
+        return None
+    if direction == "long":
+        return min(take_profit_prices)
+    if direction == "short":
+        return max(take_profit_prices)
+    return take_profit_prices[0]
 
 
 def _is_stop_loss_wider(
