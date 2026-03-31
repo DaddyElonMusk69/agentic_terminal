@@ -120,6 +120,46 @@ class LimitOrderFieldsRule(ValidationRule):
         return self._pass()
 
 
+class ManagedLimitEntryRule(ValidationRule):
+    LIMIT_ACTIONS = {
+        ExecutionAction.OPEN_LONG_LIMIT,
+        ExecutionAction.OPEN_SHORT_LIMIT,
+    }
+
+    @property
+    def name(self) -> str:
+        return "managed_limit_entry"
+
+    @property
+    def category(self) -> RuleCategory:
+        return RuleCategory.CUSTOM
+
+    @property
+    def description(self) -> str:
+        return "Restricts managed limit entries to flat symbols without another pending entry"
+
+    def check(self, context: GuardContext) -> RuleResult:
+        decision = context.decision
+        if decision.action not in self.LIMIT_ACTIONS:
+            return self._pass("Not a managed limit entry")
+
+        if _resolve_open_position(context.open_positions, decision.symbol) is not None:
+            return self._fail(
+                f"{decision.action.value} only allowed when flat on {decision.symbol}"
+            )
+
+        for entry in context.pending_entries or []:
+            if not isinstance(entry, dict):
+                continue
+            if _normalize_symbol(entry.get("symbol")) != _normalize_symbol(decision.symbol):
+                continue
+            return self._fail(
+                f"Active pending limit entry already exists for {decision.symbol}"
+            )
+
+        return self._pass()
+
+
 class ReduceActionFieldsRule(ValidationRule):
     @property
     def name(self) -> str:
@@ -714,7 +754,7 @@ class StopLossROEModifier(ModifierRule):
 
     @property
     def description(self) -> str:
-        return f"Validates stop_loss within ROE range ({self._min_roe*100:.0f}%-{self._max_roe*100:.0f}%)"
+        return f"Sets initial stop_loss from configured sl_min_roe ({self._min_roe*100:.0f}%)"
 
     def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
         if decision.action not in self.OPEN_ACTIONS:
@@ -728,55 +768,35 @@ class StopLossROEModifier(ModifierRule):
         if current_price is None or current_price <= 0:
             return self._no_change(decision, f"Could not fetch price for {decision.symbol}")
 
-        llm_stop_loss = decision.stop_loss
-        original_sl = llm_stop_loss
+        target_roe = self._min_roe if self._min_roe > 0 else DEFAULT_TRADE_GUARD_CONFIG.sl_min_roe
+        original_sl = decision.stop_loss
+        original_sl_roe = decision.stop_loss_roe
         is_long = decision.action in self.LONG_ACTIONS
         direction = "LONG" if is_long else "SHORT"
 
-        if llm_stop_loss is not None and llm_stop_loss > 0:
-            if is_long:
-                llm_roe = (current_price - llm_stop_loss) / current_price * leverage
-            else:
-                llm_roe = (llm_stop_loss - current_price) / current_price * leverage
-
-            if self._min_roe <= llm_roe <= self._max_roe:
-                return self._no_change(
-                    decision,
-                    f"{direction} SL OK: {llm_stop_loss:.5g} (ROE: {llm_roe*100:.1f}%)",
-                )
-
-            if llm_roe < self._min_roe:
-                clamped_roe = self._min_roe
-                clamp_reason = "too tight"
-            else:
-                clamped_roe = self._max_roe
-                clamp_reason = "too wide"
-        else:
-            clamped_roe = self._min_roe
-            clamp_reason = "not specified"
-            llm_roe = None
-
         if is_long:
-            calculated_sl = current_price * (1 - (clamped_roe / leverage))
+            calculated_sl = current_price * (1 - (target_roe / leverage))
         else:
-            calculated_sl = current_price * (1 + (clamped_roe / leverage))
+            calculated_sl = current_price * (1 + (target_roe / leverage))
 
         calculated_sl = float(f"{calculated_sl:.5g}")
-        new_decision = replace(decision, stop_loss=calculated_sl)
-
-        if llm_roe is not None:
-            reason = (
-                f"{direction} SL {clamp_reason}: {original_sl:.5g} ({llm_roe*100:.1f}%) → "
-                f"{calculated_sl:.5g} ({clamped_roe*100:.1f}%)"
-            )
-        else:
-            reason = f"{direction} SL {clamp_reason}: → {calculated_sl:.5g} ({clamped_roe*100:.1f}%, default)"
+        new_decision = replace(
+            decision,
+            stop_loss=calculated_sl,
+            stop_loss_roe=target_roe,
+        )
+        reason = (
+            f"{direction} initial SL set from config: {calculated_sl:.5g} "
+            f"(price: {current_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+        )
+        if _same_float(original_sl, calculated_sl) and _same_float(original_sl_roe, target_roe):
+            return self._no_change(new_decision, reason)
 
         return self._modified(
             new_decision,
-            field_name="stop_loss",
-            original_value=original_sl,
-            new_value=calculated_sl,
+            field_name="initial_stop_loss",
+            original_value={"stop_loss": original_sl, "stop_loss_roe": original_sl_roe},
+            new_value={"stop_loss": calculated_sl, "stop_loss_roe": target_roe},
             reason=reason,
         )
 
@@ -796,11 +816,7 @@ class TakeProfitROEModifier(ModifierRule):
 
     @property
     def description(self) -> str:
-        return (
-            "Recalculates take_profit using live price with precedence "
-            "configured tp_min_roe -> model take_profit_roe -> default tp_min_roe "
-            f"(max {self._max_roe*100:.0f}%)"
-        )
+        return "Sets initial take_profit from configured tp_min_roe"
 
     def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
         if decision.action not in self.OPEN_ACTIONS:
@@ -815,72 +831,49 @@ class TakeProfitROEModifier(ModifierRule):
             return self._no_change(decision, f"Could not fetch price for {decision.symbol}")
 
         original_tp = decision.take_profit
+        original_tp_roe = decision.take_profit_roe
         configured_min_roe = self._min_roe if self._min_roe > 0 else None
-        default_min_roe = DEFAULT_TRADE_GUARD_CONFIG.tp_min_roe
-        max_roe = self._max_roe if self._max_roe > 0 else DEFAULT_TRADE_GUARD_CONFIG.tp_max_roe
-        fallback_min_roe = configured_min_roe if configured_min_roe is not None else default_min_roe
-        if max_roe < fallback_min_roe:
-            max_roe = fallback_min_roe
-
-        model_take_profit_roe = decision.take_profit_roe
-        invalid_roe = None
-        if model_take_profit_roe is not None and model_take_profit_roe <= 0:
-            invalid_roe = model_take_profit_roe
-            model_take_profit_roe = None
-
-        clamp_reason = None
-        llm_roe = None
         direction = "LONG" if decision.action in self.LONG_ACTIONS else "SHORT"
         is_long = decision.action in self.LONG_ACTIONS
 
-        if configured_min_roe is not None:
-            clamped_roe = fallback_min_roe
-            clamp_reason = "configured tp_min_roe"
-        elif model_take_profit_roe is not None:
-            llm_roe = model_take_profit_roe
-            if model_take_profit_roe < fallback_min_roe:
-                clamped_roe = fallback_min_roe
-                clamp_reason = "too small"
-            elif model_take_profit_roe > max_roe:
-                clamped_roe = max_roe
-                clamp_reason = "too large"
-            else:
-                clamped_roe = model_take_profit_roe
-        else:
-            clamped_roe = default_min_roe
-            if invalid_roe is not None:
-                clamp_reason = f"invalid take_profit_roe: {invalid_roe}"
-            else:
-                clamp_reason = "default tp_min_roe"
-
-        if is_long:
-            calculated_tp = current_price * (1 + (clamped_roe / leverage))
-        else:
-            calculated_tp = current_price * (1 - (clamped_roe / leverage))
-
-        calculated_tp = float(f"{calculated_tp:.5g}")
-        new_decision = replace(decision, take_profit=calculated_tp)
-        roe_detail = f"{clamped_roe*100:.1f}%"
-        if llm_roe is not None and clamp_reason:
-            roe_detail = f"{llm_roe*100:.1f}% → {clamped_roe*100:.1f}% ({clamp_reason})"
-        elif clamp_reason and llm_roe is None:
-            roe_detail = f"{clamped_roe*100:.1f}% ({clamp_reason})"
-
-        if original_tp is None or abs(calculated_tp - original_tp) > 0.0001:
+        if configured_min_roe is None:
+            cleared_decision = replace(decision, take_profit=None, take_profit_roe=None)
+            reason = "Initial TP disabled by config"
+            if original_tp is None and original_tp_roe is None:
+                return self._no_change(cleared_decision, reason)
             return self._modified(
-                new_decision,
-                field_name="take_profit",
-                original_value=original_tp,
-                new_value=calculated_tp,
-                reason=(
-                    f"{direction} TP: {original_tp} → {calculated_tp:.5g} "
-                    f"(price: {current_price}, ROE: {roe_detail}, lev: {leverage}x)"
-                ),
+                cleared_decision,
+                field_name="initial_take_profit",
+                original_value={"take_profit": original_tp, "take_profit_roe": original_tp_roe},
+                new_value={"take_profit": None, "take_profit_roe": None},
+                reason=reason,
             )
 
-        return self._no_change(
+        if is_long:
+            calculated_tp = current_price * (1 + (configured_min_roe / leverage))
+        else:
+            calculated_tp = current_price * (1 - (configured_min_roe / leverage))
+
+        calculated_tp = float(f"{calculated_tp:.5g}")
+        new_decision = replace(
+            decision,
+            take_profit=calculated_tp,
+            take_profit_roe=configured_min_roe,
+        )
+        reason = (
+            f"{direction} initial TP set from config: {calculated_tp:.5g} "
+            f"(price: {current_price}, ROE: {configured_min_roe*100:.1f}%, lev: {leverage}x)"
+        )
+
+        if _same_float(original_tp, calculated_tp) and _same_float(original_tp_roe, configured_min_roe):
+            return self._no_change(new_decision, reason)
+
+        return self._modified(
             new_decision,
-            f"{direction} TP OK: {calculated_tp:.5g} (price: {current_price}, ROE: {roe_detail})",
+            field_name="initial_take_profit",
+            original_value={"take_profit": original_tp, "take_profit_roe": original_tp_roe},
+            new_value={"take_profit": calculated_tp, "take_profit_roe": configured_min_roe},
+            reason=reason,
         )
 
 
@@ -1194,6 +1187,7 @@ def create_default_guard(
     guard.register_rule(SymbolRequiredRule())
     guard.register_rule(OpenActionFieldsRule())
     guard.register_rule(LimitOrderFieldsRule())
+    guard.register_rule(ManagedLimitEntryRule())
     guard.register_rule(ReduceActionFieldsRule())
     guard.register_rule(UpdateSLFieldsRule())
     guard.register_rule(UpdateTPFieldsRule())
@@ -1527,3 +1521,11 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _same_float(left: Any, right: Any, tolerance: float = 1e-9) -> bool:
+    left_value = _safe_float(left)
+    right_value = _safe_float(right)
+    if left_value is None or right_value is None:
+        return left_value is None and right_value is None
+    return abs(left_value - right_value) <= tolerance

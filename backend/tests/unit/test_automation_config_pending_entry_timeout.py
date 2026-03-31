@@ -7,7 +7,7 @@ from app.infrastructure.repositories.automation_config_repository import SqlAuto
 
 
 @pytest.mark.asyncio
-async def test_use_all_monitored_interval_charts_round_trip_in_automation_config():
+async def test_pending_entry_timeout_round_trip_in_automation_config():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -17,38 +17,22 @@ async def test_use_all_monitored_interval_charts_round_trip_in_automation_config
     service = AutomationConfigService(repository)
 
     default_config = await service.get_config()
-    assert default_config.use_all_monitored_interval_charts is False
+    assert default_config.pending_entry_timeout_seconds == 900
 
-    updated_true = await service.update_config(
+    updated = await service.update_config(
         execution_mode="dry_run",
         ema_interval_seconds=60,
         quant_interval_seconds=60,
-        pending_entry_timeout_seconds=900,
+        pending_entry_timeout_seconds=1800,
         provider="openai",
         model="gpt-5",
-        include_entry_timing_15m_chart=False,
-        use_all_monitored_interval_charts=True,
-        reverse_order_enabled=False,
-        vegas_prompt_configs=None,
-    )
-    assert updated_true.use_all_monitored_interval_charts is True
-
-    reloaded_true = await service.get_config()
-    assert reloaded_true.use_all_monitored_interval_charts is True
-
-    updated_false = await service.update_config(
-        execution_mode="dry_run",
-        ema_interval_seconds=60,
-        quant_interval_seconds=60,
-        pending_entry_timeout_seconds=900,
-        provider="openai",
-        model="gpt-5",
+        reasoning_effort=None,
         include_entry_timing_15m_chart=False,
         use_all_monitored_interval_charts=False,
         reverse_order_enabled=False,
         vegas_prompt_configs=None,
     )
-    assert updated_false.use_all_monitored_interval_charts is False
+    assert updated.pending_entry_timeout_seconds == 1800
 
-    reloaded_false = await service.get_config()
-    assert reloaded_false.use_all_monitored_interval_charts is False
+    reloaded = await service.get_config()
+    assert reloaded.pending_entry_timeout_seconds == 1800

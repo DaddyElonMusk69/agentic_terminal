@@ -22,6 +22,12 @@ class CCXTTradeConfig:
     quote_asset: str = "USDT"
 
 
+@dataclass(frozen=True)
+class ProtectionOrderSnapshot:
+    trigger_price: float
+    order_type: str
+
+
 class CCXTTradeExecutor:
     def __init__(self, config: CCXTTradeConfig) -> None:
         if ccxt is None:
@@ -146,10 +152,7 @@ class CCXTTradeExecutor:
             return ExecutionResult(success=False, status="invalid", error="size_usd required")
 
         try:
-            try:
-                await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_SL_TP)
-            except Exception:
-                pass
+            had_position_before = await self._has_open_position(symbol)
             await self._set_margin_mode(symbol)
             await self._client.set_leverage(leverage, symbol)
             ticker = await self._client.fetch_ticker(symbol)
@@ -176,8 +179,10 @@ class CCXTTradeExecutor:
                 raw_response=order,
             )
 
-            await self._maybe_set_sl_tp(symbol, decision, result)
-            return result
+            protection_result = None
+            if had_position_before is not True:
+                protection_result = await self._maybe_set_sl_tp(symbol, decision, result)
+            return _merge_entry_execution_with_protection(result, protection_result)
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
 
@@ -197,10 +202,7 @@ class CCXTTradeExecutor:
             return ExecutionResult(success=False, status="invalid", error="limit_price required")
 
         try:
-            try:
-                await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_SL_TP)
-            except Exception:
-                pass
+            had_position_before = await self._has_open_position(symbol)
             await self._set_margin_mode(symbol)
             await self._client.set_leverage(leverage, symbol)
             amount = size_usd / limit_price
@@ -229,7 +231,10 @@ class CCXTTradeExecutor:
             )
 
             if status == "filled":
-                await self._maybe_set_sl_tp(symbol, decision, result)
+                protection_result = None
+                if had_position_before is not True:
+                    protection_result = await self._maybe_set_sl_tp(symbol, decision, result)
+                return _merge_entry_execution_with_protection(result, protection_result)
             return result
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
@@ -308,63 +313,287 @@ class CCXTTradeExecutor:
 
     async def _update_stop_loss(self, symbol: str, trigger_price: float) -> ExecutionResult:
         try:
-            await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_SL)
-            positions = await self._client.fetch_positions([symbol])
-            position = next((p for p in positions if p.get("contracts") or p.get("size")), None)
-            if not position:
-                return ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}")
-
-            direction = self._resolve_position_direction(position)
-            if direction is None:
-                return ExecutionResult(success=False, status="invalid", error="Unable to resolve position side")
-            side = "sell" if direction == "long" else "buy"
-            amount = abs(float(position.get("contracts") or position.get("size") or 0))
-            order = await self._create_order_with_reduce_only_fallback(
+            return await self._replace_protection_order(
                 symbol=symbol,
-                type="stop_market",
-                side=side,
-                amount=amount,
-                params=self._reduce_only_params(position, {"stopPrice": trigger_price}),
-            )
-
-            return ExecutionResult(
-                success=True,
-                status="sl_set",
-                order_id=str(order.get("id", "")),
-                raw_response=order,
+                kind="sl",
+                trigger_price=trigger_price,
+                cancel_action=ExecutionAction.CANCEL_SL,
+                order_type="stop_market",
+                success_status="sl_set",
             )
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
 
     async def _update_take_profit(self, symbol: str, trigger_price: float) -> ExecutionResult:
         try:
-            await self._cancel_conditional_orders(symbol, ExecutionAction.CANCEL_TP)
-            positions = await self._client.fetch_positions([symbol])
-            position = next((p for p in positions if p.get("contracts") or p.get("size")), None)
-            if not position:
-                return ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}")
+            return await self._replace_protection_order(
+                symbol=symbol,
+                kind="tp",
+                trigger_price=trigger_price,
+                cancel_action=ExecutionAction.CANCEL_TP,
+                order_type="take_profit_market",
+                success_status="tp_set",
+            )
+        except Exception as exc:
+            return ExecutionResult(success=False, status="error", error=str(exc))
 
-            direction = self._resolve_position_direction(position)
-            if direction is None:
-                return ExecutionResult(success=False, status="invalid", error="Unable to resolve position side")
-            side = "sell" if direction == "long" else "buy"
-            amount = abs(float(position.get("contracts") or position.get("size") or 0))
+    async def _replace_protection_order(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        trigger_price: float,
+        cancel_action: ExecutionAction,
+        order_type: str,
+        success_status: str,
+    ) -> ExecutionResult:
+        position_result = await self._load_position_context(symbol)
+        if position_result.error_result is not None:
+            return position_result.error_result
+
+        position = position_result.position
+        assert position is not None
+        assert position_result.side is not None
+        assert position_result.amount is not None
+
+        previous_order = await self._get_existing_protection_order(
+            symbol=symbol,
+            kind=kind,
+            position=position,
+        )
+
+        cancel_result = await self._cancel_conditional_orders(symbol, cancel_action)
+        if not cancel_result.success:
+            label = "stop loss" if kind == "sl" else "take profit"
+            return ExecutionResult(
+                success=False,
+                status="error",
+                error=f"failed to cancel existing {label}: {cancel_result.error or cancel_result.status}",
+            )
+
+        create_result = await self._place_protection_order(
+            symbol=symbol,
+            position=position,
+            side=position_result.side,
+            amount=position_result.amount,
+            order_type=order_type,
+            trigger_price=trigger_price,
+            success_status=success_status,
+        )
+        if create_result.success:
+            return create_result
+
+        if previous_order is None:
+            return create_result
+
+        restore_result = await self._place_protection_order(
+            symbol=symbol,
+            position=position,
+            side=position_result.side,
+            amount=position_result.amount,
+            order_type=previous_order.order_type or order_type,
+            trigger_price=previous_order.trigger_price,
+            success_status=success_status,
+        )
+        label = "stop loss" if kind == "sl" else "take profit"
+        if restore_result.success:
+            return ExecutionResult(
+                success=False,
+                status="rolled_back",
+                order_id=restore_result.order_id,
+                error=(
+                    f"{label} update failed; restored previous {label} at "
+                    f"{previous_order.trigger_price:.5g}: {create_result.error or create_result.status}"
+                ),
+                raw_response={
+                    "failed_update": create_result.raw_response,
+                    "restored_order": restore_result.raw_response,
+                },
+            )
+
+        return ExecutionResult(
+            success=False,
+            status="error",
+            error=(
+                f"{label} update failed and restore failed: "
+                f"update={create_result.error or create_result.status}; "
+                f"restore={restore_result.error or restore_result.status}"
+            ),
+            raw_response={
+                "failed_update": create_result.raw_response,
+                "restore_attempt": restore_result.raw_response,
+            },
+        )
+
+    async def _place_protection_order(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+        side: str,
+        amount: float,
+        order_type: str,
+        trigger_price: float,
+        success_status: str,
+    ) -> ExecutionResult:
+        try:
             order = await self._create_order_with_reduce_only_fallback(
                 symbol=symbol,
-                type="take_profit_market",
+                type=order_type,
                 side=side,
                 amount=amount,
                 params=self._reduce_only_params(position, {"stopPrice": trigger_price}),
             )
-
-            return ExecutionResult(
-                success=True,
-                status="tp_set",
-                order_id=str(order.get("id", "")),
-                raw_response=order,
-            )
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
+
+        return ExecutionResult(
+            success=True,
+            status=success_status,
+            order_id=str(order.get("id", "")),
+            raw_response=order,
+        )
+
+    async def _has_open_position(self, symbol: str) -> Optional[bool]:
+        try:
+            positions = await self._client.fetch_positions([symbol])
+        except Exception:
+            return None
+        return next((p for p in positions if p.get("contracts") or p.get("size")), None) is not None
+
+    @dataclass(frozen=True)
+    class _PositionContext:
+        position: Optional[Dict[str, Any]]
+        side: Optional[str]
+        amount: Optional[float]
+        error_result: Optional[ExecutionResult]
+
+    async def _load_position_context(self, symbol: str) -> "_PositionContext":
+        try:
+            positions = await self._client.fetch_positions([symbol])
+        except Exception as exc:
+            return self._PositionContext(
+                position=None,
+                side=None,
+                amount=None,
+                error_result=ExecutionResult(success=False, status="error", error=str(exc)),
+            )
+
+        position = next((p for p in positions if p.get("contracts") or p.get("size")), None)
+        if not position:
+            return self._PositionContext(
+                position=None,
+                side=None,
+                amount=None,
+                error_result=ExecutionResult(success=False, status="not_found", error=f"No open position for {symbol}"),
+            )
+
+        direction = self._resolve_position_direction(position)
+        if direction is None:
+            return self._PositionContext(
+                position=None,
+                side=None,
+                amount=None,
+                error_result=ExecutionResult(
+                    success=False,
+                    status="invalid",
+                    error="Unable to resolve position side",
+                ),
+            )
+
+        side = "sell" if direction == "long" else "buy"
+        amount = abs(float(position.get("contracts") or position.get("size") or 0))
+        if amount <= 0:
+            return self._PositionContext(
+                position=None,
+                side=None,
+                amount=None,
+                error_result=ExecutionResult(
+                    success=False,
+                    status="invalid",
+                    error=f"No open position for {symbol}",
+                ),
+            )
+
+        return self._PositionContext(
+            position=position,
+            side=side,
+            amount=amount,
+            error_result=None,
+        )
+
+    async def _get_existing_protection_order(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        position: Dict[str, Any],
+    ) -> Optional[ProtectionOrderSnapshot]:
+        try:
+            exchange_id = self._config.exchange_id.lower()
+            market_id = None
+            if exchange_id == "binance":
+                try:
+                    market = self._client.market(symbol)
+                    if isinstance(market, dict):
+                        market_id = market.get("id")
+                except Exception:
+                    market_id = None
+
+            open_orders = await self._client.fetch_open_orders(symbol)
+            use_binance_algo = False
+            if exchange_id == "binance" and market_id:
+                params: Dict[str, Any] = {"symbol": market_id, "algoType": "CONDITIONAL"}
+                try:
+                    if hasattr(self._client, "fapiPrivateGetOpenAlgoOrders"):
+                        algo_orders = await self._client.fapiPrivateGetOpenAlgoOrders(params)
+                    else:
+                        algo_orders = await self._client.request("openAlgoOrders", "fapiPrivate", "GET", params)
+                except Exception:
+                    algo_orders = None
+                if isinstance(algo_orders, list):
+                    open_orders = algo_orders
+                    use_binance_algo = True
+
+            direction = self._resolve_position_direction(position)
+            mark_price = _safe_float(position.get("markPrice"))
+            if mark_price is None and isinstance(position.get("info"), dict):
+                mark_price = _safe_float(position["info"].get("markPrice"))
+
+            for order in open_orders or []:
+                if use_binance_algo:
+                    status = str(order.get("algoStatus") or "").upper()
+                    if status and not _is_open_order_status(status):
+                        continue
+                    order_type = str(order.get("orderType") or order.get("type") or "").lower()
+                    stop_price = _safe_float(order.get("triggerPrice")) or _safe_float(order.get("stopPrice"))
+                    reduce_only = bool(order.get("reduceOnly") or order.get("closePosition"))
+                else:
+                    status = str(order.get("status") or "").upper()
+                    if status and not _is_open_order_status(status):
+                        continue
+                    order_type = _extract_order_type(order)
+                    stop_price = _extract_stop_price(order)
+                    reduce_only = _extract_reduce_only(order)
+
+                if order_type not in ("stop", "stop_market", "take_profit", "take_profit_market") and not stop_price:
+                    continue
+                if not _is_trigger_order(order_type, stop_price, reduce_only):
+                    continue
+
+                order_kind = _classify_trigger_order_kind(
+                    order_type=order_type,
+                    stop_price=stop_price,
+                    mark_price=mark_price,
+                    position_side=direction,
+                )
+                if order_kind != kind or stop_price is None or stop_price <= 0:
+                    continue
+
+                return ProtectionOrderSnapshot(trigger_price=stop_price, order_type=order_type)
+        except Exception:
+            return None
+        return None
 
     async def _cancel_conditional_orders(self, symbol: str, action: ExecutionAction) -> ExecutionResult:
         try:
@@ -412,65 +641,6 @@ class CCXTTradeExecutor:
             if not open_orders:
                 return ExecutionResult(success=True, status="canceled")
 
-            def _safe_float(value: Any) -> Optional[float]:
-                try:
-                    if value is None or value == "":
-                        return None
-                    return float(value)
-                except (TypeError, ValueError):
-                    return None
-
-            def _extract_order_type(order: Dict[str, Any]) -> str:
-                order_type = order.get("type")
-                if not order_type and isinstance(order.get("info"), dict):
-                    info = order["info"]
-                    order_type = info.get("type") or info.get("orderType")
-                return str(order_type or "").lower()
-
-            def _extract_stop_price(order: Dict[str, Any]) -> Optional[float]:
-                for key in ("stopPrice", "triggerPrice"):
-                    value = _safe_float(order.get(key))
-                    if value:
-                        return value
-                if isinstance(order.get("info"), dict):
-                    info = order["info"]
-                    for key in ("stopPrice", "triggerPrice", "triggerPx"):
-                        value = _safe_float(info.get(key))
-                        if value:
-                            return value
-                return None
-
-            def _extract_reduce_only(order: Dict[str, Any]) -> bool:
-                value = order.get("reduceOnly")
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, str):
-                    return value.lower() == "true"
-                close_position = order.get("closePosition")
-                if isinstance(close_position, bool):
-                    return close_position
-                if isinstance(close_position, str):
-                    return close_position.lower() == "true"
-                if isinstance(order.get("info"), dict):
-                    info_value = order["info"].get("reduceOnly")
-                    if isinstance(info_value, bool):
-                        return info_value
-                    if isinstance(info_value, str):
-                        return info_value.lower() == "true"
-                    close_info = order["info"].get("closePosition")
-                    if isinstance(close_info, bool):
-                        return close_info
-                    if isinstance(close_info, str):
-                        return close_info.lower() == "true"
-                return False
-
-            def _is_trigger_order(order_type: str, stop_price: Optional[float], reduce_only: bool) -> bool:
-                if stop_price is not None:
-                    return True
-                if "stop" in order_type or "profit" in order_type:
-                    return True
-                return reduce_only
-
             position_side = None
             mark_price = None
             if action in (ExecutionAction.CANCEL_SL, ExecutionAction.CANCEL_TP):
@@ -499,7 +669,7 @@ class CCXTTradeExecutor:
             if use_binance_algo:
                 for order in open_orders:
                     status = str(order.get("algoStatus") or "").upper()
-                    if status and status != "NEW":
+                    if status and not _is_open_order_status(status):
                         continue
                     order_type = str(order.get("orderType") or order.get("type") or "").lower()
                     stop_price = _safe_float(order.get("triggerPrice")) or _safe_float(order.get("stopPrice"))
@@ -510,16 +680,12 @@ class CCXTTradeExecutor:
                         continue
 
                     if action in (ExecutionAction.CANCEL_SL, ExecutionAction.CANCEL_TP):
-                        order_kind = None
-                        if "take_profit" in order_type or "profit" in order_type:
-                            order_kind = "tp"
-                        elif "stop" in order_type:
-                            order_kind = "sl"
-                        elif stop_price is not None and mark_price is not None and position_side in ("long", "short"):
-                            if position_side == "long":
-                                order_kind = "sl" if stop_price < mark_price else "tp"
-                            else:
-                                order_kind = "sl" if stop_price > mark_price else "tp"
+                        order_kind = _classify_trigger_order_kind(
+                            order_type=order_type,
+                            stop_price=stop_price,
+                            mark_price=mark_price,
+                            position_side=position_side,
+                        )
 
                         if action == ExecutionAction.CANCEL_SL and order_kind != "sl":
                             continue
@@ -535,7 +701,7 @@ class CCXTTradeExecutor:
 
             for order in open_orders:
                 status = str(order.get("status") or "").upper()
-                if status and status != "NEW":
+                if status and not _is_open_order_status(status):
                     continue
                 order_id = order.get("id") or order.get("orderId")
                 if not order_id:
@@ -549,16 +715,12 @@ class CCXTTradeExecutor:
                     continue
 
                 if action in (ExecutionAction.CANCEL_SL, ExecutionAction.CANCEL_TP):
-                    order_kind = None
-                    if "take_profit" in order_type or "profit" in order_type:
-                        order_kind = "tp"
-                    elif "stop" in order_type:
-                        order_kind = "sl"
-                    elif stop_price is not None and mark_price is not None and position_side in ("long", "short"):
-                        if position_side == "long":
-                            order_kind = "sl" if stop_price < mark_price else "tp"
-                        else:
-                            order_kind = "sl" if stop_price > mark_price else "tp"
+                    order_kind = _classify_trigger_order_kind(
+                        order_type=order_type,
+                        stop_price=stop_price,
+                        mark_price=mark_price,
+                        position_side=position_side,
+                    )
 
                     if action == ExecutionAction.CANCEL_SL and order_kind != "sl":
                         continue
@@ -640,11 +802,39 @@ class CCXTTradeExecutor:
         except Exception:
             return None
 
-    async def _maybe_set_sl_tp(self, symbol: str, decision: ExecutionIdea, result: ExecutionResult) -> None:
-        if not decision.stop_loss and not decision.take_profit:
-            return
+    async def _maybe_set_sl_tp(
+        self,
+        symbol: str,
+        decision: ExecutionIdea,
+        result: ExecutionResult,
+    ) -> Optional[ExecutionResult]:
+        stop_loss_price = decision.stop_loss
+        take_profit_price = decision.take_profit
 
-        await self.set_sl_tp(symbol, decision.stop_loss, decision.take_profit)
+        direction = _resolve_open_direction(decision.action)
+        leverage = decision.leverage or 1
+        reference_price = _resolve_bracket_reference_price(result, decision)
+
+        if direction and leverage > 0 and reference_price and reference_price > 0:
+            if decision.stop_loss_roe is not None:
+                stop_loss_price = _calculate_initial_stop_loss_from_roe(
+                    risk_roe=decision.stop_loss_roe,
+                    entry_price=reference_price,
+                    leverage=leverage,
+                    direction=direction,
+                )
+            if decision.take_profit_roe is not None and decision.take_profit_roe > 0:
+                take_profit_price = _calculate_take_profit_from_roe(
+                    target_roe=decision.take_profit_roe,
+                    entry_price=reference_price,
+                    leverage=leverage,
+                    direction=direction,
+                )
+
+        if not stop_loss_price and not take_profit_price:
+            return None
+
+        return await self.set_sl_tp(symbol, stop_loss_price, take_profit_price)
 
     async def set_sl_tp(
         self,
@@ -682,3 +872,195 @@ class CCXTTradeExecutor:
             status="sl_tp_set",
             order_id=", ".join(results) if results else None,
         )
+
+
+def _resolve_open_direction(action: ExecutionAction) -> Optional[str]:
+    if action in (ExecutionAction.OPEN_LONG, ExecutionAction.OPEN_LONG_LIMIT):
+        return "long"
+    if action in (ExecutionAction.OPEN_SHORT, ExecutionAction.OPEN_SHORT_LIMIT):
+        return "short"
+    return None
+
+
+def _resolve_bracket_reference_price(result: ExecutionResult, decision: ExecutionIdea) -> Optional[float]:
+    for candidate in (result.fill_price, decision.limit_price, decision.entry_price):
+        try:
+            if candidate is None:
+                continue
+            value = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _merge_entry_execution_with_protection(
+    entry_result: ExecutionResult,
+    protection_result: Optional[ExecutionResult],
+) -> ExecutionResult:
+    if protection_result is None or (
+        protection_result.success and not protection_result.error and protection_result.status != "partial"
+    ):
+        return entry_result
+
+    error_parts = []
+    if protection_result.status == "partial":
+        error_parts.append("protection_attach_partial")
+    elif not protection_result.success:
+        error_parts.append("protection_attach_failed")
+    if protection_result.error:
+        error_parts.append(protection_result.error)
+
+    return ExecutionResult(
+        success=True,
+        status=entry_result.status,
+        order_id=entry_result.order_id,
+        fill_price=entry_result.fill_price,
+        filled_size=entry_result.filled_size,
+        realized_pnl=entry_result.realized_pnl,
+        error=": ".join(error_parts) if error_parts else protection_result.error,
+        raw_response={
+            "entry_order": entry_result.raw_response,
+            "protection": protection_result.raw_response,
+            "protection_status": protection_result.status,
+            "protection_order_id": protection_result.order_id,
+        },
+    )
+
+
+def _calculate_initial_stop_loss_from_roe(
+    *,
+    risk_roe: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> float:
+    normalized_roe = abs(float(risk_roe))
+    if direction == "long":
+        stop_price = entry_price * (1 - (normalized_roe / leverage))
+    else:
+        stop_price = entry_price * (1 + (normalized_roe / leverage))
+    return float(f"{stop_price:.5g}")
+
+
+def _calculate_stop_loss_from_roe(
+    *,
+    target_roe: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> float:
+    if direction == "long":
+        stop_price = entry_price * (1 + (target_roe / leverage))
+    else:
+        stop_price = entry_price * (1 - (target_roe / leverage))
+    return float(f"{stop_price:.5g}")
+
+
+def _calculate_take_profit_from_roe(
+    *,
+    target_roe: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> float:
+    if direction == "long":
+        take_profit = entry_price * (1 + (target_roe / leverage))
+    else:
+        take_profit = entry_price * (1 - (target_roe / leverage))
+    return float(f"{take_profit:.5g}")
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_order_type(order: Dict[str, Any]) -> str:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    return str(
+        order.get("type")
+        or order.get("orderType")
+        or info.get("type")
+        or info.get("orderType")
+        or params.get("type")
+        or ""
+    ).lower()
+
+
+def _extract_stop_price(order: Dict[str, Any]) -> Optional[float]:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for candidate in (
+        order.get("stopPrice"),
+        order.get("triggerPrice"),
+        order.get("triggerPx"),
+        info.get("stopPrice"),
+        info.get("triggerPrice"),
+        info.get("triggerPx"),
+        params.get("stopPrice"),
+        params.get("triggerPrice"),
+        params.get("triggerPx"),
+    ):
+        parsed = _safe_float(candidate)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _extract_reduce_only(order: Dict[str, Any]) -> bool:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for source in (order, info, params):
+        if source.get("reduceOnly") is True:
+            return True
+        if source.get("closePosition") is True:
+            return True
+    return False
+
+
+def _is_trigger_order(order_type: str, stop_price: Optional[float], reduce_only: bool) -> bool:
+    normalized = str(order_type or "").lower()
+    if "take_profit" in normalized or "take-profit" in normalized or normalized.startswith("tp"):
+        return True
+    if "stop" in normalized:
+        return True
+    return reduce_only and stop_price is not None and stop_price > 0
+
+
+def _classify_trigger_order_kind(
+    *,
+    order_type: str,
+    stop_price: Optional[float],
+    mark_price: Optional[float],
+    position_side: Optional[str],
+) -> Optional[str]:
+    normalized = str(order_type or "").lower()
+    if "take_profit" in normalized or "take-profit" in normalized or normalized.startswith("tp"):
+        return "tp"
+    if "stop" in normalized and "take" not in normalized:
+        return "sl"
+
+    if (
+        stop_price is None
+        or stop_price <= 0
+        or mark_price is None
+        or mark_price <= 0
+        or position_side not in ("long", "short")
+    ):
+        return None
+
+    if position_side == "long":
+        return "sl" if stop_price <= mark_price else "tp"
+    return "sl" if stop_price >= mark_price else "tp"
+
+
+def _is_open_order_status(status: str) -> bool:
+    normalized = str(status or "").strip().upper()
+    return normalized in {"NEW", "OPEN", "PARTIALLY_FILLED"}

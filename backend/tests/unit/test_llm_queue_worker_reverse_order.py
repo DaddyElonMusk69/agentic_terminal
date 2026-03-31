@@ -69,6 +69,7 @@ class StubAutomationConfigService:
             execution_mode="dry_run",
             ema_interval_seconds=60,
             quant_interval_seconds=60,
+            pending_entry_timeout_seconds=900,
             provider=None,
             model=None,
             reverse_order_enabled=self._reverse_order_enabled,

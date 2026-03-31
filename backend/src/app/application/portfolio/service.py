@@ -156,6 +156,27 @@ class PortfolioService:
             return []
         return await fetcher(symbols)
 
+    async def get_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        connector = await self.get_active_connector()
+        fetcher = getattr(connector, "fetch_order", None)
+        if not callable(fetcher):
+            return None
+        return await fetcher(order_id, symbol)
+
+    async def cancel_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        connector = await self.get_active_connector()
+        fetcher = getattr(connector, "cancel_order", None)
+        if not callable(fetcher):
+            return None
+        return await fetcher(order_id, symbol)
+
+    async def get_ticker_quotes(self, symbols: List[str]) -> dict:
+        connector = await self.get_active_connector()
+        fetcher = getattr(connector, "fetch_ticker_quotes", None)
+        if not callable(fetcher):
+            return {}
+        return await fetcher(symbols)
+
     async def get_recent_trades(
         self,
         limit: int = 10,

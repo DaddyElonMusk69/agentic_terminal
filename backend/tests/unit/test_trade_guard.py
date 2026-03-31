@@ -345,6 +345,30 @@ def test_update_tp_within_one_percent_roe_delta_is_not_clamped():
     assert result.decision.new_take_profit == 100.56
 
 
+def test_initial_stop_loss_is_server_owned_for_open_entries():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=5,
+        position_size_usd=100.0,
+        confidence=70,
+        stop_loss=99.2,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.stop_loss == 99.4
+    assert result.decision.stop_loss_roe == 0.03
+
+
 def test_take_profit_prefers_ui_min_roe_over_model_roe():
     config = TradeGuardConfig(
         min_confidence=60.0,
@@ -377,9 +401,49 @@ def test_take_profit_prefers_ui_min_roe_over_model_roe():
 
     assert result.is_valid is True
     assert result.decision.take_profit == 108.0
+    assert result.decision.take_profit_roe == 0.08
 
 
-def test_take_profit_uses_model_roe_when_ui_min_is_zero():
+def test_limit_entry_uses_server_owned_initial_protection():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.08,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=5,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        leverage=5,
+        position_size_usd=100.0,
+        limit_price=100.0,
+        confidence=70,
+        stop_loss=98.8,
+        take_profit_roe=0.18,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.stop_loss == 99.4
+    assert result.decision.stop_loss_roe == 0.03
+    assert result.decision.take_profit == 101.6
+    assert result.decision.take_profit_roe == 0.08
+
+
+def test_initial_take_profit_is_disabled_when_ui_tp_min_is_zero():
     config = TradeGuardConfig(
         min_confidence=60.0,
         min_position_size=10.0,
@@ -399,7 +463,6 @@ def test_take_profit_uses_model_roe_when_ui_min_is_zero():
         leverage=1,
         position_size_usd=100.0,
         confidence=70,
-        take_profit_roe=0.12,
     )
 
     result = guard.validate(
@@ -410,40 +473,8 @@ def test_take_profit_uses_model_roe_when_ui_min_is_zero():
     )
 
     assert result.is_valid is True
-    assert result.decision.take_profit == 112.0
-
-
-def test_take_profit_falls_back_to_system_default_when_ui_min_and_model_roe_missing():
-    config = TradeGuardConfig(
-        min_confidence=60.0,
-        min_position_size=10.0,
-        sl_min_roe=0.03,
-        sl_max_roe=0.05,
-        tp_min_roe=0.0,
-        tp_max_roe=0.2,
-        dust_threshold_usd=15.0,
-        default_leverage=1,
-        leverage_tiers=[],
-        position_tier_ranges=[],
-    )
-    guard = create_default_guard(config)
-    decision = ExecutionIdea(
-        action=ExecutionAction.OPEN_LONG,
-        symbol="BTC",
-        leverage=1,
-        position_size_usd=100.0,
-        confidence=70,
-    )
-
-    result = guard.validate(
-        decision,
-        account_state={"account_value": 1000},
-        portfolio_exposure_pct=25,
-        price_fetcher=lambda _: 100.0,
-    )
-
-    assert result.is_valid is True
-    assert result.decision.take_profit == 105.0
+    assert result.decision.take_profit is None
+    assert result.decision.take_profit_roe is None
 
 
 class _InMemoryTradeGuardConfigRepository:
@@ -486,3 +517,42 @@ async def test_trade_guard_service_preserves_zero_tp_min_roe():
 
     assert updated.tp_min_roe == 0.0
     assert reloaded.tp_min_roe == 0.0
+
+
+def test_limit_entry_rejected_when_pending_entry_exists_for_symbol():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        limit_price=100.0,
+        confidence=80,
+    )
+
+    result = guard.validate(
+        decision,
+        open_positions=[],
+        pending_entries=[{"symbol": "BTC", "status": "RESTING"}],
+    )
+
+    assert result.is_valid is False
+    assert "Active pending limit entry already exists" in result.errors[0]
+
+
+def test_limit_entry_rejected_when_symbol_is_not_flat():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_SHORT_LIMIT,
+        symbol="BTC",
+        limit_price=100.0,
+        confidence=80,
+    )
+
+    result = guard.validate(
+        decision,
+        open_positions=[{"symbol": "BTC/USDT:USDT", "direction": "long", "size": 1}],
+    )
+
+    assert result.is_valid is False
+    assert "only allowed when flat" in result.errors[0]

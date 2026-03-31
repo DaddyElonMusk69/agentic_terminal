@@ -15,6 +15,7 @@ from app.application.automation.dependencies import (
     get_automation_pipeline_service,
     get_outbox_service,
 )
+from app.application.pending_entry.dependencies import get_pending_entry_service
 from app.application.automation.execution_mode import normalize_execution_mode
 from app.application.automation.scheduler import AutomationScheduler
 from app.infrastructure.bus.dispatcher import OutboxDispatcher
@@ -41,6 +42,7 @@ class AutomationRuntimeConfig:
     execution_mode: str = "dry_run"
     ema_interval_seconds: int = 60
     quant_interval_seconds: int = 60
+    pending_entry_timeout_seconds: int = 900
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -93,6 +95,7 @@ class AutomationRuntime:
                 asyncio.create_task(self._run_prompt_loop()),
                 asyncio.create_task(self._run_llm_loop()),
                 asyncio.create_task(self._run_order_loop()),
+                asyncio.create_task(self._run_pending_entry_loop()),
                 asyncio.create_task(self._run_outbox_loop()),
             ]
             self._running = True
@@ -117,6 +120,7 @@ class AutomationRuntime:
             "execution_mode": self._config.execution_mode,
             "ema_interval_seconds": self._config.ema_interval_seconds,
             "quant_interval_seconds": self._config.quant_interval_seconds,
+            "pending_entry_timeout_seconds": self._config.pending_entry_timeout_seconds,
             "provider": self._config.provider,
             "model": self._config.model,
             "reasoning_effort": self._config.reasoning_effort,
@@ -175,6 +179,18 @@ class AutomationRuntime:
                 logger.exception("Outbox dispatch loop failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    async def _run_pending_entry_loop(self) -> None:
+        service = get_pending_entry_service()
+        while not self._stop_event.is_set():
+            try:
+                await service.poll_once()
+                await asyncio.sleep(service.POLL_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception("pending entry loop failed: %s", exc)
+                await asyncio.sleep(service.POLL_INTERVAL_SECONDS)
+
     async def _run_queue_loop(
         self,
         name: str,
@@ -232,6 +248,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
         execution_mode=mode,
         ema_interval_seconds=max(1, int(config.ema_interval_seconds)),
         quant_interval_seconds=max(1, int(config.quant_interval_seconds)),
+        pending_entry_timeout_seconds=max(300, min(3600, int(config.pending_entry_timeout_seconds))),
         provider=provider or None,
         model=model or None,
         reasoning_effort=reasoning_effort or None,

@@ -8,6 +8,7 @@ from app.application.automation import topics
 from app.application.automation.execution_mode import ExecutionMode, normalize_execution_mode, should_execute_trades
 from app.application.bus.outbox_service import OutboxService
 from app.application.circuit_breaker.service import CircuitBreakerService
+from app.application.pending_entry.service import PendingEntryService
 from app.application.trade_executor.service import TradeExecutorService
 from app.application.trade_guard.service import TradeGuardService
 from app.application.position_origin.service import PositionOriginService
@@ -26,6 +27,7 @@ class OrderQueueWorker:
         outbox: OutboxService,
         portfolio_service: Optional[PortfolioService] = None,
         position_origin_service: Optional[PositionOriginService] = None,
+        pending_entry_service: Optional[PendingEntryService] = None,
         policy: Optional[OrderQueuePolicy] = None,
     ) -> None:
         self._repository = repository
@@ -35,6 +37,7 @@ class OrderQueueWorker:
         self._outbox = outbox
         self._portfolio_service = portfolio_service
         self._position_origin_service = position_origin_service
+        self._pending_entry_service = pending_entry_service
         self._policy = policy or OrderQueuePolicy()
 
     async def process_next(self) -> bool:
@@ -115,6 +118,7 @@ class OrderQueueWorker:
         account_state, open_positions = await self._fetch_portfolio()
         market_data = await self._fetch_market_data(decision)
         price_fetcher = await self._get_price_fetcher(decision)
+        pending_entries = await self._fetch_pending_entries()
         open_orders = None
         if decision.action in (ExecutionAction.UPDATE_SL, ExecutionAction.UPDATE_TP):
             open_orders = await self._fetch_open_orders(decision)
@@ -124,6 +128,7 @@ class OrderQueueWorker:
             market_data=market_data,
             open_orders=open_orders,
             open_positions=open_positions,
+            pending_entries=pending_entries,
             price_fetcher=price_fetcher,
         )
         guard_payload = guard_result.to_dict()
@@ -270,6 +275,12 @@ class OrderQueueWorker:
 
         if execution_result.success:
             await self._repository.mark_done(item.id, result_payload)
+            await self._register_pending_entry_if_needed(
+                decision=guarded_decision,
+                execution_result=execution_result,
+                session_id=session_id,
+                open_positions=open_positions,
+            )
             await self._sync_position_origin_metadata(
                 final_order=final_order,
                 execution_result=execution_result,
@@ -439,6 +450,66 @@ class OrderQueueWorker:
         except Exception:
             return None
 
+    async def _fetch_pending_entries(self) -> Optional[list]:
+        if self._pending_entry_service is None:
+            return None
+        try:
+            entries = await self._pending_entry_service.list_active_records_for_active_account()
+        except Exception:
+            return None
+        return [
+            {
+                "id": entry.id,
+                "symbol": entry.symbol,
+                "side": entry.side,
+                "status": entry.status.value,
+                "order_id": entry.exchange_order_id,
+            }
+            for entry in entries
+        ]
+
+    async def _register_pending_entry_if_needed(
+        self,
+        *,
+        decision: ExecutionIdea,
+        execution_result: Any,
+        session_id: str | None,
+        open_positions: Optional[list],
+    ) -> None:
+        if self._pending_entry_service is None:
+            return
+        if decision.action not in (
+            ExecutionAction.OPEN_LONG,
+            ExecutionAction.OPEN_SHORT,
+            ExecutionAction.OPEN_LONG_LIMIT,
+            ExecutionAction.OPEN_SHORT_LIMIT,
+        ):
+            return
+
+        status = str(getattr(execution_result, "status", "")).lower()
+        try:
+            if status == "resting":
+                await self._pending_entry_service.register_resting_entry(
+                    decision=decision,
+                    execution_result=execution_result,
+                    session_id=session_id,
+                )
+                return
+
+            if (
+                _is_filled_status(status)
+                and not _position_exists_before_execution(open_positions, decision.symbol)
+                and _requires_initial_protection(decision)
+                and _protection_attach_needs_retry(execution_result)
+            ):
+                await self._pending_entry_service.register_protection_pending_entry(
+                    decision=decision,
+                    execution_result=execution_result,
+                    session_id=session_id,
+                )
+        except Exception:
+            return
+
     async def _get_price_fetcher(self, decision: ExecutionIdea) -> Optional[Any]:
         if self._portfolio_service is None or decision is None or not decision.symbol:
             return None
@@ -494,3 +565,54 @@ _OPEN_ACTIONS = {
 def _is_filled_status(value: Any) -> bool:
     status = str(value or "").strip().lower()
     return status in {"filled", "closed", "done"}
+
+
+def _normalize_symbol(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    symbol = value.strip().upper()
+    if not symbol:
+        return ""
+    if ":" in symbol:
+        symbol = symbol.split(":", 1)[0]
+    if "/" in symbol:
+        symbol = symbol.split("/", 1)[0]
+    for quote in ("USDT", "USDC", "USD", "BUSD"):
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return symbol[: -len(quote)]
+    return symbol
+
+
+def _position_exists_before_execution(open_positions: Optional[list], symbol: str) -> bool:
+    target = _normalize_symbol(symbol)
+    if not target:
+        return False
+    for position in open_positions or []:
+        if not isinstance(position, dict):
+            continue
+        if _normalize_symbol(position.get("symbol")) == target:
+            return True
+    return False
+
+
+def _requires_initial_protection(decision: ExecutionIdea) -> bool:
+    return any(
+        value is not None
+        for value in (
+            decision.stop_loss,
+            decision.take_profit,
+            decision.stop_loss_roe,
+            decision.take_profit_roe,
+        )
+    )
+
+
+def _protection_attach_needs_retry(execution_result: Any) -> bool:
+    error = str(getattr(execution_result, "error", "") or "").lower()
+    if "protection_attach_failed" in error or "protection_attach_partial" in error:
+        return True
+    payload = getattr(execution_result, "raw_response", None)
+    if not isinstance(payload, dict):
+        return False
+    protection_status = str(payload.get("protection_status") or "").strip().lower()
+    return protection_status in {"partial", "failed", "rolled_back", "error"}

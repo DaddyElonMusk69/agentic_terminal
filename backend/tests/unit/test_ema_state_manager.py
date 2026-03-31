@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
 
 from app.domain.ema_scanner.models import EmaScannerSignal
-from app.domain.ema_state_manager.models import EmaStateManagerConfig, EmaStateTrigger
+from app.domain.ema_state_manager.models import (
+    EmaStateManagerConfig,
+    EmaStateTrigger,
+    EmaTickerPhase,
+    PendingEntrySnapshot,
+)
 from app.domain.ema_state_manager.service import EmaStateManager
 
 
@@ -194,3 +199,30 @@ def test_state_manager_partial_update_with_prune_removes_missing_symbols():
         prune_missing=True,
     )
     assert manager.get_state("BTC/USDT") is None
+
+
+def test_state_manager_marks_symbol_as_pending_entry_and_suppresses_events():
+    manager = EmaStateManager()
+    config = _config()
+
+    pending_entry = PendingEntrySnapshot(
+        symbol="BTC/USDT",
+        side="LONG",
+        limit_price=100.0,
+        placed_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+        order_id="ord-1",
+    )
+
+    events = manager.update(
+        [],
+        monitored_symbols=["BTC/USDT"],
+        config=config,
+        pending_entries=[pending_entry],
+    )
+
+    assert events == []
+    state = manager.get_state("BTC/USDT")
+    assert state is not None
+    assert state.phase == EmaTickerPhase.PENDING_ENTRY
+    assert state.pending_entry_side == "LONG"

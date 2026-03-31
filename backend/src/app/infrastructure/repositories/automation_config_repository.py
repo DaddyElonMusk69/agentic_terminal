@@ -39,6 +39,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             model.execution_mode = config.execution_mode
             model.ema_interval_seconds = config.ema_interval_seconds
             model.quant_interval_seconds = config.quant_interval_seconds
+            model.pending_entry_timeout_seconds = config.pending_entry_timeout_seconds
             model.provider = config.provider
             model.model = config.model
             model.reasoning_effort = config.reasoning_effort
@@ -56,6 +57,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             execution_mode=model.execution_mode,
             ema_interval_seconds=model.ema_interval_seconds,
             quant_interval_seconds=model.quant_interval_seconds,
+            pending_entry_timeout_seconds=model.pending_entry_timeout_seconds,
             provider=model.provider,
             model=model.model,
             reasoning_effort=model.reasoning_effort,

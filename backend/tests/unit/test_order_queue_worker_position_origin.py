@@ -52,6 +52,24 @@ class StubTradeExecutor:
         return self._result
 
 
+class StubPendingEntryService:
+    def __init__(self) -> None:
+        self.resting_calls: list[dict] = []
+        self.protection_calls: list[dict] = []
+
+    async def register_resting_entry(self, *, decision, execution_result, session_id):  # noqa: ANN001
+        self.resting_calls.append(
+            {"decision": decision, "execution_result": execution_result, "session_id": session_id}
+        )
+        return None
+
+    async def register_protection_pending_entry(self, *, decision, execution_result, session_id):  # noqa: ANN001
+        self.protection_calls.append(
+            {"decision": decision, "execution_result": execution_result, "session_id": session_id}
+        )
+        return None
+
+
 class StubOutbox:
     async def enqueue_event(self, topic: str, payload: dict):  # noqa: ANN001
         return None
@@ -73,9 +91,31 @@ class StubPortfolioSnapshot:
     positions = []
 
 
+class StubPortfolioSnapshotWithPosition(StubPortfolioSnapshot):
+    positions = [
+        type(
+            "Position",
+            (),
+            {
+                "symbol": "BTC/USDT",
+                "direction": "long",
+                "size": 1.0,
+                "entry_price": 100.0,
+                "mark_price": 101.0,
+                "unrealized_pnl": 1.0,
+                "liquidation_price": None,
+                "margin": 20.0,
+                "leverage": 5.0,
+            },
+        )()
+    ]
+
+
 class StubPortfolioService:
+    snapshot_class = StubPortfolioSnapshot
+
     async def get_portfolio_snapshot(self):
-        return StubPortfolioSnapshot()
+        return self.snapshot_class()
 
     async def get_open_orders(self, symbols=None):  # noqa: ANN001
         return []
@@ -142,6 +182,25 @@ def _build_worker(item: OrderQueueItem, result: ExecutionResult, position_origin
         outbox=StubOutbox(),
         portfolio_service=StubPortfolioService(),
         position_origin_service=position_origin_service,
+    )
+
+
+def _build_worker_with_pending(
+    item: OrderQueueItem,
+    result: ExecutionResult,
+    position_origin_service: StubPositionOriginService,
+    pending_entry_service: StubPendingEntryService,
+    portfolio_service=None,  # noqa: ANN001
+):
+    return OrderQueueWorker(
+        repository=StubOrderQueueRepository(item),
+        trade_guard=StubTradeGuard(),
+        circuit_breaker=StubCircuitBreaker(),
+        trade_executor=StubTradeExecutor(result),
+        outbox=StubOutbox(),
+        portfolio_service=portfolio_service or StubPortfolioService(),
+        position_origin_service=position_origin_service,
+        pending_entry_service=pending_entry_service,
     )
 
 
@@ -238,4 +297,72 @@ async def test_order_queue_worker_skips_origin_metadata_on_failed_execution():
 
     assert handled is True
     assert position_origin_service.upserts == []
+
+
+@pytest.mark.asyncio
+async def test_order_queue_worker_registers_protection_retry_for_fresh_filled_market_open():
+    idea = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        position_size_usd=100,
+        stop_loss_roe=0.03,
+        take_profit_roe=0.08,
+        anchor_frame="4h",
+        active_tunnel="slow",
+    ).to_dict()
+    pending_entry_service = StubPendingEntryService()
+    position_origin_service = StubPositionOriginService()
+    worker = _build_worker_with_pending(
+        _build_item(idea),
+        ExecutionResult(
+            success=True,
+            status="filled",
+            order_id="mkt-1",
+            fill_price=100.0,
+            filled_size=1.0,
+            error="protection_attach_failed: No open position for BTC/USDT:USDT",
+        ),
+        position_origin_service,
+        pending_entry_service,
+    )
+
+    handled = await worker.process_next()
+
+    assert handled is True
+    assert len(pending_entry_service.protection_calls) == 1
+    assert pending_entry_service.resting_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_queue_worker_does_not_register_protection_retry_for_add_on_existing_position():
+    idea = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        position_size_usd=100,
+        stop_loss_roe=0.03,
+        take_profit_roe=0.08,
+    ).to_dict()
+    pending_entry_service = StubPendingEntryService()
+    position_origin_service = StubPositionOriginService()
+    portfolio_service = StubPortfolioService()
+    portfolio_service.snapshot_class = StubPortfolioSnapshotWithPosition
+    worker = _build_worker_with_pending(
+        _build_item(idea),
+        ExecutionResult(
+            success=True,
+            status="filled",
+            order_id="mkt-2",
+            fill_price=100.0,
+            filled_size=1.0,
+            error="protection_attach_failed: No open position for BTC/USDT:USDT",
+        ),
+        position_origin_service,
+        pending_entry_service,
+        portfolio_service=portfolio_service,
+    )
+
+    handled = await worker.process_next()
+
+    assert handled is True
+    assert pending_entry_service.protection_calls == []
     assert position_origin_service.deletes == []

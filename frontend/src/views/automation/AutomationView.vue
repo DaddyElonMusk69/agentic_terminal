@@ -406,6 +406,30 @@
                   "
                 />
               </label>
+
+              <label class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-text">Limit Entry Timeout</span>
+                  <span class="font-mono text-text">{{ pendingEntryTimeoutMinutes }}m</span>
+                </div>
+                <input
+                  v-model.number="automationConfig.pending_entry_timeout_seconds"
+                  class="w-full"
+                  type="range"
+                  min="300"
+                  max="3600"
+                  step="300"
+                  @change="
+                    updateConfigPersisted({
+                      pending_entry_timeout_seconds:
+                        automationConfig.pending_entry_timeout_seconds,
+                    })
+                  "
+                />
+                <p class="text-[10px] text-muted">
+                  Resting limit entries auto-cancel after this window.
+                </p>
+              </label>
             </div>
 
             <div class="mt-4">
@@ -870,6 +894,18 @@
               <button
                 class="rounded-md border px-3 py-1 text-[11px] transition-colors duration-200 ease-out"
                 :class="
+                  activeTab === 'pending_entries'
+                    ? 'border-accent/40 bg-accent/15 text-text'
+                    : 'border-border bg-panel text-muted'
+                "
+                type="button"
+                @click="activeTab = 'pending_entries'"
+              >
+                Pending Entries
+              </button>
+              <button
+                class="rounded-md border px-3 py-1 text-[11px] transition-colors duration-200 ease-out"
+                :class="
                   activeTab === 'trades'
                     ? 'border-accent/40 bg-accent/15 text-text'
                     : 'border-border bg-panel text-muted'
@@ -911,6 +947,12 @@
                   <div class="font-mono text-xs text-text">{{ store.positions.length }}</div>
                 </div>
               </div>
+            </template>
+
+            <template v-else-if="activeTab === 'pending_entries'">
+              <span class="text-[11px] text-muted">
+                {{ pendingEntries.length }} active
+              </span>
             </template>
 
             <template v-else>
@@ -1007,6 +1049,85 @@
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            <div v-else-if="activeTab === 'pending_entries'" class="space-y-2">
+              <div class="rounded-md border border-border bg-panel/50">
+                <div class="flex items-center justify-between border-b border-border/70 px-3 py-2">
+                  <div>
+                    <div class="font-display text-sm text-text">Pending Entries</div>
+                    <div class="text-[10px] text-muted">Managed resting limit entries</div>
+                  </div>
+                  <span class="text-[10px] uppercase tracking-wide text-muted">
+                    {{ pendingEntries.length }} active
+                  </span>
+                </div>
+                <div v-if="pendingEntries.length === 0" class="px-3 py-4 text-[11px] text-muted">
+                  No pending entries.
+                </div>
+                <div v-else class="overflow-x-auto">
+                  <table class="w-full text-left text-[11px]">
+                    <thead class="text-[10px] uppercase tracking-wide text-muted">
+                      <tr class="border-b border-border/50">
+                        <th class="px-3 py-2">Symbol</th>
+                        <th class="px-3 py-2">Side</th>
+                        <th class="px-3 py-2 text-right">Limit</th>
+                        <th class="px-3 py-2 text-right">Mark</th>
+                        <th class="px-3 py-2 text-right">Filled</th>
+                        <th class="px-3 py-2 text-right">Age</th>
+                        <th class="px-3 py-2 text-right">Expires In</th>
+                        <th class="px-3 py-2 text-right">Status</th>
+                        <th class="px-3 py-2 text-right"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="entry in pendingEntries"
+                        :key="entry.id"
+                        class="border-b border-border/50 text-xs last:border-b-0"
+                      >
+                        <td class="px-3 py-2 font-display text-sm text-text">{{ entry.symbol }}</td>
+                        <td class="px-3 py-2">
+                          <span
+                            class="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase"
+                            :class="pendingEntryToneClass(entry)"
+                          >
+                            {{ entry.side }}
+                          </span>
+                        </td>
+                        <td class="px-3 py-2 text-right font-mono text-text">
+                          {{ formatNumber(entry.limit_price) }}
+                        </td>
+                        <td class="px-3 py-2 text-right font-mono text-text">
+                          {{ formatNumber(entry.current_mark ?? null) }}
+                        </td>
+                        <td class="px-3 py-2 text-right font-mono text-text">
+                          {{ pendingEntryFilledLabel(entry) }}
+                        </td>
+                        <td class="px-3 py-2 text-right text-muted">
+                          {{ pendingEntryAgeLabel(entry) }}
+                        </td>
+                        <td class="px-3 py-2 text-right text-muted">
+                          {{ pendingEntryExpiresInLabel(entry) }}
+                        </td>
+                        <td class="px-3 py-2 text-right text-muted">
+                          {{ entry.status }}
+                        </td>
+                        <td class="px-3 py-2 text-right">
+                          <button
+                            class="rounded-md border border-border bg-panel px-2 py-1 text-[10px] text-muted hover:text-negative disabled:opacity-50"
+                            type="button"
+                            :disabled="cancelingPendingEntryId === entry.id"
+                            @click="handleCancelPendingEntry(entry)"
+                          >
+                            Cancel
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
 
@@ -1675,6 +1796,7 @@ type AutomationConfig = {
   reasoning_effort: string;
   ema_interval_seconds: number;
   quant_interval_seconds: number;
+  pending_entry_timeout_seconds: number;
   include_entry_timing_15m_chart: boolean;
   use_all_monitored_interval_charts: boolean;
   reverse_order_enabled: boolean;
@@ -1688,10 +1810,26 @@ type AutomationConfigPayload = {
   reasoning_effort?: string | null;
   ema_interval_seconds?: number;
   quant_interval_seconds?: number;
+  pending_entry_timeout_seconds?: number;
   include_entry_timing_15m_chart?: boolean;
   use_all_monitored_interval_charts?: boolean;
   reverse_order_enabled?: boolean;
   vegas_prompt_configs?: Record<string, number> | null;
+};
+
+type PendingEntryView = {
+  id: string;
+  symbol: string;
+  side: string;
+  limit_price: number;
+  current_mark?: number | null;
+  filled_pct: number;
+  filled_quantity?: number | null;
+  intended_quantity?: number | null;
+  placed_at?: string | null;
+  expires_at?: string | null;
+  status: string;
+  exchange_order_id: string;
 };
 
 type TradeGuardLeverageTier = {
@@ -1762,6 +1900,7 @@ const automationConfigDefaults: AutomationConfig = {
   reasoning_effort: "",
   ema_interval_seconds: 60,
   quant_interval_seconds: 60,
+  pending_entry_timeout_seconds: 900,
   include_entry_timing_15m_chart: false,
   use_all_monitored_interval_charts: false,
   reverse_order_enabled: false,
@@ -1872,6 +2011,8 @@ type SessionDetail = {
 
 const automationConfig = ref<AutomationConfig>({ ...automationConfigDefaults });
 const tradeGuardConfig = ref<TradeGuardConfigForm>({ ...tradeGuardConfigDefaults });
+const pendingEntries = ref<PendingEntryView[]>([]);
+const cancelingPendingEntryId = ref<string | null>(null);
 
 if (cachedAutomationConfig) {
   automationConfig.value = {
@@ -1890,7 +2031,7 @@ const configError = ref("");
 const isStarting = ref(false);
 const isStopping = ref(false);
 const logFilter = ref("all");
-const activeTab = ref<"positions" | "trades">("positions");
+const activeTab = ref<"positions" | "pending_entries" | "trades">("positions");
 const activeSessionTab = ref<"logs" | "trades">("logs");
 const equitySeries = ref<EquityPoint[]>([]);
 const activeChart = ref<"equity" | "position">("equity");
@@ -1996,6 +2137,10 @@ const showCodexReasoningEffort = computed(
 
 const positionSymbols = computed(() =>
   store.positions.map((position) => position.symbol).filter(Boolean),
+);
+
+const pendingEntryTimeoutMinutes = computed(() =>
+  Math.round((automationConfig.value.pending_entry_timeout_seconds || 900) / 60),
 );
 
 const closeExportMenu = (event: MouseEvent) => {
@@ -2311,6 +2456,20 @@ const formatDuration = (start?: string | null, end?: string | null) => {
   return parts.join(" ");
 };
 
+const formatRelativeDuration = (target?: string | null) => {
+  if (!target) return "--";
+  const date = new Date(target);
+  if (Number.isNaN(date.getTime())) return "--";
+  const diffMs = date.getTime() - Date.now();
+  const totalSeconds = Math.max(0, Math.floor(Math.abs(diffMs) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours > 0) return `${hours}h ${remainingMinutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${totalSeconds}s`;
+};
+
 const formatUsd = (value?: number | null) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
@@ -2410,6 +2569,22 @@ const positionToneClass = (position: AutomationPosition) => {
   if (direction === "SHORT") return "text-negative";
   return "text-muted";
 };
+
+const pendingEntryToneClass = (entry: PendingEntryView) => {
+  const side = (entry.side || "").toUpperCase();
+  if (side === "LONG") return "text-positive";
+  if (side === "SHORT") return "text-negative";
+  return "text-muted";
+};
+
+const pendingEntryAgeLabel = (entry: PendingEntryView) =>
+  formatDuration(entry.placed_at, new Date().toISOString());
+
+const pendingEntryExpiresInLabel = (entry: PendingEntryView) =>
+  formatRelativeDuration(entry.expires_at);
+
+const pendingEntryFilledLabel = (entry: PendingEntryView) =>
+  `${Number(entry.filled_pct || 0).toFixed(1)}%`;
 
 const modeTagClass = (mode?: string | null) => {
   const key = (mode || "").toLowerCase();
@@ -2562,6 +2737,7 @@ const buildAutomationConfigPayload = () => ({
   execution_mode: automationConfig.value.execution_mode,
   ema_interval_seconds: automationConfig.value.ema_interval_seconds,
   quant_interval_seconds: automationConfig.value.quant_interval_seconds,
+  pending_entry_timeout_seconds: automationConfig.value.pending_entry_timeout_seconds,
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
   reasoning_effort: automationConfig.value.reasoning_effort || null,
@@ -2593,6 +2769,9 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   }
   if (typeof payload.quant_interval_seconds === "number") {
     updates.quant_interval_seconds = payload.quant_interval_seconds;
+  }
+  if (typeof payload.pending_entry_timeout_seconds === "number") {
+    updates.pending_entry_timeout_seconds = payload.pending_entry_timeout_seconds;
   }
   if (typeof payload.include_entry_timing_15m_chart === "boolean") {
     updates.include_entry_timing_15m_chart = payload.include_entry_timing_15m_chart;
@@ -2928,6 +3107,7 @@ const startAutomation = async () => {
         reasoning_effort: automationConfig.value.reasoning_effort || null,
         ema_interval_seconds: automationConfig.value.ema_interval_seconds,
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
+        pending_entry_timeout_seconds: automationConfig.value.pending_entry_timeout_seconds,
         include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts:
           automationConfig.value.use_all_monitored_interval_charts,
@@ -3133,6 +3313,37 @@ const loadPositions = async () => {
     }
   } catch {
     // Ignore load errors
+  }
+};
+
+const loadPendingEntries = async () => {
+  try {
+    const response = await fetch("/api/v1/automation/pending-entries");
+    const data = await response.json();
+    if (Array.isArray(data?.data?.entries)) {
+      pendingEntries.value = data.data.entries as PendingEntryView[];
+    }
+  } catch {
+    // Ignore load errors
+  }
+};
+
+const handleCancelPendingEntry = async (entry: PendingEntryView) => {
+  if (!entry?.id) return;
+  const confirmed = window.confirm(`Cancel pending ${entry.symbol} limit entry?`);
+  if (!confirmed) return;
+  cancelingPendingEntryId.value = entry.id;
+  try {
+    await fetch(`/api/v1/automation/pending-entries/${entry.id}/cancel`, {
+      method: "POST",
+    });
+    await Promise.all([loadPendingEntries(), store.refreshPositions()]);
+  } catch {
+    // Ignore cancel errors.
+  } finally {
+    if (cancelingPendingEntryId.value === entry.id) {
+      cancelingPendingEntryId.value = null;
+    }
   }
 };
 
@@ -3560,6 +3771,7 @@ const startPositionPolling = () => {
   if (positionPollTimer) return;
   positionPollTimer = setInterval(() => {
     store.refreshPositions();
+    loadPendingEntries();
     loadDailyPnl();
   }, 10000);
 };
@@ -3601,6 +3813,7 @@ onMounted(async () => {
   await Promise.all([
     loadLogs(),
     loadPositions(),
+    loadPendingEntries(),
     loadTrades(),
     loadEquityHistory(),
     loadTradingApiStatus(),

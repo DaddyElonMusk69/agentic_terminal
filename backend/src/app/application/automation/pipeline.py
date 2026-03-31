@@ -19,6 +19,7 @@ from app.application.ema_scanner.presenter import build_scan_results
 from app.application.ema_scanner.service import EmaScannerService
 from app.application.ema_state_manager.service import EmaStateManagerService
 from app.application.ema_state_manager.presenter import build_vegas_state_payload
+from app.application.pending_entry.service import PendingEntryService
 from app.application.prompt_builder.queue_service import PromptBuildQueueService
 from app.application.quant_scanner.config_service import QuantScannerConfigService
 from app.application.quant_scanner.service import QuantScannerService
@@ -27,6 +28,7 @@ from app.application.portfolio.service import PortfolioService
 from app.application.telegram.notifications_service import TelegramNotificationService
 from app.domain.ema_scanner.models import EmaScannerSignal
 from app.domain.ema_state_manager.models import PositionSnapshot
+from app.domain.ema_state_manager.models import PendingEntrySnapshot
 
 
 class AutomationPipelineService:
@@ -40,6 +42,7 @@ class AutomationPipelineService:
         prompt_queue: PromptBuildQueueService,
         outbox: OutboxService,
         portfolio_service: PortfolioService,
+        pending_entry_service: PendingEntryService | None = None,
         telegram_notifier: TelegramNotificationService | None = None,
         history_service: AutomationHistoryService | None = None,
     ) -> None:
@@ -51,6 +54,7 @@ class AutomationPipelineService:
         self._prompt_queue = prompt_queue
         self._outbox = outbox
         self._portfolio_service = portfolio_service
+        self._pending_entry_service = pending_entry_service
         self._telegram_notifier = telegram_notifier
         self._history_service = history_service
 
@@ -68,6 +72,7 @@ class AutomationPipelineService:
     ) -> dict:
         mode = normalize_execution_mode(execution_mode)
         positions = await self._fetch_positions(session_id=session_id, cycle_number=cycle_number)
+        pending_entries = await self._fetch_pending_entries()
 
         async def log_event(event: str, data: Optional[dict] = None) -> None:
             payload = {"event": event, "data": data or {}, "cycle_number": cycle_number}
@@ -126,6 +131,7 @@ class AutomationPipelineService:
                 monitored_assets=config.assets,
                 quote_asset=config.quote_asset,
                 open_positions=positions,
+                pending_entries=pending_entries,
                 update_assets=[symbol],
                 prune_missing=False,
                 state_config=state_config,
@@ -192,6 +198,7 @@ class AutomationPipelineService:
             monitored_assets=config.assets,
             quote_asset=config.quote_asset,
             open_positions=positions,
+            pending_entries=pending_entries,
             update_assets=[],
             prune_missing=True,
             state_config=state_config,
@@ -316,6 +323,25 @@ class AutomationPipelineService:
                 )
             )
         return positions
+
+    async def _fetch_pending_entries(self) -> List[PendingEntrySnapshot]:
+        if self._pending_entry_service is None:
+            return []
+        try:
+            entries = await self._pending_entry_service.list_active_snapshots_for_active_account()
+        except Exception:
+            return []
+        return [
+            PendingEntrySnapshot(
+                symbol=entry.symbol,
+                side=entry.side,
+                limit_price=entry.limit_price,
+                placed_at=entry.placed_at,
+                expires_at=entry.expires_at,
+                order_id=entry.exchange_order_id,
+            )
+            for entry in entries
+        ]
 
     async def _sync_external_trades(
         self,

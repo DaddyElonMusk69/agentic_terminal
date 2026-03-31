@@ -105,6 +105,7 @@ class GuardContext:
     market_data: Optional[Dict[str, Any]] = None
     open_orders: Optional[List[Dict[str, Any]]] = None
     open_positions: Optional[List[Dict[str, Any]]] = None
+    pending_entries: Optional[List[Dict[str, Any]]] = None
     recent_trades: Optional[List[Dict[str, Any]]] = None
     config: Optional[Dict[str, Any]] = None
     price_fetcher: Optional[Any] = None
@@ -279,6 +280,7 @@ class TradeGuard:
         market_data: Optional[Dict[str, Any]] = None,
         open_orders: Optional[List[Dict[str, Any]]] = None,
         open_positions: Optional[List[Dict[str, Any]]] = None,
+        pending_entries: Optional[List[Dict[str, Any]]] = None,
         recent_trades: Optional[List[Dict[str, Any]]] = None,
         config: Optional[Dict[str, Any]] = None,
         price_fetcher: Optional[Any] = None,
@@ -290,6 +292,7 @@ class TradeGuard:
             market_data=market_data,
             open_orders=open_orders,
             open_positions=open_positions,
+            pending_entries=pending_entries,
             recent_trades=recent_trades,
             config=config,
             price_fetcher=price_fetcher,

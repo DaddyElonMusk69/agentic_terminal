@@ -11,6 +11,9 @@ from app.domain.automation.models import AutomationConfig
 MIN_INTERVAL_SECONDS = 5
 MAX_INTERVAL_SECONDS = 3600
 DEFAULT_INTERVAL_SECONDS = 60
+MIN_PENDING_ENTRY_TIMEOUT_SECONDS = 300
+MAX_PENDING_ENTRY_TIMEOUT_SECONDS = 3600
+DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS = 900
 CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 
@@ -30,6 +33,7 @@ class AutomationConfigService:
         execution_mode: str,
         ema_interval_seconds: int,
         quant_interval_seconds: int,
+        pending_entry_timeout_seconds: int,
         provider: Optional[str],
         model: Optional[str],
         reasoning_effort: Optional[str] = None,
@@ -42,6 +46,7 @@ class AutomationConfigService:
             execution_mode=execution_mode,
             ema_interval_seconds=ema_interval_seconds,
             quant_interval_seconds=quant_interval_seconds,
+            pending_entry_timeout_seconds=pending_entry_timeout_seconds,
             provider=provider,
             model=model,
             reasoning_effort=reasoning_effort,
@@ -58,6 +63,7 @@ class AutomationConfigService:
             execution_mode="dry_run",
             ema_interval_seconds=DEFAULT_INTERVAL_SECONDS,
             quant_interval_seconds=DEFAULT_INTERVAL_SECONDS,
+            pending_entry_timeout_seconds=DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS,
             provider=None,
             model=None,
             reasoning_effort=None,
@@ -74,6 +80,10 @@ class AutomationConfigService:
         reasoning_effort = _normalize_reasoning_effort(config.reasoning_effort, provider=provider)
         ema_interval = _normalize_interval(config.ema_interval_seconds, DEFAULT_INTERVAL_SECONDS)
         quant_interval = _normalize_interval(config.quant_interval_seconds, DEFAULT_INTERVAL_SECONDS)
+        pending_entry_timeout_seconds = _normalize_pending_entry_timeout(
+            config.pending_entry_timeout_seconds,
+            DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS,
+        )
         include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
         use_all_monitored_interval_charts = _normalize_bool(config.use_all_monitored_interval_charts)
         reverse_order_enabled = _normalize_bool(config.reverse_order_enabled)
@@ -83,6 +93,7 @@ class AutomationConfigService:
             execution_mode=mode,
             ema_interval_seconds=ema_interval,
             quant_interval_seconds=quant_interval,
+            pending_entry_timeout_seconds=pending_entry_timeout_seconds,
             provider=provider or None,
             model=model or None,
             reasoning_effort=reasoning_effort,
@@ -102,6 +113,18 @@ def _normalize_interval(value: int, default: int) -> int:
         return MIN_INTERVAL_SECONDS
     if parsed > MAX_INTERVAL_SECONDS:
         return MAX_INTERVAL_SECONDS
+    return parsed
+
+
+def _normalize_pending_entry_timeout(value: int, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < MIN_PENDING_ENTRY_TIMEOUT_SECONDS:
+        return MIN_PENDING_ENTRY_TIMEOUT_SECONDS
+    if parsed > MAX_PENDING_ENTRY_TIMEOUT_SECONDS:
+        return MAX_PENDING_ENTRY_TIMEOUT_SECONDS
     return parsed
 
 

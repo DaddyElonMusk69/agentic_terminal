@@ -12,6 +12,7 @@ from app.application.automation.dependencies import (
     get_automation_config_service,
     get_automation_history_service,
 )
+from app.application.pending_entry.dependencies import get_pending_entry_service
 from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.trade_executor.dependencies import get_trade_executor_service
 from app.application.bus.outbox_service import OutboxService
@@ -31,6 +32,7 @@ class AutomationStartRequest(BaseModel):
     execution_mode: str = Field("dry_run", min_length=1)
     ema_interval_seconds: int = Field(60, ge=5, le=3600)
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
+    pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -46,6 +48,7 @@ class AutomationStateResponse(BaseModel):
     execution_mode: str
     ema_interval_seconds: int
     quant_interval_seconds: int
+    pending_entry_timeout_seconds: int
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -70,6 +73,7 @@ class AutomationConfigPayload(BaseModel):
     execution_mode: str = Field("dry_run", min_length=1)
     ema_interval_seconds: int = Field(60, ge=5, le=3600)
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
+    pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -83,6 +87,7 @@ class AutomationConfigView(BaseModel):
     execution_mode: str
     ema_interval_seconds: int
     quant_interval_seconds: int
+    pending_entry_timeout_seconds: int
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -236,6 +241,35 @@ class AutomationClosePositionResponse(BaseModel):
     meta: Optional[ApiMeta] = None
 
 
+class PendingEntryView(BaseModel):
+    id: str
+    symbol: str
+    side: str
+    limit_price: float
+    current_mark: Optional[float] = None
+    filled_pct: float
+    filled_quantity: Optional[float] = None
+    intended_quantity: Optional[float] = None
+    placed_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    status: str
+    exchange_order_id: str
+
+
+class PendingEntryListPayload(BaseModel):
+    entries: List[PendingEntryView]
+
+
+class PendingEntryListResponse(BaseModel):
+    data: PendingEntryListPayload
+    meta: Optional[ApiMeta] = None
+
+
+class PendingEntryCancelResponse(BaseModel):
+    data: PendingEntryView
+    meta: Optional[ApiMeta] = None
+
+
 def _meta(request: Request) -> ApiMeta:
     return ApiMeta(request_id=getattr(request.state, "request_id", None))
 
@@ -365,6 +399,45 @@ def _to_trade_entry(trade) -> AutomationTradeEntry:
     )
 
 
+def _to_pending_entry_view(entry) -> PendingEntryView:
+    return PendingEntryView(
+        id=entry.id,
+        symbol=entry.symbol,
+        side=entry.side,
+        limit_price=entry.limit_price,
+        current_mark=entry.current_mark,
+        filled_pct=float(entry.filled_pct),
+        filled_quantity=entry.filled_quantity,
+        intended_quantity=entry.intended_quantity,
+        placed_at=_format_dt(entry.placed_at),
+        expires_at=_format_dt(entry.expires_at),
+        status=entry.status.value,
+        exchange_order_id=entry.exchange_order_id,
+    )
+
+
+def _to_pending_entry_view_from_record(record) -> PendingEntryView:
+    intended_quantity = getattr(record, "intended_quantity", None)
+    filled_quantity = getattr(record, "filled_quantity", None)
+    filled_pct = 0.0
+    if intended_quantity and intended_quantity > 0 and filled_quantity is not None:
+        filled_pct = max(0.0, min(100.0, (filled_quantity / intended_quantity) * 100.0))
+    return PendingEntryView(
+        id=record.id,
+        symbol=record.symbol,
+        side=record.side,
+        limit_price=record.limit_price,
+        current_mark=None,
+        filled_pct=filled_pct,
+        filled_quantity=filled_quantity,
+        intended_quantity=intended_quantity,
+        placed_at=_format_dt(record.placed_at),
+        expires_at=_format_dt(record.expires_at),
+        status=record.status.value,
+        exchange_order_id=record.exchange_order_id,
+    )
+
+
 def _resolve_total_cycles(snapshot: dict) -> int:
     candidates = [
         snapshot.get("current_cycle"),
@@ -383,6 +456,7 @@ async def get_automation_config(request: Request) -> AutomationConfigResponse:
         execution_mode=config.execution_mode,
         ema_interval_seconds=config.ema_interval_seconds,
         quant_interval_seconds=config.quant_interval_seconds,
+        pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
         provider=config.provider,
         model=config.model,
         reasoning_effort=config.reasoning_effort,
@@ -404,6 +478,7 @@ async def update_automation_config(
         execution_mode=payload.execution_mode,
         ema_interval_seconds=payload.ema_interval_seconds,
         quant_interval_seconds=payload.quant_interval_seconds,
+        pending_entry_timeout_seconds=payload.pending_entry_timeout_seconds,
         provider=payload.provider,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
@@ -416,6 +491,7 @@ async def update_automation_config(
         execution_mode=config.execution_mode,
         ema_interval_seconds=config.ema_interval_seconds,
         quant_interval_seconds=config.quant_interval_seconds,
+        pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
         provider=config.provider,
         model=config.model,
         reasoning_effort=config.reasoning_effort,
@@ -444,6 +520,7 @@ async def start_automation(
         execution_mode=payload.execution_mode,
         ema_interval_seconds=payload.ema_interval_seconds,
         quant_interval_seconds=payload.quant_interval_seconds,
+        pending_entry_timeout_seconds=payload.pending_entry_timeout_seconds,
         provider=payload.provider,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
@@ -463,6 +540,7 @@ async def start_automation(
             "execution_mode": config.execution_mode,
             "ema_interval_seconds": config.ema_interval_seconds,
             "quant_interval_seconds": config.quant_interval_seconds,
+            "pending_entry_timeout_seconds": config.pending_entry_timeout_seconds,
             "provider": config.provider,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
@@ -479,6 +557,7 @@ async def start_automation(
                 execution_mode=config.execution_mode,
                 ema_interval_seconds=config.ema_interval_seconds,
                 quant_interval_seconds=config.quant_interval_seconds,
+                pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
                 provider=config.provider,
                 model=config.model,
                 reasoning_effort=config.reasoning_effort,
@@ -497,6 +576,7 @@ async def start_automation(
         "execution_mode": config.execution_mode,
         "ema_interval_seconds": config.ema_interval_seconds,
         "quant_interval_seconds": config.quant_interval_seconds,
+        "pending_entry_timeout_seconds": config.pending_entry_timeout_seconds,
         "provider": config.provider,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
@@ -634,6 +714,30 @@ async def close_position(
         ),
         meta=_meta(request),
     )
+
+
+@router.get("/pending-entries", response_model=PendingEntryListResponse)
+async def list_pending_entries(request: Request) -> PendingEntryListResponse:
+    service = get_pending_entry_service()
+    entries = await service.list_active_snapshots_for_active_account(include_marks=True)
+    payload = PendingEntryListPayload(entries=[_to_pending_entry_view(entry) for entry in entries])
+    return PendingEntryListResponse(data=payload, meta=_meta(request))
+
+
+@router.post("/pending-entries/{entry_id}/cancel", response_model=PendingEntryCancelResponse)
+async def cancel_pending_entry(
+    entry_id: str,
+    request: Request,
+) -> PendingEntryCancelResponse:
+    service = get_pending_entry_service()
+    entry = await service.cancel_pending_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Pending entry not found")
+    snapshot = await service.list_active_snapshots_for_active_account(include_marks=True)
+    matching = next((item for item in snapshot if item.id == entry.id), None)
+    if matching is not None:
+        return PendingEntryCancelResponse(data=_to_pending_entry_view(matching), meta=_meta(request))
+    return PendingEntryCancelResponse(data=_to_pending_entry_view_from_record(entry), meta=_meta(request))
 
 
 @router.post("/outbox/purge", response_model=OutboxPurgeDataResponse)

@@ -147,7 +147,8 @@ class CCXTConnector(ExchangeConnector):
             if symbols:
                 for symbol in symbols:
                     try:
-                        fetched = await client.fetch_open_orders(symbol)
+                        market_symbol = _resolve_ccxt_market_symbol(client, symbol)
+                        fetched = await client.fetch_open_orders(market_symbol)
                     except Exception:
                         fetched = []
                     if fetched:
@@ -166,6 +167,32 @@ class CCXTConnector(ExchangeConnector):
                     orders.extend(algo_orders)
 
             return orders
+
+    async def fetch_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        if not order_id or not symbol:
+            return None
+        async with self._client() as client:
+            fetcher = getattr(client, "fetch_order", None)
+            if not callable(fetcher):
+                return None
+            market_symbol = _resolve_ccxt_market_symbol(client, symbol)
+            try:
+                return await fetcher(order_id, market_symbol)
+            except Exception:
+                return None
+
+    async def cancel_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        if not order_id or not symbol:
+            return None
+        async with self._client() as client:
+            fetcher = getattr(client, "cancel_order", None)
+            if not callable(fetcher):
+                return None
+            market_symbol = _resolve_ccxt_market_symbol(client, symbol)
+            try:
+                return await fetcher(order_id, market_symbol)
+            except Exception:
+                return None
 
     async def fetch_recent_trades(
         self,
@@ -1191,6 +1218,17 @@ def _symbol_candidates(client: Any, symbol: str) -> List[str]:
     return candidates
 
 
+def _resolve_ccxt_market_symbol(client: Any, symbol: str) -> str:
+    candidates = _symbol_candidates(client, symbol)
+    markets = getattr(client, "markets", {}) or {}
+    for candidate in candidates:
+        if candidate in markets:
+            return candidate
+    if candidates:
+        return candidates[0]
+    return str(symbol)
+
+
 async def _fetch_binance_open_algo_orders(client: Any, symbols: Optional[List[str]]) -> List[dict]:
     if not hasattr(client, "fapiPrivateGetOpenAlgoOrders"):
         return []
@@ -1249,7 +1287,7 @@ def _normalize_algo_orders(client: Any, payload: Any, fallback_symbol: Optional[
         if not isinstance(raw, dict):
             continue
         raw_symbol = raw.get("symbol") or fallback_symbol
-        symbol = _resolve_market_symbol(client, raw_symbol)
+        symbol = _map_market_id_to_symbol(client, raw_symbol)
         orders.append(
             {
                 "id": raw.get("algoId") or raw.get("orderId"),
@@ -1264,7 +1302,7 @@ def _normalize_algo_orders(client: Any, payload: Any, fallback_symbol: Optional[
     return orders
 
 
-def _resolve_market_symbol(client: Any, raw_symbol: Optional[str]) -> str:
+def _map_market_id_to_symbol(client: Any, raw_symbol: Optional[str]) -> str:
     if not raw_symbol:
         return ""
     symbol = str(raw_symbol).strip()

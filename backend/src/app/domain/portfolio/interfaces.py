@@ -67,6 +67,12 @@ class ExchangeConnector(Protocol):
     async def fetch_open_orders(self, symbols: Optional[List[str]] = None) -> List[dict]:
         ...
 
+    async def fetch_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        ...
+
+    async def cancel_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        ...
+
     async def fetch_recent_trades(
         self,
         limit: int = 10,

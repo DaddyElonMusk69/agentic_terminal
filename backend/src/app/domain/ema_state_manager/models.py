@@ -22,6 +22,7 @@ class EmaStateTrigger(Enum):
 class EmaTickerPhase(Enum):
     IDLE = "idle"
     ANALYZING = "analyzing"
+    PENDING_ENTRY = "pending_entry"
     IN_POSITION = "in_position"
 
 
@@ -50,6 +51,16 @@ class PositionSnapshot:
     symbol: str
     direction: str
     entry_price: float | None = None
+
+
+@dataclass(frozen=True)
+class PendingEntrySnapshot:
+    symbol: str
+    side: str
+    limit_price: float
+    placed_at: datetime
+    expires_at: datetime
+    order_id: str | None = None
 
 
 @dataclass
@@ -81,6 +92,9 @@ class EmaTickerState:
     position_direction: Optional[str] = None
     position_entry_price: Optional[float] = None
     position_opened_at: Optional[datetime] = None
+    pending_entry_side: Optional[str] = None
+    pending_entry_limit_price: Optional[float] = None
+    pending_entry_expires_at: Optional[datetime] = None
 
     bb_upper_touch_count: int = 0
     bb_lower_touch_count: int = 0
@@ -108,6 +122,11 @@ class EmaTickerState:
             "position_direction": self.position_direction,
             "position_entry_price": self.position_entry_price,
             "position_opened_at": self.position_opened_at.isoformat() if self.position_opened_at else None,
+            "pending_entry_side": self.pending_entry_side,
+            "pending_entry_limit_price": self.pending_entry_limit_price,
+            "pending_entry_expires_at": self.pending_entry_expires_at.isoformat()
+            if self.pending_entry_expires_at
+            else None,
             "bb_upper_touch_count": self.bb_upper_touch_count,
             "bb_lower_touch_count": self.bb_lower_touch_count,
             "bb_rejection_direction": self.bb_rejection_direction,

@@ -21,6 +21,7 @@ from app.application.quant_scanner.dependencies import get_quant_config_service,
 from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.position_origin.dependencies import get_position_origin_service
 from app.application.telegram.dependencies import get_telegram_notification_service
+from app.application.pending_entry.dependencies import get_pending_entry_service
 from app.infrastructure.bus.outbox_repository import OutboxRepository
 from app.infrastructure.crypto.cipher import get_credentials_cipher
 from app.infrastructure.db import get_sessionmaker
@@ -90,6 +91,7 @@ def get_automation_pipeline_service() -> AutomationPipelineService:
         prompt_queue=get_prompt_queue_service(),
         outbox=get_outbox_service(),
         portfolio_service=get_portfolio_service(),
+        pending_entry_service=get_pending_entry_service(),
         telegram_notifier=get_telegram_notification_service(),
         history_service=get_automation_history_service(),
     )
@@ -135,4 +137,5 @@ def get_order_queue_worker() -> OrderQueueWorker:
         outbox=get_outbox_service(),
         portfolio_service=get_portfolio_service(),
         position_origin_service=get_position_origin_service(),
+        pending_entry_service=get_pending_entry_service(),
     )

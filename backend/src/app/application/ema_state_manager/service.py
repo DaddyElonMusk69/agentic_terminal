@@ -5,6 +5,7 @@ from app.domain.ema_scanner.models import EmaScannerSignal
 from app.domain.ema_state_manager.models import (
     EmaStateEvent,
     EmaStateManagerConfig,
+    PendingEntrySnapshot,
     PositionSnapshot,
 )
 from app.domain.ema_state_manager.service import EmaStateManager
@@ -25,6 +26,7 @@ class EmaStateManagerService:
         monitored_assets: Sequence[str],
         quote_asset: str = "USDT",
         open_positions: Sequence[PositionSnapshot] | None = None,
+        pending_entries: Sequence[PendingEntrySnapshot] | None = None,
         update_assets: Sequence[str] | None = None,
         prune_missing: bool = True,
         state_config: EmaStateManagerConfig | None = None,
@@ -41,6 +43,7 @@ class EmaStateManagerService:
             monitored_symbols=monitored_symbols,
             config=config,
             open_positions=open_positions,
+            pending_entries=pending_entries,
             update_symbols=update_symbols,
             prune_missing=prune_missing,
         )

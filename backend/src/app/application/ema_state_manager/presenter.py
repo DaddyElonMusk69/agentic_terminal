@@ -24,6 +24,8 @@ def _serialize_state(
     phase = state.phase
     if phase == EmaTickerPhase.IN_POSITION:
         state_label = "POSITION_ACTIVE"
+    elif phase == EmaTickerPhase.PENDING_ENTRY:
+        state_label = "PENDING_ENTRY"
     elif phase == EmaTickerPhase.ANALYZING:
         state_label = "IN_TUNNEL"
     else:

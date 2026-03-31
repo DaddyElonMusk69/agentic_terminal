@@ -11,6 +11,7 @@ from app.domain.ema_state_manager.models import (
     EmaTickerPhase,
     EmaTickerState,
     IntervalSignalCounts,
+    PendingEntrySnapshot,
     PositionSnapshot,
 )
 
@@ -27,6 +28,7 @@ class EmaStateManager:
         monitored_symbols: Sequence[str],
         config: EmaStateManagerConfig,
         open_positions: Sequence[PositionSnapshot] | None = None,
+        pending_entries: Sequence[PendingEntrySnapshot] | None = None,
         update_symbols: Sequence[str] | None = None,
         prune_missing: bool = True,
     ) -> List[EmaStateEvent]:
@@ -50,6 +52,10 @@ class EmaStateManager:
 
         grouped_signals = _group_signals(signals, allowed_symbols=target_symbols)
         grouped_positions = _group_positions(open_positions or [], allowed_symbols=target_symbols)
+        grouped_pending_entries = _group_pending_entries(
+            pending_entries or [],
+            allowed_symbols=target_symbols,
+        )
 
         events: List[EmaStateEvent] = []
         for symbol in sorted(target_symbols):
@@ -57,6 +63,7 @@ class EmaStateManager:
                 symbol=symbol,
                 signals=grouped_signals.get(symbol, []),
                 position=grouped_positions.get(symbol),
+                pending_entry=grouped_pending_entries.get(symbol),
                 config=config,
                 now=now,
             )
@@ -89,6 +96,7 @@ class EmaStateManager:
         symbol: str,
         signals: Sequence[EmaScannerSignal],
         position: PositionSnapshot | None,
+        pending_entry: PendingEntrySnapshot | None,
         config: EmaStateManagerConfig,
         now: datetime,
     ) -> Optional[EmaStateEvent]:
@@ -127,6 +135,13 @@ class EmaStateManager:
                 now=now,
             )
 
+        if pending_entry is not None:
+            return self._handle_pending_entry(
+                state=state,
+                pending_entry=pending_entry,
+                now=now,
+            )
+
         return self._handle_entry(
             state=state,
             ema_signals=ema_signals,
@@ -153,6 +168,9 @@ class EmaStateManager:
         state.bb_lower_touch_count = 0
         state.bb_rejection_direction = None
         state.new_resonance_touch_count = 0
+        state.pending_entry_side = None
+        state.pending_entry_limit_price = None
+        state.pending_entry_expires_at = None
 
         direction = _normalize_direction(position.direction)
         state.position_direction = direction
@@ -214,6 +232,31 @@ class EmaStateManager:
             timestamp=now,
         )
 
+    def _handle_pending_entry(
+        self,
+        state: EmaTickerState,
+        pending_entry: PendingEntrySnapshot,
+        now: datetime,
+    ) -> Optional[EmaStateEvent]:
+        state.phase = EmaTickerPhase.PENDING_ENTRY
+        state.resonance_count = 0
+        state.active_intervals = set()
+        state.bb_upper_touch_count = 0
+        state.bb_lower_touch_count = 0
+        state.bb_rejection_direction = None
+        state.new_resonance_touch_count = 0
+        state.position_direction = None
+        state.position_entry_price = None
+        state.position_opened_at = None
+        state.last_position_prompt_at = None
+        state.last_bb_exit_warning_prompt_at = None
+        state.pending_entry_side = _normalize_direction(pending_entry.side)
+        state.pending_entry_limit_price = pending_entry.limit_price
+        state.pending_entry_expires_at = pending_entry.expires_at
+        state.last_trigger = EmaStateTrigger.NONE
+        state.last_trigger_at = now
+        return None
+
     def _handle_entry(
         self,
         state: EmaTickerState,
@@ -236,6 +279,9 @@ class EmaStateManager:
         state.position_direction = None
         state.position_entry_price = None
         state.position_opened_at = None
+        state.pending_entry_side = None
+        state.pending_entry_limit_price = None
+        state.pending_entry_expires_at = None
         state.last_position_prompt_at = None
         state.last_bb_exit_warning_prompt_at = None
 
@@ -421,6 +467,26 @@ def _group_positions(
             symbol=symbol,
             direction=direction,
             entry_price=position.entry_price,
+        )
+    return grouped
+
+
+def _group_pending_entries(
+    pending_entries: Sequence[PendingEntrySnapshot],
+    allowed_symbols: Set[str],
+) -> Dict[str, PendingEntrySnapshot]:
+    grouped: Dict[str, PendingEntrySnapshot] = {}
+    for pending_entry in pending_entries:
+        symbol = _normalize_symbol(pending_entry.symbol)
+        if not symbol or symbol not in allowed_symbols:
+            continue
+        grouped[symbol] = PendingEntrySnapshot(
+            symbol=symbol,
+            side=_normalize_direction(pending_entry.side) or pending_entry.side,
+            limit_price=pending_entry.limit_price,
+            placed_at=pending_entry.placed_at,
+            expires_at=pending_entry.expires_at,
+            order_id=pending_entry.order_id,
         )
     return grouped
 

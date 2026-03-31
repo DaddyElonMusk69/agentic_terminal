@@ -48,6 +48,7 @@ class TradeGuardService:
         market_data: Optional[Dict[str, Any]] = None,
         open_orders: Optional[List[Dict[str, Any]]] = None,
         open_positions: Optional[List[Dict[str, Any]]] = None,
+        pending_entries: Optional[List[Dict[str, Any]]] = None,
         price_fetcher: Optional[Any] = None,
         tradeable_symbols: Optional[Set[str]] = None,
     ) -> GuardResult:
@@ -60,6 +61,7 @@ class TradeGuardService:
             market_data=market_data,
             open_orders=open_orders,
             open_positions=open_positions,
+            pending_entries=pending_entries,
             price_fetcher=price_fetcher,
             portfolio_exposure_pct=exposure_pct,
         )
