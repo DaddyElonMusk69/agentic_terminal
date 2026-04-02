@@ -6,6 +6,7 @@ from app.domain.ema_state_manager.models import (
     EmaStateTrigger,
     EmaTickerPhase,
     PendingEntrySnapshot,
+    PositionSnapshot,
 )
 from app.domain.ema_state_manager.service import EmaStateManager
 
@@ -226,3 +227,70 @@ def test_state_manager_marks_symbol_as_pending_entry_and_suppresses_events():
     assert state is not None
     assert state.phase == EmaTickerPhase.PENDING_ENTRY
     assert state.pending_entry_side == "LONG"
+
+
+def test_state_manager_suppresses_entry_events_when_max_positions_reached():
+    manager = EmaStateManager()
+    config = _config()
+    signals = [_ema_signal("BTC/USDT", "2h"), _ema_signal("BTC/USDT", "4h")]
+
+    open_positions = [
+        PositionSnapshot(symbol="ETH/USDT", direction="LONG", entry_price=100.0),
+        PositionSnapshot(symbol="SOL/USDT", direction="SHORT", entry_price=100.0),
+    ]
+
+    events = manager.update(
+        signals,
+        monitored_symbols=["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+        config=config,
+        open_positions=open_positions,
+        max_open_positions=2,
+    )
+
+    assert events == []
+    state = manager.get_state("BTC/USDT")
+    assert state is not None
+    assert state.phase == EmaTickerPhase.ANALYZING
+
+
+def test_state_manager_allows_position_management_events_when_max_positions_reached():
+    manager = EmaStateManager()
+    config = EmaStateManagerConfig(
+        min_resonance=2,
+        ema_resonance_cooldown_seconds=60,
+        bb_rejection_cooldown_seconds=60,
+        bb_exit_warning_cooldown_seconds=60,
+        position_check_interval_seconds=0,
+        bb_rejection_min_touches=2,
+        bb_htf_min_interval_minutes=480,
+        new_resonance_min_touches=1,
+        emit_new_resonance=True,
+        emit_resonance_increase=True,
+        emit_structure_shift=True,
+        emit_resonance_refresh=True,
+        emit_bb_rejection_upper=True,
+        emit_bb_rejection_lower=True,
+        emit_position_management=True,
+        emit_bb_exit_warning=True,
+    )
+
+    open_positions = [PositionSnapshot(symbol="BTC/USDT", direction="LONG", entry_price=100.0)]
+
+    first = manager.update(
+        [],
+        monitored_symbols=["BTC/USDT"],
+        config=config,
+        open_positions=open_positions,
+        max_open_positions=1,
+    )
+    assert first == []
+
+    second = manager.update(
+        [],
+        monitored_symbols=["BTC/USDT"],
+        config=config,
+        open_positions=open_positions,
+        max_open_positions=1,
+    )
+    assert len(second) == 1
+    assert second[0].trigger_reason == EmaStateTrigger.POSITION_MANAGEMENT

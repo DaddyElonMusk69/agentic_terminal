@@ -20,6 +20,7 @@ class AutomationScheduler:
         pipeline: AutomationPipelineService,
         ema_interval_seconds: int,
         quant_interval_seconds: int,
+        max_positions: int = 3,
         execution_mode: str = "dry_run",
         template_map: Optional[dict[str, int]] = None,
         llm_model: Optional[str] = None,
@@ -32,6 +33,7 @@ class AutomationScheduler:
         self._pipeline = pipeline
         self._ema_interval = max(1, int(ema_interval_seconds))
         self._quant_interval = max(1, int(quant_interval_seconds))
+        self._max_positions = max(1, int(max_positions))
         self._execution_mode = execution_mode
         self._template_map = dict(template_map or {})
         self._llm_model = llm_model
@@ -71,6 +73,7 @@ class AutomationScheduler:
                     llm_model=self._llm_model,
                     llm_provider=self._llm_provider,
                     llm_reasoning_effort=self._llm_reasoning_effort,
+                    max_positions=self._max_positions,
                     include_entry_timing_15m_chart=self._include_entry_timing_15m_chart,
                     use_all_monitored_interval_charts=self._use_all_monitored_interval_charts,
                     session_id=self._session_id,

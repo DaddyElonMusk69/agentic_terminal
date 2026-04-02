@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "gpt-4o"
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = 4096
     codex_cli_path: str = "codex"
     codex_cli_timeout_seconds: int = 180
     codex_temp_image_path: str = "backend/tmp/codex_images"

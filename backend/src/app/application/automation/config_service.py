@@ -14,6 +14,9 @@ DEFAULT_INTERVAL_SECONDS = 60
 MIN_PENDING_ENTRY_TIMEOUT_SECONDS = 300
 MAX_PENDING_ENTRY_TIMEOUT_SECONDS = 3600
 DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS = 900
+MIN_MAX_POSITIONS = 1
+MAX_MAX_POSITIONS = 10
+DEFAULT_MAX_POSITIONS = 3
 CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 
@@ -34,6 +37,7 @@ class AutomationConfigService:
         ema_interval_seconds: int,
         quant_interval_seconds: int,
         pending_entry_timeout_seconds: int,
+        max_positions: int,
         provider: Optional[str],
         model: Optional[str],
         reasoning_effort: Optional[str] = None,
@@ -47,6 +51,7 @@ class AutomationConfigService:
             ema_interval_seconds=ema_interval_seconds,
             quant_interval_seconds=quant_interval_seconds,
             pending_entry_timeout_seconds=pending_entry_timeout_seconds,
+            max_positions=max_positions,
             provider=provider,
             model=model,
             reasoning_effort=reasoning_effort,
@@ -64,6 +69,7 @@ class AutomationConfigService:
             ema_interval_seconds=DEFAULT_INTERVAL_SECONDS,
             quant_interval_seconds=DEFAULT_INTERVAL_SECONDS,
             pending_entry_timeout_seconds=DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS,
+            max_positions=DEFAULT_MAX_POSITIONS,
             provider=None,
             model=None,
             reasoning_effort=None,
@@ -84,6 +90,10 @@ class AutomationConfigService:
             config.pending_entry_timeout_seconds,
             DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS,
         )
+        max_positions = _normalize_max_positions(
+            config.max_positions,
+            DEFAULT_MAX_POSITIONS,
+        )
         include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
         use_all_monitored_interval_charts = _normalize_bool(config.use_all_monitored_interval_charts)
         reverse_order_enabled = _normalize_bool(config.reverse_order_enabled)
@@ -94,6 +104,7 @@ class AutomationConfigService:
             ema_interval_seconds=ema_interval,
             quant_interval_seconds=quant_interval,
             pending_entry_timeout_seconds=pending_entry_timeout_seconds,
+            max_positions=max_positions,
             provider=provider or None,
             model=model or None,
             reasoning_effort=reasoning_effort,
@@ -125,6 +136,18 @@ def _normalize_pending_entry_timeout(value: int, default: int) -> int:
         return MIN_PENDING_ENTRY_TIMEOUT_SECONDS
     if parsed > MAX_PENDING_ENTRY_TIMEOUT_SECONDS:
         return MAX_PENDING_ENTRY_TIMEOUT_SECONDS
+    return parsed
+
+
+def _normalize_max_positions(value: int, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < MIN_MAX_POSITIONS:
+        return MIN_MAX_POSITIONS
+    if parsed > MAX_MAX_POSITIONS:
+        return MAX_MAX_POSITIONS
     return parsed
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 from typing import Optional, List
 
 from app.domain.chart_generator.models import (
@@ -86,6 +87,7 @@ class ChartGenerator:
                 y=0.98,
             )
             _add_ema_tunnel_legend(fig, request.overlays, request.theme.text_color)
+            _apply_granular_price_levels(fig, df_display, request.theme)
             _hide_x_axis_labels(axes)
 
             buf = io.BytesIO()
@@ -268,6 +270,96 @@ def _compute_xlim_padding(df_display) -> Optional[tuple]:
         return (df_display.index[0], df_display.index[-1] + padding)
     except Exception:
         return None
+
+
+def _apply_granular_price_levels(fig, df_display, theme) -> None:
+    """Add dense, granular y-axis price ticks and gridlines to the main price axis."""
+    try:
+        import matplotlib.ticker as mticker
+    except Exception:
+        return
+
+    if not fig.axes:
+        return
+
+    ax = fig.axes[0]
+
+    # Use the current axis ylim which already accounts for overlay-expanded ranges
+    # (e.g. EMA lines outside the candle range). Fall back to candle data if needed.
+    current_ylim = ax.get_ylim()
+    try:
+        candle_low = float(df_display["Low"].min())
+        candle_high = float(df_display["High"].max())
+    except Exception:
+        candle_low, candle_high = current_ylim
+
+    # Take the widest range between candle data and current ylim (overlay-aware)
+    price_low = min(candle_low, current_ylim[0])
+    price_high = max(candle_high, current_ylim[1])
+
+    price_range = price_high - price_low
+    if price_range <= 0:
+        return
+
+    major_interval = _compute_nice_tick_interval(price_range, target_ticks=20)
+    minor_interval = major_interval / 4
+
+    # Compute the major tick positions spanning the full visible range
+    tick_start = math.floor(price_low / major_interval) * major_interval
+    tick_end = math.ceil(price_high / major_interval) * major_interval
+    major_ticks = []
+    current = tick_start
+    while current <= tick_end + major_interval * 0.01:
+        major_ticks.append(current)
+        current += major_interval
+
+    ax.set_yticks(major_ticks)
+    ax.yaxis.set_minor_locator(mticker.MultipleLocator(minor_interval))
+
+    # Format tick labels based on price magnitude
+    if price_high >= 100:
+        fmt = "{x:,.0f}"
+    elif price_high >= 1:
+        fmt = "{x:,.2f}"
+    elif price_high >= 0.01:
+        fmt = "{x:,.4f}"
+    else:
+        fmt = "{x:,.6f}"
+    ax.yaxis.set_major_formatter(mticker.StrMethodFormatter(fmt))
+
+    # Style the major gridlines
+    ax.grid(True, which="major", axis="y", color=theme.grid_color, linewidth=0.6, alpha=0.7)
+    # Add subtle minor gridlines for even more granularity
+    ax.grid(True, which="minor", axis="y", color=theme.grid_color, linewidth=0.3, alpha=0.35)
+
+    # Ensure tick labels are visible and sized correctly
+    ax.tick_params(axis="y", which="major", labelsize=7, colors=theme.text_color, length=4)
+    ax.tick_params(axis="y", which="minor", length=2, colors=theme.text_color)
+
+    # Preserve the full ylim (overlay-aware)
+    padding = price_range * 0.02
+    ax.set_ylim(price_low - padding, price_high + padding)
+
+
+def _compute_nice_tick_interval(price_range: float, target_ticks: int = 20) -> float:
+    """Compute a human-readable tick interval to produce approximately *target_ticks* ticks."""
+    raw_interval = price_range / target_ticks
+    magnitude = 10 ** math.floor(math.log10(raw_interval))
+    residual = raw_interval / magnitude
+
+    # Snap to the nearest "nice" number: 1, 2, 2.5, 5, or 10
+    if residual <= 1.0:
+        nice = 1.0
+    elif residual <= 2.0:
+        nice = 2.0
+    elif residual <= 2.5:
+        nice = 2.5
+    elif residual <= 5.0:
+        nice = 5.0
+    else:
+        nice = 10.0
+
+    return nice * magnitude
 
 
 def _hide_x_axis_labels(axes) -> None:

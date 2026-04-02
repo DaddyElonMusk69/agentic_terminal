@@ -40,6 +40,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             model.ema_interval_seconds = config.ema_interval_seconds
             model.quant_interval_seconds = config.quant_interval_seconds
             model.pending_entry_timeout_seconds = config.pending_entry_timeout_seconds
+            model.max_positions = config.max_positions
             model.provider = config.provider
             model.model = config.model
             model.reasoning_effort = config.reasoning_effort
@@ -58,6 +59,7 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             ema_interval_seconds=model.ema_interval_seconds,
             quant_interval_seconds=model.quant_interval_seconds,
             pending_entry_timeout_seconds=model.pending_entry_timeout_seconds,
+            max_positions=model.max_positions,
             provider=model.provider,
             model=model.model,
             reasoning_effort=model.reasoning_effort,

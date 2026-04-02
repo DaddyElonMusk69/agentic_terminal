@@ -18,12 +18,14 @@ async def test_pending_entry_timeout_round_trip_in_automation_config():
 
     default_config = await service.get_config()
     assert default_config.pending_entry_timeout_seconds == 900
+    assert default_config.max_positions == 3
 
     updated = await service.update_config(
         execution_mode="dry_run",
         ema_interval_seconds=60,
         quant_interval_seconds=60,
         pending_entry_timeout_seconds=1800,
+        max_positions=5,
         provider="openai",
         model="gpt-5",
         reasoning_effort=None,
@@ -33,6 +35,8 @@ async def test_pending_entry_timeout_round_trip_in_automation_config():
         vegas_prompt_configs=None,
     )
     assert updated.pending_entry_timeout_seconds == 1800
+    assert updated.max_positions == 5
 
     reloaded = await service.get_config()
     assert reloaded.pending_entry_timeout_seconds == 1800
+    assert reloaded.max_positions == 5

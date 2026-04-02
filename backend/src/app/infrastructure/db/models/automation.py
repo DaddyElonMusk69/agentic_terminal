@@ -18,6 +18,7 @@ class AutomationConfigModel(Base):
     ema_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     quant_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     pending_entry_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
+    max_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     reasoning_effort: Mapped[str | None] = mapped_column(String(20), nullable=True)

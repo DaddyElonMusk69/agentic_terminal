@@ -9,6 +9,7 @@ class AutomationConfig:
     ema_interval_seconds: int
     quant_interval_seconds: int
     pending_entry_timeout_seconds: int
+    max_positions: int
     provider: Optional[str]
     model: Optional[str]
     reasoning_effort: Optional[str] = None

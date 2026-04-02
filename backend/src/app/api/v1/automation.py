@@ -33,6 +33,7 @@ class AutomationStartRequest(BaseModel):
     ema_interval_seconds: int = Field(60, ge=5, le=3600)
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
+    max_positions: int = Field(3, ge=1, le=10)
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -49,6 +50,7 @@ class AutomationStateResponse(BaseModel):
     ema_interval_seconds: int
     quant_interval_seconds: int
     pending_entry_timeout_seconds: int
+    max_positions: int
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -74,6 +76,7 @@ class AutomationConfigPayload(BaseModel):
     ema_interval_seconds: int = Field(60, ge=5, le=3600)
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
+    max_positions: int = Field(3, ge=1, le=10)
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -88,6 +91,7 @@ class AutomationConfigView(BaseModel):
     ema_interval_seconds: int
     quant_interval_seconds: int
     pending_entry_timeout_seconds: int
+    max_positions: int
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -457,6 +461,7 @@ async def get_automation_config(request: Request) -> AutomationConfigResponse:
         ema_interval_seconds=config.ema_interval_seconds,
         quant_interval_seconds=config.quant_interval_seconds,
         pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
+        max_positions=config.max_positions,
         provider=config.provider,
         model=config.model,
         reasoning_effort=config.reasoning_effort,
@@ -479,6 +484,7 @@ async def update_automation_config(
         ema_interval_seconds=payload.ema_interval_seconds,
         quant_interval_seconds=payload.quant_interval_seconds,
         pending_entry_timeout_seconds=payload.pending_entry_timeout_seconds,
+        max_positions=payload.max_positions,
         provider=payload.provider,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
@@ -492,6 +498,7 @@ async def update_automation_config(
         ema_interval_seconds=config.ema_interval_seconds,
         quant_interval_seconds=config.quant_interval_seconds,
         pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
+        max_positions=config.max_positions,
         provider=config.provider,
         model=config.model,
         reasoning_effort=config.reasoning_effort,
@@ -521,6 +528,7 @@ async def start_automation(
         ema_interval_seconds=payload.ema_interval_seconds,
         quant_interval_seconds=payload.quant_interval_seconds,
         pending_entry_timeout_seconds=payload.pending_entry_timeout_seconds,
+        max_positions=payload.max_positions,
         provider=payload.provider,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
@@ -541,6 +549,7 @@ async def start_automation(
             "ema_interval_seconds": config.ema_interval_seconds,
             "quant_interval_seconds": config.quant_interval_seconds,
             "pending_entry_timeout_seconds": config.pending_entry_timeout_seconds,
+            "max_positions": config.max_positions,
             "provider": config.provider,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
@@ -558,6 +567,7 @@ async def start_automation(
                 ema_interval_seconds=config.ema_interval_seconds,
                 quant_interval_seconds=config.quant_interval_seconds,
                 pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
+                max_positions=config.max_positions,
                 provider=config.provider,
                 model=config.model,
                 reasoning_effort=config.reasoning_effort,
@@ -577,6 +587,7 @@ async def start_automation(
         "ema_interval_seconds": config.ema_interval_seconds,
         "quant_interval_seconds": config.quant_interval_seconds,
         "pending_entry_timeout_seconds": config.pending_entry_timeout_seconds,
+        "max_positions": config.max_positions,
         "provider": config.provider,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,

@@ -654,16 +654,16 @@
               <label class="text-[11px] text-muted">
                 Max Positions
                 <div class="mt-1 flex items-center justify-between">
-                  <span class="text-[10px] text-muted">{{ circuitBreakerConfig.max_positions }}</span>
+                  <span class="text-[10px] text-muted">{{ automationConfig.max_positions }}</span>
                 </div>
                 <input
-                  v-model.number="circuitBreakerConfig.max_positions"
+                  v-model.number="automationConfig.max_positions"
                   class="mt-2 w-full"
                   type="range"
                   min="1"
                   max="10"
                   step="1"
-                  @change="updateCircuitBreaker({ max_positions: circuitBreakerConfig.max_positions })"
+                  @change="updateConfigPersisted({ max_positions: automationConfig.max_positions })"
                 />
               </label>
             </div>
@@ -1797,6 +1797,7 @@ type AutomationConfig = {
   ema_interval_seconds: number;
   quant_interval_seconds: number;
   pending_entry_timeout_seconds: number;
+  max_positions: number;
   include_entry_timing_15m_chart: boolean;
   use_all_monitored_interval_charts: boolean;
   reverse_order_enabled: boolean;
@@ -1811,6 +1812,7 @@ type AutomationConfigPayload = {
   ema_interval_seconds?: number;
   quant_interval_seconds?: number;
   pending_entry_timeout_seconds?: number;
+  max_positions?: number;
   include_entry_timing_15m_chart?: boolean;
   use_all_monitored_interval_charts?: boolean;
   reverse_order_enabled?: boolean;
@@ -1901,6 +1903,7 @@ const automationConfigDefaults: AutomationConfig = {
   ema_interval_seconds: 60,
   quant_interval_seconds: 60,
   pending_entry_timeout_seconds: 900,
+  max_positions: 3,
   include_entry_timing_15m_chart: false,
   use_all_monitored_interval_charts: false,
   reverse_order_enabled: false,
@@ -1975,7 +1978,6 @@ type CircuitBreakerConfig = {
   max_daily_loss_pct: number;
   max_consecutive_losses: number;
   cooldown_minutes: number;
-  max_positions: number;
   max_total_exposure_pct: number;
   enable_pct_limits: boolean;
 };
@@ -2052,7 +2054,6 @@ const circuitBreakerConfig = ref<CircuitBreakerConfig>({
   max_daily_loss_pct: 0,
   max_consecutive_losses: 3,
   cooldown_minutes: 60,
-  max_positions: 3,
   max_total_exposure_pct: 0,
   enable_pct_limits: false,
 });
@@ -2738,6 +2739,7 @@ const buildAutomationConfigPayload = () => ({
   ema_interval_seconds: automationConfig.value.ema_interval_seconds,
   quant_interval_seconds: automationConfig.value.quant_interval_seconds,
   pending_entry_timeout_seconds: automationConfig.value.pending_entry_timeout_seconds,
+  max_positions: automationConfig.value.max_positions,
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
   reasoning_effort: automationConfig.value.reasoning_effort || null,
@@ -2772,6 +2774,9 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   }
   if (typeof payload.pending_entry_timeout_seconds === "number") {
     updates.pending_entry_timeout_seconds = payload.pending_entry_timeout_seconds;
+  }
+  if (typeof payload.max_positions === "number") {
+    updates.max_positions = payload.max_positions;
   }
   if (typeof payload.include_entry_timing_15m_chart === "boolean") {
     updates.include_entry_timing_15m_chart = payload.include_entry_timing_15m_chart;
@@ -3108,6 +3113,7 @@ const startAutomation = async () => {
         ema_interval_seconds: automationConfig.value.ema_interval_seconds,
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
         pending_entry_timeout_seconds: automationConfig.value.pending_entry_timeout_seconds,
+        max_positions: automationConfig.value.max_positions,
         include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts:
           automationConfig.value.use_all_monitored_interval_charts,

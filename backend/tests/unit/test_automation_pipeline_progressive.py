@@ -80,6 +80,7 @@ class StubEmaStateManager:
         monitored_assets,
         quote_asset="USDT",
         open_positions=None,
+        max_open_positions=None,
         pending_entries=None,
         update_assets=None,
         prune_missing=True,
@@ -91,6 +92,7 @@ class StubEmaStateManager:
                 "monitored_assets": list(monitored_assets),
                 "quote_asset": quote_asset,
                 "open_positions": list(open_positions or []),
+                "max_open_positions": max_open_positions,
                 "pending_entries": list(pending_entries or []),
                 "update_assets": list(update_assets) if update_assets is not None else None,
                 "prune_missing": prune_missing,
@@ -178,7 +180,7 @@ async def test_pipeline_enqueues_prompts_progressively(monkeypatch):
         history_service=None,
     )
 
-    result = await pipeline.run_ema_cycle()
+    result = await pipeline.run_ema_cycle(max_positions=4)
 
     assert result["signals"] == 2
     assert result["events"] == 2
@@ -193,6 +195,7 @@ async def test_pipeline_enqueues_prompts_progressively(monkeypatch):
     assert state_manager.calls[1]["prune_missing"] is False
     assert state_manager.calls[2]["update_assets"] == []
     assert state_manager.calls[2]["prune_missing"] is True
+    assert all(call["max_open_positions"] == 4 for call in state_manager.calls)
 
     topics_seen = [topic for topic, _ in outbox.events]
     prompt_idx = topics_seen.index(topics.PROMPT_REQUESTED)

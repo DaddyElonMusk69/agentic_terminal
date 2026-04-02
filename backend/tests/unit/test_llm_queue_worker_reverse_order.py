@@ -70,6 +70,7 @@ class StubAutomationConfigService:
             ema_interval_seconds=60,
             quant_interval_seconds=60,
             pending_entry_timeout_seconds=900,
+            max_positions=3,
             provider=None,
             model=None,
             reverse_order_enabled=self._reverse_order_enabled,

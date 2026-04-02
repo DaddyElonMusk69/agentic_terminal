@@ -37,7 +37,29 @@ class StubResultsService:
 
 
 class StubStateService:
-    async def process_signals(self, signals, monitored_assets, quote_asset, open_positions):
+    async def process_signals(
+        self,
+        signals,
+        monitored_assets,
+        quote_asset,
+        open_positions,
+        max_open_positions=None,
+        pending_entries=None,
+        update_assets=None,
+        prune_missing=True,
+        state_config=None,
+    ):
+        del (
+            signals,
+            monitored_assets,
+            quote_asset,
+            open_positions,
+            max_open_positions,
+            pending_entries,
+            update_assets,
+            prune_missing,
+            state_config,
+        )
         return []
 
     async def get_config(self):

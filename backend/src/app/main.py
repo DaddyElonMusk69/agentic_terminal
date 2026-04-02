@@ -1,5 +1,8 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from app.application.pending_entry.runtime import get_pending_entry_runtime
 from app.api.infra import register_exception_handlers, register_request_id
 from app.api.v1 import (
     health_router,
@@ -26,12 +29,24 @@ from app.realtime.server import create_socketio_app, create_socketio_server
 from app.settings import get_settings
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    del app
+    runtime = get_pending_entry_runtime()
+    await runtime.start()
+    try:
+        yield
+    finally:
+        await runtime.stop()
+
+
 def _create_api() -> FastAPI:
     settings = get_settings()
 
     api = FastAPI(
         title=settings.service_name,
         version=settings.version,
+        lifespan=_lifespan,
     )
     register_request_id(api)
     register_exception_handlers(api)

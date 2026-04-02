@@ -28,6 +28,7 @@ class EmaStateManager:
         monitored_symbols: Sequence[str],
         config: EmaStateManagerConfig,
         open_positions: Sequence[PositionSnapshot] | None = None,
+        max_open_positions: int | None = None,
         pending_entries: Sequence[PendingEntrySnapshot] | None = None,
         update_symbols: Sequence[str] | None = None,
         prune_missing: bool = True,
@@ -50,11 +51,19 @@ class EmaStateManager:
                 if symbol and _normalize_symbol(symbol)
             } & snapshot_symbols
 
+        open_positions = open_positions or []
         grouped_signals = _group_signals(signals, allowed_symbols=target_symbols)
-        grouped_positions = _group_positions(open_positions or [], allowed_symbols=target_symbols)
+        grouped_positions = _group_positions(open_positions, allowed_symbols=target_symbols)
         grouped_pending_entries = _group_pending_entries(
             pending_entries or [],
             allowed_symbols=target_symbols,
+        )
+        open_positions_count = len(
+            {
+                _normalize_symbol(position.symbol)
+                for position in open_positions
+                if position.symbol and _normalize_symbol(position.symbol)
+            }
         )
 
         events: List[EmaStateEvent] = []
@@ -65,6 +74,8 @@ class EmaStateManager:
                 position=grouped_positions.get(symbol),
                 pending_entry=grouped_pending_entries.get(symbol),
                 config=config,
+                max_open_positions=max_open_positions,
+                open_positions_count=open_positions_count,
                 now=now,
             )
             if event is not None:
@@ -98,6 +109,8 @@ class EmaStateManager:
         position: PositionSnapshot | None,
         pending_entry: PendingEntrySnapshot | None,
         config: EmaStateManagerConfig,
+        max_open_positions: int | None,
+        open_positions_count: int,
         now: datetime,
     ) -> Optional[EmaStateEvent]:
         state = self._states.get(symbol)
@@ -150,6 +163,8 @@ class EmaStateManager:
             previous_resonance=previous_resonance,
             previous_intervals=previous_intervals,
             config=config,
+            max_open_positions=max_open_positions,
+            open_positions_count=open_positions_count,
             now=now,
         )
 
@@ -266,6 +281,8 @@ class EmaStateManager:
         previous_resonance: int,
         previous_intervals: Set[str],
         config: EmaStateManagerConfig,
+        max_open_positions: int | None,
+        open_positions_count: int,
         now: datetime,
     ) -> Optional[EmaStateEvent]:
         resonance_count = len(active_intervals)
@@ -284,6 +301,14 @@ class EmaStateManager:
         state.pending_entry_expires_at = None
         state.last_position_prompt_at = None
         state.last_bb_exit_warning_prompt_at = None
+
+        # Hard gate: once capacity is full, suppress all entry-related emissions.
+        # Use >= semantics so max_positions represents a strict upper bound.
+        if isinstance(max_open_positions, int) and max_open_positions > 0:
+            if open_positions_count >= max_open_positions:
+                state.last_trigger = EmaStateTrigger.NONE
+                state.last_trigger_at = now
+                return None
 
         trigger_reason = EmaStateTrigger.NONE
         bb_signal_intervals: List[str] = []
