@@ -41,15 +41,45 @@ class StubPositionOriginService:
     def __init__(self) -> None:
         self.upserts: list[dict] = []
 
-    async def upsert(self, account_id: str, symbol, anchor_frame, active_tunnel):
+    async def upsert(
+        self,
+        account_id: str,
+        symbol,
+        anchor_frame=None,
+        active_tunnel=None,
+        *,
+        stop_loss_roe=None,
+        take_profit_roe=None,
+    ):
         self.upserts.append(
             {
                 "account_id": account_id,
                 "symbol": symbol,
                 "anchor_frame": anchor_frame,
                 "active_tunnel": active_tunnel,
+                "stop_loss_roe": stop_loss_roe,
+                "take_profit_roe": take_profit_roe,
             }
         )
+        return None
+
+
+class StubAutoAddService:
+    def __init__(self) -> None:
+        self.limit_fill_calls: list[dict] = []
+
+    async def register_limit_fill_after_protection(self, *, symbol: str, side: str, session_id: str | None):
+        self.limit_fill_calls.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "session_id": session_id,
+            }
+        )
+        return None
+
+    async def cancel_for_symbol(self, symbol: str, *, reason: str, final_status=None):  # noqa: ANN001
+        del symbol, reason, final_status
         return None
 
 
@@ -69,11 +99,13 @@ class StubPortfolioService:
         self.open_orders: list[dict] = []
         self.order_lookup: dict[str, dict | None] = {}
         self.canceled: list[tuple[str, str]] = []
+        self.snapshot_calls = 0
 
     async def get_active_account(self):
         return self.account
 
     async def get_portfolio_snapshot(self) -> PortfolioSnapshot:
+        self.snapshot_calls += 1
         return PortfolioSnapshot(
             account=self.account,
             state=AccountState(
@@ -87,8 +119,9 @@ class StubPortfolioService:
             positions=list(self.positions),
         )
 
-    async def get_open_orders(self, symbols=None):
+    async def get_open_orders(self, symbols=None, *, include_conditional_orders=True):
         del symbols
+        del include_conditional_orders
         return list(self.open_orders)
 
     async def get_order(self, order_id: str, symbol: str):
@@ -235,6 +268,115 @@ async def test_pending_entry_service_resets_timeout_when_fill_is_detected_at_exp
 
 
 @pytest.mark.asyncio
+async def test_pending_entry_service_does_not_fetch_positions_for_untouched_resting_order():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    repository = SqlPendingEntryRepository(sessionmaker)
+    portfolio = StubPortfolioService()
+    trade_executor = StubTradeExecutor()
+    service = PendingEntryService(
+        repository=repository,
+        portfolio_service=portfolio,
+        trade_executor=trade_executor,
+        automation_config_service=StubAutomationConfigService(),
+        position_origin_service=StubPositionOriginService(),
+        outbox=None,
+    )
+
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        position_size_usd=100.0,
+        limit_price=100.0,
+        stop_loss_roe=-0.01,
+        take_profit_roe=0.03,
+    )
+    result = ExecutionResult(
+        success=True,
+        status="resting",
+        order_id="ord-resting-cheap",
+        raw_response={"id": "ord-resting-cheap", "symbol": "BTC/USDT:USDT", "amount": 1.0, "filled": 0.0},
+    )
+
+    record = await service.register_resting_entry(
+        decision=decision,
+        execution_result=result,
+        session_id="session-resting-cheap",
+    )
+    assert record is not None
+
+    portfolio.open_orders = [
+        {"id": "ord-resting-cheap", "symbol": "BTC/USDT:USDT", "filled": 0.0, "status": "open"}
+    ]
+
+    handled_first = await service.poll_once()
+    handled_second = await service.poll_once()
+
+    assert handled_first == 1
+    assert handled_second == 0
+    assert portfolio.snapshot_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_service_requires_two_consecutive_missing_exchange_lookups_before_orphaning():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    repository = SqlPendingEntryRepository(sessionmaker)
+    portfolio = StubPortfolioService()
+    trade_executor = StubTradeExecutor()
+    service = PendingEntryService(
+        repository=repository,
+        portfolio_service=portfolio,
+        trade_executor=trade_executor,
+        automation_config_service=StubAutomationConfigService(),
+        position_origin_service=StubPositionOriginService(),
+        outbox=None,
+    )
+
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        position_size_usd=100.0,
+        limit_price=100.0,
+    )
+    result = ExecutionResult(
+        success=True,
+        status="resting",
+        order_id="ord-missing-once",
+        raw_response={"id": "ord-missing-once", "symbol": "BTC/USDT:USDT", "amount": 1.0, "filled": 0.0},
+    )
+
+    record = await service.register_resting_entry(
+        decision=decision,
+        execution_result=result,
+        session_id="session-missing-once",
+    )
+    assert record is not None
+
+    handled_first = await service.poll_once()
+
+    stored_after_first = await repository.get(record.id)
+    assert handled_first == 1
+    assert stored_after_first is not None
+    assert stored_after_first.status == stored_after_first.status.RESTING
+    assert stored_after_first.last_error == "order_missing_from_exchange:1"
+
+    handled_second = await service.poll_once()
+
+    stored_after_second = await repository.get(record.id)
+    assert handled_second == 1
+    assert stored_after_second is not None
+    assert stored_after_second.status == stored_after_second.status.ORPHANED
+    assert stored_after_second.last_error == "order_missing_from_exchange"
+
+
+@pytest.mark.asyncio
 async def test_pending_entry_service_cancels_remainder_and_attaches_protection_on_partial_fill():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
@@ -313,6 +455,8 @@ async def test_pending_entry_service_cancels_remainder_and_attaches_protection_o
             "symbol": "BTC",
             "anchor_frame": "2h",
             "active_tunnel": "fast",
+            "stop_loss_roe": 0.0,
+            "take_profit_roe": 0.03,
         }
     ]
 
@@ -389,6 +533,82 @@ async def test_pending_entry_service_attaches_initial_stop_below_entry_for_long_
     ]
     assert trade_executor.decisions[0].new_stop_loss == 100.39
     assert trade_executor.decisions[1].new_take_profit == 102.62
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_service_uses_stored_initial_price_levels_for_limit_fill_protection():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    repository = SqlPendingEntryRepository(sessionmaker)
+    portfolio = StubPortfolioService()
+    trade_executor = StubTradeExecutor()
+    service = PendingEntryService(
+        repository=repository,
+        portfolio_service=portfolio,
+        trade_executor=trade_executor,
+        automation_config_service=StubAutomationConfigService(),
+        position_origin_service=StubPositionOriginService(),
+        outbox=None,
+    )
+
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        position_size_usd=200.0,
+        limit_price=100.0,
+        leverage=5,
+        stop_loss=99.1,
+        take_profit=103.7,
+        stop_loss_roe=0.01,
+        take_profit_roe=0.02,
+    )
+    result = ExecutionResult(
+        success=True,
+        status="resting",
+        order_id="ord-price-levels",
+        raw_response={"id": "ord-price-levels", "symbol": "BTC/USDT:USDT", "amount": 2.0, "filled": 0.0},
+    )
+
+    record = await service.register_resting_entry(
+        decision=decision,
+        execution_result=result,
+        session_id="session-price-levels",
+    )
+    assert record is not None
+
+    portfolio.positions = [
+        Position(
+            symbol="BTC/USDT",
+            direction="long",
+            size=2.0,
+            entry_price=101.0,
+            mark_price=102.0,
+            unrealized_pnl=2.0,
+            liquidation_price=None,
+            margin=40.4,
+            leverage=5.0,
+        )
+    ]
+    portfolio.order_lookup[record.exchange_order_id] = {
+        "id": "ord-price-levels",
+        "symbol": "BTC/USDT:USDT",
+        "filled": 2.0,
+        "status": "closed",
+        "average": 101.0,
+    }
+
+    handled = await service.poll_once()
+    assert handled == 1
+
+    assert [item.action for item in trade_executor.decisions] == [
+        ExecutionAction.UPDATE_SL,
+        ExecutionAction.UPDATE_TP,
+    ]
+    assert trade_executor.decisions[0].new_stop_loss == 99.1
+    assert trade_executor.decisions[1].new_take_profit == 103.7
 
 
 @pytest.mark.asyncio
@@ -526,5 +746,87 @@ async def test_pending_entry_service_attaches_protection_for_market_fill_retry_w
             "symbol": "BTC",
             "anchor_frame": "4h",
             "active_tunnel": "slow",
+            "stop_loss_roe": 0.03,
+            "take_profit_roe": 0.08,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_service_registers_auto_add_after_limit_fill_is_protected():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    repository = SqlPendingEntryRepository(sessionmaker)
+    portfolio = StubPortfolioService()
+    trade_executor = StubTradeExecutor()
+    origin_service = StubPositionOriginService()
+    auto_add_service = StubAutoAddService()
+    service = PendingEntryService(
+        repository=repository,
+        portfolio_service=portfolio,
+        trade_executor=trade_executor,
+        automation_config_service=StubAutomationConfigService(),
+        position_origin_service=origin_service,
+        auto_add_service=auto_add_service,
+        outbox=None,
+    )
+
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        position_size_usd=200.0,
+        limit_price=100.0,
+        leverage=5,
+        stop_loss_roe=0.0,
+        take_profit_roe=0.03,
+        anchor_frame="2h",
+        active_tunnel="fast",
+    )
+    result = ExecutionResult(
+        success=True,
+        status="resting",
+        order_id="ord-auto-add-limit",
+        raw_response={"id": "ord-auto-add-limit", "symbol": "BTC/USDT:USDT", "amount": 2.0, "filled": 0.0},
+    )
+
+    record = await service.register_resting_entry(
+        decision=decision,
+        execution_result=result,
+        session_id="session-auto-add-limit",
+    )
+    assert record is not None
+
+    portfolio.positions = [
+        Position(
+            symbol="BTC/USDT",
+            direction="long",
+            size=2.0,
+            entry_price=101.0,
+            mark_price=102.0,
+            unrealized_pnl=2.0,
+            liquidation_price=None,
+            margin=40.4,
+            leverage=5.0,
+        )
+    ]
+    portfolio.order_lookup[record.exchange_order_id] = {
+        "id": "ord-auto-add-limit",
+        "symbol": "BTC/USDT:USDT",
+        "filled": 2.0,
+        "status": "closed",
+        "average": 101.0,
+    }
+
+    handled = await service.poll_once()
+
+    assert handled == 1
+    assert auto_add_service.limit_fill_calls == [
+        {
+            "symbol": "BTC",
+            "side": "LONG",
+            "session_id": "session-auto-add-limit",
         }
     ]

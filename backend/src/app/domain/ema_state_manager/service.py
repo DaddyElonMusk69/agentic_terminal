@@ -19,6 +19,8 @@ from app.domain.ema_state_manager.models import (
 class EmaStateManager:
     """Tracks EMA/BB scan states and emits derived signal events."""
 
+    ENTRY_SLOT_MULTIPLIER = 2
+
     def __init__(self) -> None:
         self._states: Dict[str, EmaTickerState] = {}
 
@@ -58,11 +60,16 @@ class EmaStateManager:
             pending_entries or [],
             allowed_symbols=target_symbols,
         )
-        open_positions_count = len(
+        occupied_entry_slots_count = len(
             {
                 _normalize_symbol(position.symbol)
                 for position in open_positions
                 if position.symbol and _normalize_symbol(position.symbol)
+            }
+            | {
+                _normalize_symbol(entry.symbol)
+                for entry in (pending_entries or [])
+                if entry.symbol and _normalize_symbol(entry.symbol)
             }
         )
 
@@ -75,7 +82,7 @@ class EmaStateManager:
                 pending_entry=grouped_pending_entries.get(symbol),
                 config=config,
                 max_open_positions=max_open_positions,
-                open_positions_count=open_positions_count,
+                occupied_entry_slots_count=occupied_entry_slots_count,
                 now=now,
             )
             if event is not None:
@@ -110,7 +117,7 @@ class EmaStateManager:
         pending_entry: PendingEntrySnapshot | None,
         config: EmaStateManagerConfig,
         max_open_positions: int | None,
-        open_positions_count: int,
+        occupied_entry_slots_count: int,
         now: datetime,
     ) -> Optional[EmaStateEvent]:
         state = self._states.get(symbol)
@@ -164,7 +171,7 @@ class EmaStateManager:
             previous_intervals=previous_intervals,
             config=config,
             max_open_positions=max_open_positions,
-            open_positions_count=open_positions_count,
+            occupied_entry_slots_count=occupied_entry_slots_count,
             now=now,
         )
 
@@ -282,7 +289,7 @@ class EmaStateManager:
         previous_intervals: Set[str],
         config: EmaStateManagerConfig,
         max_open_positions: int | None,
-        open_positions_count: int,
+        occupied_entry_slots_count: int,
         now: datetime,
     ) -> Optional[EmaStateEvent]:
         resonance_count = len(active_intervals)
@@ -304,8 +311,9 @@ class EmaStateManager:
 
         # Hard gate: once capacity is full, suppress all entry-related emissions.
         # Use >= semantics so max_positions represents a strict upper bound.
+        # Pending entries consume the same entry slot budget as live positions.
         if isinstance(max_open_positions, int) and max_open_positions > 0:
-            if open_positions_count >= max_open_positions:
+            if occupied_entry_slots_count >= (max_open_positions * self.ENTRY_SLOT_MULTIPLIER):
                 state.last_trigger = EmaStateTrigger.NONE
                 state.last_trigger_at = now
                 return None

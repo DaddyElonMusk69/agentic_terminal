@@ -808,7 +808,7 @@ export const useAutomationStore = defineStore("automation", {
     },
     async refreshPositions() {
       try {
-        const response = await fetch("/api/v1/portfolio/snapshot");
+        const response = await fetch("/api/v1/automation/positions");
         const data = await response.json();
         if (data?.data?.positions) {
           this.positions = data.data.positions;

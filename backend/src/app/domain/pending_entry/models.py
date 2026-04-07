@@ -48,6 +48,8 @@ class PendingEntryRecord:
     filled_quantity: Optional[float]
     leverage: Optional[int]
     time_in_force: Optional[str]
+    stop_loss: Optional[float]
+    take_profit: Optional[float]
     stop_loss_roe: Optional[float]
     take_profit_roe: Optional[float]
     anchor_frame: Optional[str]

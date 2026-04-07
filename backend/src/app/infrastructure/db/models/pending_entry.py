@@ -33,6 +33,8 @@ class PendingEntryOrderModel(Base):
     filled_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
     leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     time_in_force: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss_roe: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit_roe: Mapped[float | None] = mapped_column(Float, nullable=True)
     anchor_frame: Mapped[str | None] = mapped_column(String(20), nullable=True)

@@ -2,7 +2,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.application.auto_add.runtime import get_auto_add_runtime
 from app.application.pending_entry.runtime import get_pending_entry_runtime
+from app.application.protection_reconciler.runtime import get_protection_reconciler_runtime
 from app.api.infra import register_exception_handlers, register_request_id
 from app.api.v1 import (
     health_router,
@@ -32,12 +34,18 @@ from app.settings import get_settings
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     del app
-    runtime = get_pending_entry_runtime()
-    await runtime.start()
+    pending_entry_runtime = get_pending_entry_runtime()
+    auto_add_runtime = get_auto_add_runtime()
+    protection_reconciler_runtime = get_protection_reconciler_runtime()
+    await pending_entry_runtime.start()
+    await auto_add_runtime.start()
+    await protection_reconciler_runtime.start()
     try:
         yield
     finally:
-        await runtime.stop()
+        await protection_reconciler_runtime.stop()
+        await auto_add_runtime.stop()
+        await pending_entry_runtime.stop()
 
 
 def _create_api() -> FastAPI:

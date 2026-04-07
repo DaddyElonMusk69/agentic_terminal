@@ -1,6 +1,7 @@
+import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple, Dict
 from uuid import uuid4
 
 from app.domain.portfolio.interfaces import ExchangeRepository, ConnectorFactory, ExchangeConnector
@@ -15,10 +16,20 @@ from app.domain.portfolio.models import (
 
 class PortfolioService:
     """Single source of truth for exchange accounts and portfolio data."""
+    OPEN_ORDERS_CACHE_TTL_SECONDS = 1.0
+    DAILY_PNL_CACHE_TTL_SECONDS = 10.0
 
     def __init__(self, repository: ExchangeRepository, connector_factory: ConnectorFactory) -> None:
         self._repo = repository
         self._factory = connector_factory
+        self._open_orders_cache: Dict[Tuple[str, Tuple[str, ...], bool], Tuple[datetime, List[dict]]] = {}
+        self._open_orders_inflight: Dict[
+            Tuple[str, Tuple[str, ...], bool], asyncio.Task[List[dict]]
+        ] = {}
+        self._open_orders_lock = asyncio.Lock()
+        self._daily_pnl_cache: Dict[str, Tuple[datetime, DailyPnlSnapshot]] = {}
+        self._daily_pnl_inflight: Dict[str, asyncio.Task[DailyPnlSnapshot]] = {}
+        self._daily_pnl_lock = asyncio.Lock()
 
     async def list_accounts(self) -> List[ExchangeAccount]:
         return await self._repo.list_accounts()
@@ -133,28 +144,89 @@ class PortfolioService:
             positions=positions,
         )
 
+    async def get_positions(self):
+        account = await self._repo.get_active_account()
+        if not account:
+            raise KeyError("No active account configured")
+        connector = await self.get_active_connector()
+        return await connector.fetch_positions()
+
     async def get_daily_pnl(self) -> DailyPnlSnapshot:
         account = await self._repo.get_active_account()
         if not account:
             raise KeyError("No active account configured")
+        account_id = account.id
+        now = datetime.now(timezone.utc)
 
-        connector = await self.get_active_connector()
-        snapshot = await connector.fetch_daily_pnl()
-        if snapshot.exchange is None:
-            snapshot = DailyPnlSnapshot(
-                realized_pnl=snapshot.realized_pnl,
-                trade_count=snapshot.trade_count,
-                fills=snapshot.fills,
-                exchange=account.exchange,
-            )
+        async with self._daily_pnl_lock:
+            cached = self._daily_pnl_cache.get(account_id)
+            if cached is not None:
+                cached_at, cached_snapshot = cached
+                if now - cached_at <= timedelta(seconds=self.DAILY_PNL_CACHE_TTL_SECONDS):
+                    return cached_snapshot
+            inflight = self._daily_pnl_inflight.get(account_id)
+            if inflight is None:
+                inflight = asyncio.create_task(self._fetch_daily_pnl_uncached(account))
+                self._daily_pnl_inflight[account_id] = inflight
+
+        try:
+            snapshot = await inflight
+        except Exception:
+            async with self._daily_pnl_lock:
+                if self._daily_pnl_inflight.get(account_id) is inflight:
+                    self._daily_pnl_inflight.pop(account_id, None)
+            raise
+
+        async with self._daily_pnl_lock:
+            if self._daily_pnl_inflight.get(account_id) is inflight:
+                self._daily_pnl_inflight.pop(account_id, None)
+            self._daily_pnl_cache[account_id] = (datetime.now(timezone.utc), snapshot)
+
         return snapshot
 
-    async def get_open_orders(self, symbols: Optional[List[str]] = None) -> List[dict]:
-        connector = await self.get_active_connector()
-        fetcher = getattr(connector, "fetch_open_orders", None)
-        if not callable(fetcher):
-            return []
-        return await fetcher(symbols)
+    async def get_open_orders(
+        self,
+        symbols: Optional[List[str]] = None,
+        *,
+        include_conditional_orders: bool = True,
+    ) -> List[dict]:
+        account = await self._repo.get_active_account()
+        if not account:
+            raise KeyError("No active account configured")
+        normalized_symbols = _normalize_open_order_symbols(symbols)
+        cache_key = (account.id, normalized_symbols, bool(include_conditional_orders))
+        now = datetime.now(timezone.utc)
+
+        async with self._open_orders_lock:
+            cached = self._open_orders_cache.get(cache_key)
+            if cached is not None:
+                cached_at, cached_orders = cached
+                if now - cached_at <= timedelta(seconds=self.OPEN_ORDERS_CACHE_TTL_SECONDS):
+                    return list(cached_orders)
+            inflight = self._open_orders_inflight.get(cache_key)
+            if inflight is None:
+                inflight = asyncio.create_task(
+                    self._fetch_open_orders_uncached(
+                        list(normalized_symbols) or None,
+                        include_conditional_orders=include_conditional_orders,
+                    )
+                )
+                self._open_orders_inflight[cache_key] = inflight
+
+        try:
+            fetched_orders = await inflight
+        except Exception:
+            async with self._open_orders_lock:
+                if self._open_orders_inflight.get(cache_key) is inflight:
+                    self._open_orders_inflight.pop(cache_key, None)
+            raise
+
+        async with self._open_orders_lock:
+            if self._open_orders_inflight.get(cache_key) is inflight:
+                self._open_orders_inflight.pop(cache_key, None)
+            self._open_orders_cache[cache_key] = (datetime.now(timezone.utc), list(fetched_orders))
+
+        return list(fetched_orders)
 
     async def get_order(self, order_id: str, symbol: str) -> Optional[dict]:
         connector = await self.get_active_connector()
@@ -164,11 +236,14 @@ class PortfolioService:
         return await fetcher(order_id, symbol)
 
     async def cancel_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        account = await self._repo.get_active_account()
         connector = await self.get_active_connector()
         fetcher = getattr(connector, "cancel_order", None)
         if not callable(fetcher):
             return None
-        return await fetcher(order_id, symbol)
+        result = await fetcher(order_id, symbol)
+        await self._invalidate_open_orders_cache(account.id if account else None)
+        return result
 
     async def get_ticker_quotes(self, symbols: List[str]) -> dict:
         connector = await self.get_active_connector()
@@ -176,6 +251,13 @@ class PortfolioService:
         if not callable(fetcher):
             return {}
         return await fetcher(symbols)
+
+    async def get_candles(self, symbol: str, timeframe: str, limit: int):
+        connector = await self.get_active_connector()
+        fetcher = getattr(connector, "fetch_candles", None)
+        if not callable(fetcher):
+            return []
+        return await fetcher(symbol, timeframe, limit)
 
     async def get_recent_trades(
         self,
@@ -211,6 +293,53 @@ class PortfolioService:
             except TypeError:
                 pass
         return await fetcher(limit)
+
+    async def _fetch_open_orders_uncached(
+        self,
+        symbols: Optional[List[str]],
+        *,
+        include_conditional_orders: bool,
+    ) -> List[dict]:
+        connector = await self.get_active_connector()
+        fetcher = getattr(connector, "fetch_open_orders", None)
+        if not callable(fetcher):
+            return []
+        return await fetcher(
+            symbols,
+            include_conditional_orders=include_conditional_orders,
+        )
+
+    async def _fetch_daily_pnl_uncached(self, account: ExchangeAccount) -> DailyPnlSnapshot:
+        connector = await self.get_active_connector()
+        snapshot = await connector.fetch_daily_pnl()
+        if snapshot.exchange is None:
+            snapshot = DailyPnlSnapshot(
+                realized_pnl=snapshot.realized_pnl,
+                trade_count=snapshot.trade_count,
+                fills=snapshot.fills,
+                exchange=account.exchange,
+            )
+        return snapshot
+
+    async def _invalidate_open_orders_cache(self, account_id: Optional[str] = None) -> None:
+        async with self._open_orders_lock:
+            if account_id is None:
+                self._open_orders_cache.clear()
+                self._open_orders_inflight.clear()
+                return
+            for key in list(self._open_orders_cache.keys()):
+                if key[0] == account_id:
+                    self._open_orders_cache.pop(key, None)
+            for key in list(self._open_orders_inflight.keys()):
+                if key[0] == account_id:
+                    self._open_orders_inflight.pop(key, None)
+
+
+def _normalize_open_order_symbols(symbols: Optional[List[str]]) -> Tuple[str, ...]:
+    if not symbols:
+        return tuple()
+    normalized = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    return tuple(sorted(normalized))
 
     async def validate_account(self, account_id: str) -> ExchangeAccount:
         account = await self._repo.get_account(account_id)

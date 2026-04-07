@@ -23,6 +23,8 @@ class SqlActivePositionOriginRepository(ActivePositionOriginRepository):
         symbol: str,
         anchor_frame: str | None,
         active_tunnel: str | None,
+        stop_loss_roe: float | None,
+        take_profit_roe: float | None,
     ) -> ActivePositionOriginRecord:
         async with self._sessionmaker() as session:
             result = await session.execute(
@@ -39,6 +41,8 @@ class SqlActivePositionOriginRepository(ActivePositionOriginRepository):
                     symbol=symbol,
                     anchor_frame=anchor_frame,
                     active_tunnel=active_tunnel,
+                    stop_loss_roe=stop_loss_roe,
+                    take_profit_roe=take_profit_roe,
                     created_at=now,
                     updated_at=now,
                 )
@@ -46,6 +50,8 @@ class SqlActivePositionOriginRepository(ActivePositionOriginRepository):
             else:
                 model.anchor_frame = anchor_frame
                 model.active_tunnel = active_tunnel
+                model.stop_loss_roe = stop_loss_roe
+                model.take_profit_roe = take_profit_roe
                 model.updated_at = now
 
             await session.commit()
@@ -106,6 +112,8 @@ def _to_record(model: ActivePositionOriginModel) -> ActivePositionOriginRecord:
         symbol=model.symbol,
         anchor_frame=model.anchor_frame,
         active_tunnel=_normalize_active_tunnel_value(model.active_tunnel),
+        stop_loss_roe=model.stop_loss_roe,
+        take_profit_roe=model.take_profit_roe,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

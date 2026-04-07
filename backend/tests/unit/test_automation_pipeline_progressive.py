@@ -149,6 +149,25 @@ class StubPortfolio:
         return []
 
 
+class StubPendingEntry:
+    def __init__(self, symbol: str) -> None:
+        now = datetime.now(timezone.utc)
+        self.symbol = symbol
+        self.side = "LONG"
+        self.limit_price = 100.0
+        self.placed_at = now
+        self.expires_at = now
+        self.exchange_order_id = "ord-1"
+
+
+class StubPendingEntryService:
+    def __init__(self, entries):
+        self._entries = entries
+
+    async def list_active_snapshots_for_active_account(self):
+        return list(self._entries)
+
+
 @pytest.mark.asyncio
 async def test_pipeline_enqueues_prompts_progressively(monkeypatch):
     def _fake_prompt_payload(event, timeframes, **kwargs):
@@ -201,3 +220,42 @@ async def test_pipeline_enqueues_prompts_progressively(monkeypatch):
     prompt_idx = topics_seen.index(topics.PROMPT_REQUESTED)
     ema_signals_idx = topics_seen.index(topics.EMA_SIGNALS)
     assert prompt_idx < ema_signals_idx
+
+
+@pytest.mark.asyncio
+async def test_pipeline_normalizes_pending_entry_symbols_for_state_manager(monkeypatch):
+    def _fake_prompt_payload(event, timeframes, **kwargs):
+        del kwargs
+        return {
+            "symbol": event.symbol,
+            "trigger_reason": event.trigger_reason.value,
+            "timeframes": list(timeframes),
+        }
+
+    monkeypatch.setattr(
+        "app.application.automation.pipeline.build_prompt_request",
+        _fake_prompt_payload,
+    )
+
+    state_manager = StubEmaStateManager()
+    prompt_queue = StubPromptQueue()
+    outbox = StubOutbox()
+    pipeline = AutomationPipelineService(
+        ema_scanner=StubEmaScanner(),
+        ema_config=StubEmaConfig(),
+        ema_state_manager=state_manager,
+        quant_scanner=StubQuantScanner(),
+        quant_config=StubQuantConfig(),
+        prompt_queue=prompt_queue,
+        outbox=outbox,
+        portfolio_service=StubPortfolio(),
+        pending_entry_service=StubPendingEntryService([StubPendingEntry("BTC")]),
+        telegram_notifier=None,
+        history_service=None,
+    )
+
+    await pipeline.run_ema_cycle(max_positions=4)
+
+    first_call = state_manager.calls[0]
+    assert len(first_call["pending_entries"]) == 1
+    assert first_call["pending_entries"][0].symbol == "BTC/USDT"

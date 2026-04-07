@@ -345,7 +345,7 @@ def test_update_tp_within_one_percent_roe_delta_is_not_clamped():
     assert result.decision.new_take_profit == 100.56
 
 
-def test_initial_stop_loss_is_server_owned_for_open_entries():
+def test_initial_stop_loss_honors_model_roe_when_in_bounds():
     config = _base_config()
     guard = create_default_guard(config)
     decision = ExecutionIdea(
@@ -354,7 +354,7 @@ def test_initial_stop_loss_is_server_owned_for_open_entries():
         leverage=5,
         position_size_usd=100.0,
         confidence=70,
-        stop_loss=99.2,
+        stop_loss_roe=0.04,
     )
 
     result = guard.validate(
@@ -365,11 +365,59 @@ def test_initial_stop_loss_is_server_owned_for_open_entries():
     )
 
     assert result.is_valid is True
-    assert result.decision.stop_loss == 99.4
-    assert result.decision.stop_loss_roe == 0.03
+    assert result.decision.stop_loss == 99.2
+    assert result.decision.stop_loss_roe == 0.04
 
 
-def test_take_profit_prefers_ui_min_roe_over_model_roe():
+def test_initial_stop_loss_clamps_model_roe_to_server_bounds():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=5,
+        position_size_usd=100.0,
+        confidence=70,
+        stop_loss_roe=0.10,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.stop_loss == 99.0
+    assert result.decision.stop_loss_roe == 0.05
+
+
+def test_initial_stop_loss_clamps_model_price_via_implied_roe():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=5,
+        position_size_usd=100.0,
+        confidence=70,
+        stop_loss=98.0,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.stop_loss == 99.0
+    assert result.decision.stop_loss_roe == 0.05
+
+
+def test_take_profit_honors_model_roe_when_in_bounds():
     config = TradeGuardConfig(
         min_confidence=60.0,
         min_position_size=10.0,
@@ -400,11 +448,85 @@ def test_take_profit_prefers_ui_min_roe_over_model_roe():
     )
 
     assert result.is_valid is True
-    assert result.decision.take_profit == 108.0
-    assert result.decision.take_profit_roe == 0.08
+    assert result.decision.take_profit == 115.0
+    assert result.decision.take_profit_roe == 0.15
 
 
-def test_limit_entry_uses_server_owned_initial_protection():
+def test_take_profit_clamps_model_roe_to_server_bounds():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.08,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=1,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=1,
+        position_size_usd=100.0,
+        confidence=70,
+        take_profit_roe=0.5,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.take_profit == 120.0
+    assert result.decision.take_profit_roe == 0.2
+
+
+def test_limit_entry_uses_limit_price_as_reference_for_model_price_levels():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.05,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=5,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="BTC",
+        leverage=5,
+        position_size_usd=100.0,
+        limit_price=100.0,
+        confidence=70,
+        stop_loss=99.0,
+        take_profit=104.0,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 110.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.stop_loss == 99.0
+    assert result.decision.stop_loss_roe == 0.05
+    assert result.decision.take_profit == 104.0
+    assert result.decision.take_profit_roe == 0.2
+
+
+def test_limit_entry_honors_model_initial_protection_when_in_bounds():
     config = TradeGuardConfig(
         min_confidence=60.0,
         min_position_size=10.0,
@@ -425,8 +547,68 @@ def test_limit_entry_uses_server_owned_initial_protection():
         position_size_usd=100.0,
         limit_price=100.0,
         confidence=70,
-        stop_loss=98.8,
+        stop_loss_roe=0.04,
         take_profit_roe=0.18,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.stop_loss == 99.2
+    assert result.decision.stop_loss_roe == 0.04
+    assert result.decision.take_profit == 103.6
+    assert result.decision.take_profit_roe == 0.18
+
+
+def test_initial_take_profit_price_is_honored_even_when_tp_default_is_disabled():
+    config = TradeGuardConfig(
+        min_confidence=60.0,
+        min_position_size=10.0,
+        sl_min_roe=0.03,
+        sl_max_roe=0.05,
+        tp_min_roe=0.0,
+        tp_max_roe=0.2,
+        dust_threshold_usd=15.0,
+        default_leverage=1,
+        leverage_tiers=[],
+        position_tier_ranges=[],
+    )
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=1,
+        position_size_usd=100.0,
+        confidence=70,
+        take_profit=112.0,
+    )
+
+    result = guard.validate(
+        decision,
+        account_state={"account_value": 1000},
+        portfolio_exposure_pct=25,
+        price_fetcher=lambda _: 100.0,
+    )
+
+    assert result.is_valid is True
+    assert result.decision.take_profit == 112.0
+    assert result.decision.take_profit_roe == 0.12
+
+
+def test_initial_entry_falls_back_to_server_defaults_when_model_omits_roe():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=5,
+        position_size_usd=100.0,
+        confidence=70,
     )
 
     result = guard.validate(
@@ -439,8 +621,8 @@ def test_limit_entry_uses_server_owned_initial_protection():
     assert result.is_valid is True
     assert result.decision.stop_loss == 99.4
     assert result.decision.stop_loss_roe == 0.03
-    assert result.decision.take_profit == 101.6
-    assert result.decision.take_profit_roe == 0.08
+    assert result.decision.take_profit == 101.0
+    assert result.decision.take_profit_roe == 0.05
 
 
 def test_initial_take_profit_is_disabled_when_ui_tp_min_is_zero():

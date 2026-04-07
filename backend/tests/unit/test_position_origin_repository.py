@@ -52,21 +52,27 @@ async def test_position_origin_repository_upsert_prune_and_delete(sessionmaker):
         ),
     )
 
-    created = await repo.upsert("acc-1", "BTC", "4h", "fast")
+    created = await repo.upsert("acc-1", "BTC", "4h", "fast", 0.01, 0.03)
     assert created.symbol == "BTC"
     assert created.anchor_frame == "4h"
     assert created.active_tunnel == "fast"
+    assert created.stop_loss_roe == 0.01
+    assert created.take_profit_roe == 0.03
 
-    updated = await repo.upsert("acc-1", "BTC", "2h", "mid")
+    updated = await repo.upsert("acc-1", "BTC", "2h", "mid", 0.02, 0.04)
     assert updated.anchor_frame == "2h"
     assert updated.active_tunnel == "mid"
+    assert updated.stop_loss_roe == 0.02
+    assert updated.take_profit_roe == 0.04
 
-    await repo.upsert("acc-1", "ETH", "1h", "fast")
+    await repo.upsert("acc-1", "ETH", "1h", "fast", None, 0.05)
 
     rows = await repo.get_many("acc-1", ["BTC", "ETH"])
     row_by_symbol = {row.symbol: row for row in rows}
     assert row_by_symbol["BTC"].anchor_frame == "2h"
     assert row_by_symbol["ETH"].active_tunnel == "fast"
+    assert row_by_symbol["BTC"].stop_loss_roe == 0.02
+    assert row_by_symbol["ETH"].take_profit_roe == 0.05
 
     pruned = await repo.prune_missing("acc-1", ["BTC"])
     assert pruned == 1
@@ -102,7 +108,7 @@ async def test_position_origin_repository_cascades_on_account_delete(sessionmake
             passphrase=None,
         ),
     )
-    await repo.upsert("acc-1", "BTC", "4h", "fast")
+    await repo.upsert("acc-1", "BTC", "4h", "fast", 0.01, 0.03)
 
     await exchange_repo.delete_account("acc-1")
 

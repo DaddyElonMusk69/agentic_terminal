@@ -10,6 +10,8 @@ class ActivePositionOriginRepository(Protocol):
         symbol: str,
         anchor_frame: str | None,
         active_tunnel: str | None,
+        stop_loss_roe: float | None,
+        take_profit_roe: float | None,
     ) -> ActivePositionOriginRecord:
         ...
 

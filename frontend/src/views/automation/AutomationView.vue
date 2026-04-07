@@ -669,13 +669,97 @@
             </div>
           </BaseCard>
 
-          <button
-            class="w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-muted hover:text-text"
-            type="button"
-            @click="openSessionModal"
-          >
-            Session History
-          </button>
+          <BaseCard>
+            <div class="text-xs uppercase tracking-wide text-muted">Auto-Add</div>
+            <div class="mt-1 text-[10px] text-muted">
+              Server-managed position scaling using fixed 15m ATR(14).
+            </div>
+            <div class="mt-3 space-y-3 text-[11px] text-muted">
+              <label
+                class="flex items-center justify-between rounded-md border border-border bg-panel/50 px-3 py-2 text-[11px] text-muted"
+              >
+                <div>
+                  <div class="text-text">Enable Auto-Add</div>
+                  <div class="text-[10px] text-muted">
+                    Scale into automation-owned winners only.
+                  </div>
+                </div>
+                <input
+                  v-model="automationConfig.auto_add_enabled"
+                  type="checkbox"
+                  @change="
+                    updateConfigPersisted({
+                      auto_add_enabled: automationConfig.auto_add_enabled,
+                    })
+                  "
+                />
+              </label>
+
+              <label class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="font-display text-sm text-text">ATR Multiple</span>
+                  <span class="font-mono text-text">
+                    {{ automationConfig.auto_add_trigger_atr_multiple.toFixed(2) }}x
+                  </span>
+                </div>
+                <input
+                  v-model.number="automationConfig.auto_add_trigger_atr_multiple"
+                  class="w-full"
+                  type="range"
+                  min="0.25"
+                  max="3"
+                  step="0.05"
+                  @change="
+                    updateConfigPersisted({
+                      auto_add_trigger_atr_multiple:
+                        automationConfig.auto_add_trigger_atr_multiple,
+                    })
+                  "
+                />
+              </label>
+
+              <label class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="font-display text-sm text-text">Tranche Margin</span>
+                  <span class="font-mono text-text">{{ autoAddTrancheMarginPctDisplay }}%</span>
+                </div>
+                <input
+                  v-model.number="automationConfig.auto_add_tranche_margin_pct"
+                  class="w-full"
+                  type="range"
+                  min="0.1"
+                  max="1"
+                  step="0.05"
+                  @change="
+                    updateConfigPersisted({
+                      auto_add_tranche_margin_pct:
+                        automationConfig.auto_add_tranche_margin_pct,
+                    })
+                  "
+                />
+              </label>
+
+              <label class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="font-display text-sm text-text">Max Tranches</span>
+                  <span class="font-mono text-text">{{ automationConfig.auto_add_max_tranches }}</span>
+                </div>
+                <input
+                  v-model.number="automationConfig.auto_add_max_tranches"
+                  class="w-full"
+                  type="range"
+                  min="1"
+                  max="5"
+                  step="1"
+                  @change="
+                    updateConfigPersisted({
+                      auto_add_max_tranches: automationConfig.auto_add_max_tranches,
+                    })
+                  "
+                />
+              </label>
+            </div>
+          </BaseCard>
 
           <div v-if="configError" class="text-xs text-negative">
             {{ configError }}
@@ -688,6 +772,13 @@
           <div class="flex items-center justify-between">
             <span class="font-display text-sm">Automation Log</span>
             <div class="flex items-center gap-2 text-[11px] text-muted">
+              <button
+                class="rounded-md border border-border bg-panel px-2 py-1 text-[11px] text-muted hover:text-text"
+                type="button"
+                @click="openSessionModal"
+              >
+                Session History
+              </button>
               <select
                 v-model="logFilter"
                 class="rounded-md border border-border bg-panel px-2 py-1 text-[11px] text-muted"
@@ -970,85 +1061,254 @@
                   subtitle="Positions appear when automation opens trades."
                 />
               </div>
-              <div v-else class="rounded-md border border-border bg-panel/50">
-                <table class="w-full text-left text-[11px]">
-                  <thead class="text-[10px] uppercase tracking-wide text-muted">
-                    <tr class="border-b border-border/70">
-                      <th class="px-3 py-2">Symbol</th>
-                      <th class="px-3 py-2">Side</th>
-                      <th class="px-3 py-2 text-right">Size</th>
-                      <th class="px-3 py-2 text-right">Margin</th>
-                      <th class="px-3 py-2 text-right">Entry</th>
-                      <th class="px-3 py-2 text-right">Mark</th>
-                      <th class="px-3 py-2 text-right">Liq</th>
-                      <th class="px-3 py-2 text-right">PnL</th>
-                      <th class="px-3 py-2 text-right">ROE</th>
-                      <th class="px-3 py-2 text-right"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="position in store.positions"
-                      :key="positionKey(position)"
-                      class="border-b border-border/50 text-xs last:border-b-0"
-                    >
-                      <td class="px-3 py-2">
-                        <div class="flex items-center gap-2">
-                          <button
-                            class="font-display text-sm transition"
-                            :class="positionSymbolClass(position)"
-                            type="button"
-                            @click="selectPositionSymbol(position.symbol)"
-                          >
-                            {{ position.symbol }}
-                          </button>
-                          <span class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">
-                            {{ positionLeverage(position) }}x
-                          </span>
-                        </div>
-                      </td>
-                      <td class="px-3 py-2">
+              <div v-else class="space-y-3">
+                <article
+                  v-for="position in store.positions"
+                  :key="positionKey(position)"
+                  class="rounded-md border border-border bg-panel/60 p-3"
+                >
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="space-y-2">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <button
+                          class="font-display text-base transition"
+                          :class="positionSymbolClass(position)"
+                          type="button"
+                          @click="selectPositionSymbol(position.symbol)"
+                        >
+                          {{ position.symbol }}
+                        </button>
+                        <span class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">
+                          {{ positionLeverage(position) }}x
+                        </span>
                         <span
                           class="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase"
                           :class="positionToneClass(position)"
                         >
                           {{ positionDirection(position) }}
                         </span>
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono text-text">
-                        {{ formatUsdPrecise(positionSizeUsd(position)) }}
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono text-text">
-                        {{ formatUsdPrecise(positionMarginUsd(position)) }}
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono text-text">
-                        {{ formatNumber(position.entry_price) }}
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono text-text">
-                        {{ formatNumber(position.mark_price) }}
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono text-muted">
-                        {{ positionLiqPrice(position) }}
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono" :class="pnlClass(position.unrealized_pnl)">
-                        {{ formatUsdSigned(position.unrealized_pnl) }}
-                      </td>
-                      <td class="px-3 py-2 text-right font-mono" :class="pnlClass(position.unrealized_pnl)">
-                        {{ formatPercent(positionRoe(position)) }}
-                      </td>
-                      <td class="px-3 py-2 text-right">
-                        <button
-                          class="rounded-md border border-negative/40 bg-negative/10 px-2 py-1 text-[10px] text-negative hover:text-negative/80 disabled:opacity-50"
-                          type="button"
-                          :disabled="closingPositionSymbol === position.symbol"
-                          @click="handleClosePosition(position)"
+                        <span
+                          v-if="position.auto_add"
+                          class="rounded-full border px-2 py-0.5 text-[10px] uppercase"
+                          :class="autoAddStatusClass(position.auto_add.status)"
                         >
-                          {{ closingPositionSymbol === position.symbol ? "Closing..." : "Close" }}
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                          {{ position.auto_add.status.replace(/_/g, " ") }}
+                        </span>
+                      </div>
+                      <div class="text-[11px] text-muted">
+                        Opened {{ positionOpenedLabel(position) }}
+                      </div>
+                    </div>
+
+                    <button
+                      class="rounded-md border border-negative/40 bg-negative/10 px-2 py-1 text-[10px] text-negative hover:text-negative/80 disabled:opacity-50"
+                      type="button"
+                      :disabled="closingPositionSymbol === position.symbol"
+                      @click="handleClosePosition(position)"
+                    >
+                      {{ closingPositionSymbol === position.symbol ? "Closing..." : "Close" }}
+                    </button>
+                  </div>
+
+                  <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Size</div>
+                      <div class="mt-1 font-mono text-xs text-text">
+                        {{ formatUsdPrecise(positionSizeUsd(position)) }}
+                      </div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Margin</div>
+                      <div class="mt-1 font-mono text-xs text-text">
+                        {{ formatUsdPrecise(positionMarginUsd(position)) }}
+                      </div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Entry</div>
+                      <div class="mt-1 font-mono text-xs text-text">{{ formatNumber(position.entry_price) }}</div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Mark</div>
+                      <div class="mt-1 font-mono text-xs text-text">{{ formatNumber(position.mark_price) }}</div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Liq</div>
+                      <div class="mt-1 font-mono text-xs text-muted">{{ positionLiqPrice(position) }}</div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">UPnL</div>
+                      <div class="mt-1 font-mono text-xs" :class="pnlClass(position.unrealized_pnl)">
+                        {{ formatUsdSigned(position.unrealized_pnl) }}
+                      </div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">ROE</div>
+                      <div class="mt-1 font-mono text-xs" :class="pnlClass(position.unrealized_pnl)">
+                        {{ formatPercent(positionRoe(position)) }}
+                      </div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Stop</div>
+                      <div class="mt-1 font-mono text-xs text-text">{{ positionStopLabel(position) }}</div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">TP</div>
+                      <div class="mt-1 font-mono text-xs text-text">{{ positionTakeProfitLabel(position) }}</div>
+                    </div>
+                    <div class="rounded-md border border-border/70 bg-surface/30 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-muted">Auto-Add</div>
+                      <div class="mt-1 font-mono text-xs text-text">{{ positionAutoAddProgress(position) }}</div>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 rounded-md border border-border/70 bg-surface/20 px-3 py-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div class="font-display text-sm text-text">Auto-Add</div>
+                        <div class="text-[10px] text-muted">
+                          {{ position.auto_add ? "Server-armed stop-market ladder." : "This position is not currently tracked by auto-add." }}
+                        </div>
+                      </div>
+                      <span
+                        v-if="position.auto_add"
+                        class="rounded-full border px-2 py-0.5 text-[10px] uppercase"
+                        :class="autoAddStatusClass(position.auto_add.status)"
+                      >
+                        {{ position.auto_add.status.replace(/_/g, " ") }}
+                      </span>
+                    </div>
+
+                    <template v-if="position.auto_add">
+                      <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">Resolved</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ position.auto_add.filled_add_count }}/{{ position.auto_add.max_tranches }}
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">Trigger Basis</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ formatNumber(position.auto_add.next_trigger_basis_price ?? null) }}
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">Next Trigger</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ formatNumber(position.auto_add.next_trigger_price ?? null) }}
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">15m ATR</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ formatNumber(position.auto_add.latest_atr_value ?? null) }}
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">Original Risk</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ formatUsdPrecise(position.auto_add.original_risk_usd ?? null) }}
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">Initial Margin</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ formatUsdPrecise(position.auto_add.initial_margin_used ?? null) }}
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-panel/50 px-3 py-2">
+                          <div class="text-[10px] uppercase tracking-wide text-muted">Current Stop / TP</div>
+                          <div class="mt-1 font-mono text-xs text-text">
+                            {{ positionStopLabel(position) }} / {{ positionTakeProfitLabel(position) }}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div
+                        v-if="position.auto_add.last_error"
+                        class="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"
+                      >
+                        {{ position.auto_add.last_error }}
+                      </div>
+
+                      <div class="mt-3 space-y-2">
+                        <div class="text-[10px] uppercase tracking-wide text-muted">Tranches</div>
+                        <div class="space-y-2">
+                          <div
+                            v-for="tranche in position.auto_add.tranches"
+                            :key="`${positionKey(position)}-${tranche.tranche_index}`"
+                            class="rounded-md border border-border/60 bg-panel/50 px-3 py-2"
+                          >
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                              <div class="font-display text-sm text-text">
+                                {{ autoAddTrancheLabel(tranche.tranche_index) }}
+                              </div>
+                              <div class="text-[10px] uppercase tracking-wide text-muted">
+                                {{ tranche.status || tranche.kind }}
+                              </div>
+                            </div>
+                            <div class="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-[11px]">
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Trigger</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatNumber(tranche.trigger_price ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Fill</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatNumber(tranche.fill_price ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Qty</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatNumber(tranche.filled_quantity ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Margin</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatUsdPrecise(tranche.margin_used ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Notional</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatUsdPrecise(tranche.position_notional_usd ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">ATR</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatNumber(tranche.atr_value ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Basis</div>
+                                <div class="mt-1 font-mono text-xs text-text">
+                                  {{ formatNumber(tranche.trigger_basis_price ?? null) }}
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Order Id</div>
+                                <div class="mt-1 truncate font-mono text-xs text-text">
+                                  {{ tranche.exchange_order_id || "--" }}
+                                </div>
+                              </div>
+                              <div class="sm:col-span-2">
+                                <div class="text-[10px] uppercase tracking-wide text-muted">Filled At</div>
+                                <div class="mt-1 text-xs text-text">
+                                  {{ formatDateTime(tranche.fill_time) }}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </article>
               </div>
             </div>
 
@@ -1204,7 +1464,7 @@
             leave-to="opacity-0 translate-y-4"
           >
             <DialogPanel
-              class="w-full max-w-5xl min-w-0 rounded-lg border border-border bg-surface p-6 shadow-panel"
+              class="w-full max-w-7xl min-w-0 rounded-lg border border-border bg-surface p-6 shadow-panel"
             >
               <div class="flex items-center justify-between">
                 <DialogTitle class="font-display text-base text-white">Session History</DialogTitle>
@@ -1217,7 +1477,7 @@
                 </button>
               </div>
 
-              <div class="mt-4 grid h-[70vh] min-h-0 gap-4 overflow-hidden lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
+              <div class="mt-4 grid h-[70vh] min-h-0 gap-4 overflow-hidden lg:grid-cols-[minmax(0,0.30fr)_minmax(0,0.20fr)_minmax(0,0.50fr)]">
                 <div class="flex min-h-0 min-w-0 flex-col gap-3">
                   <div class="text-xs uppercase tracking-wide text-muted">Sessions</div>
                   <div class="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hidden">
@@ -1375,42 +1635,42 @@
                     </div>
                   </div>
 
-                  <div class="h-[200px] overflow-hidden rounded-md border border-border bg-panel/50 p-3 text-[11px] text-muted">
+                  <div class="min-h-0 flex-1 overflow-y-auto rounded-md border border-border bg-panel/50 p-3 text-[11px] text-muted scrollbar-hidden">
                     <div v-if="sessionDetailLoading" class="h-full animate-pulse">
-                      <div class="grid grid-cols-3 gap-3">
+                      <div class="space-y-4">
                         <div v-for="idx in 10" :key="idx" class="space-y-2">
                           <div class="h-2 w-20 rounded bg-panel/60"></div>
-                          <div class="h-3 w-28 rounded bg-panel/40"></div>
+                          <div class="h-3 w-full max-w-[14rem] rounded bg-panel/40"></div>
                         </div>
                       </div>
                     </div>
                     <div v-else-if="!sessionDetail" class="text-[11px] text-muted">
                       No session selected.
                     </div>
-                    <div v-else class="grid grid-cols-3 gap-3">
-                      <div>
+                    <div v-else class="space-y-4">
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Session ID</div>
-                        <div class="truncate font-mono text-text" :title="sessionDetail.session.id">
+                        <div class="break-all font-mono text-text" :title="sessionDetail.session.id">
                           {{ sessionDetail.session.id }}
                         </div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Mode</div>
                         <div class="text-text">{{ sessionDetail.session.execution_mode || "--" }}</div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Started</div>
                         <div class="text-text">
                           {{ formatDateTime(sessionDetail.session.started_at) }}
                         </div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Ended</div>
                         <div class="text-text">
                           {{ sessionDetail.session.ended_at ? formatDateTime(sessionDetail.session.ended_at) : "Active" }}
                         </div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Duration</div>
                         <div class="text-text">
                           {{
@@ -1421,35 +1681,35 @@
                           }}
                         </div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Cycles</div>
                         <div class="text-text">{{ sessionDetail.session.total_cycles ?? 0 }}</div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Trades</div>
                         <div class="text-text">{{ sessionDetail.session.total_trades ?? 0 }}</div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Prompts</div>
                         <div class="text-text">{{ sessionDetail.session.prompt_count ?? 0 }}</div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Prompts / h</div>
                         <div class="text-text">{{ formatRate(sessionDetail.session.prompt_rate_per_hour) }}</div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Total PnL</div>
                         <div :class="pnlClass(sessionDetail.session.total_pnl)">
                           {{ formatUsd(sessionDetail.session.total_pnl) }}
                         </div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">New Resonance Prompt</div>
                         <div class="text-text">
                           {{ formatPromptVersion(sessionDetail.session.new_resonance_prompt_version) }}
                         </div>
                       </div>
-                      <div>
+                      <div class="space-y-1">
                         <div class="text-[10px] uppercase tracking-wide text-muted">Position Mgmt Prompt</div>
                         <div class="text-text">
                           {{ formatPromptVersion(sessionDetail.session.position_management_prompt_version) }}
@@ -1457,7 +1717,9 @@
                       </div>
                     </div>
                   </div>
+                </div>
 
+                <div class="flex min-h-0 min-w-0 flex-col gap-3">
                   <div class="flex items-center gap-2">
                     <button
                       class="rounded-md border border-border px-3 py-1 text-[11px] transition-colors duration-150"
@@ -1486,10 +1748,10 @@
                   </div>
 
                   <div
-                    ref="sessionLogRef"
-                    class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 text-xs scrollbar-hidden"
-                    @scroll="handleSessionLogScroll"
-                  >
+                      ref="sessionLogRef"
+                      class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 text-xs scrollbar-hidden"
+                      @scroll="handleSessionLogScroll"
+                    >
                     <div
                       v-if="activeSessionTab === 'logs' && sessionDetail"
                       class="mb-2 flex items-center justify-between text-[10px] text-muted"
@@ -1529,7 +1791,7 @@
                       <div
                         v-for="(log, idx) in sessionDetail.logs"
                         :key="log.id || `${log.created_at}-${idx}`"
-                        class="min-w-0 max-h-72 overflow-hidden rounded-md border border-border bg-panel/60 px-3 py-2"
+                        class="min-w-0 overflow-hidden rounded-md border border-border bg-panel/60 px-3 py-2"
                       >
                         <div class="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-muted">
                           <span>{{ formatTimestamp(log.created_at) }}</span>
@@ -1540,7 +1802,7 @@
                             #{{ log.cycle_number }}
                           </span>
                         </div>
-                        <div class="mt-1 max-h-56 overflow-y-auto pr-1 text-xs scrollbar-hidden">
+                        <div class="mt-1 pr-1 text-xs">
                           <div class="whitespace-pre-wrap break-all" :class="logMessageClass(log)">
                             {{ logMessage(log) }}
                           </div>
@@ -1798,6 +2060,10 @@ type AutomationConfig = {
   quant_interval_seconds: number;
   pending_entry_timeout_seconds: number;
   max_positions: number;
+  auto_add_enabled: boolean;
+  auto_add_trigger_atr_multiple: number;
+  auto_add_tranche_margin_pct: number;
+  auto_add_max_tranches: number;
   include_entry_timing_15m_chart: boolean;
   use_all_monitored_interval_charts: boolean;
   reverse_order_enabled: boolean;
@@ -1813,6 +2079,10 @@ type AutomationConfigPayload = {
   quant_interval_seconds?: number;
   pending_entry_timeout_seconds?: number;
   max_positions?: number;
+  auto_add_enabled?: boolean;
+  auto_add_trigger_atr_multiple?: number;
+  auto_add_tranche_margin_pct?: number;
+  auto_add_max_tranches?: number;
   include_entry_timing_15m_chart?: boolean;
   use_all_monitored_interval_charts?: boolean;
   reverse_order_enabled?: boolean;
@@ -1904,6 +2174,10 @@ const automationConfigDefaults: AutomationConfig = {
   quant_interval_seconds: 60,
   pending_entry_timeout_seconds: 900,
   max_positions: 3,
+  auto_add_enabled: false,
+  auto_add_trigger_atr_multiple: 1,
+  auto_add_tranche_margin_pct: 0.8,
+  auto_add_max_tranches: 3,
   include_entry_timing_15m_chart: false,
   use_all_monitored_interval_charts: false,
   reverse_order_enabled: false,
@@ -2142,6 +2416,10 @@ const positionSymbols = computed(() =>
 
 const pendingEntryTimeoutMinutes = computed(() =>
   Math.round((automationConfig.value.pending_entry_timeout_seconds || 900) / 60),
+);
+
+const autoAddTrancheMarginPctDisplay = computed(() =>
+  Math.round((automationConfig.value.auto_add_tranche_margin_pct || 0) * 100),
 );
 
 const closeExportMenu = (event: MouseEvent) => {
@@ -2498,6 +2776,13 @@ const formatPercent = (value?: number | null) => {
   return `${sign}${Math.abs(value).toFixed(1)}%`;
 };
 
+const formatRoePercent = (value?: number | null) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return "--";
+  const pct = value * 100;
+  const sign = pct >= 0 ? "+" : "-";
+  return `${sign}${Math.abs(pct).toFixed(2)}%`;
+};
+
 const formatNumber = (value?: number | null) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -2570,6 +2855,38 @@ const positionToneClass = (position: AutomationPosition) => {
   if (direction === "SHORT") return "text-negative";
   return "text-muted";
 };
+
+const autoAddStatusClass = (status?: string | null) => {
+  const key = (status || "").toUpperCase();
+  if (key === "ACTIVE") return "border-positive/40 bg-positive/10 text-positive";
+  if (key === "ADDING") return "border-accent/40 bg-accent/10 text-accent";
+  if (key === "PROTECTION_PENDING" || key === "WAITING_PROTECTION") {
+    return "border-warning/40 bg-warning/10 text-warning";
+  }
+  if (key === "COMPLETED" || key === "CLOSED") return "border-border bg-panel text-muted";
+  if (key === "DETACHED" || key === "ERROR") return "border-negative/40 bg-negative/10 text-negative";
+  return "border-border bg-panel text-muted";
+};
+
+const positionStopLabel = (position: AutomationPosition) =>
+  position.stop_loss !== null && position.stop_loss !== undefined
+    ? formatNumber(position.stop_loss)
+    : "--";
+
+const positionTakeProfitLabel = (position: AutomationPosition) =>
+  position.take_profit !== null && position.take_profit !== undefined
+    ? formatNumber(position.take_profit)
+    : "--";
+
+const positionOpenedLabel = (position: AutomationPosition) => formatDateTime(position.opened_at);
+
+const positionAutoAddProgress = (position: AutomationPosition) => {
+  const autoAdd = position.auto_add;
+  if (!autoAdd) return "Not managed";
+  return `${autoAdd.filled_add_count}/${autoAdd.max_tranches} resolved`;
+};
+
+const autoAddTrancheLabel = (index: number) => `Tranche ${index}`;
 
 const pendingEntryToneClass = (entry: PendingEntryView) => {
   const side = (entry.side || "").toUpperCase();
@@ -2740,6 +3057,10 @@ const buildAutomationConfigPayload = () => ({
   quant_interval_seconds: automationConfig.value.quant_interval_seconds,
   pending_entry_timeout_seconds: automationConfig.value.pending_entry_timeout_seconds,
   max_positions: automationConfig.value.max_positions,
+  auto_add_enabled: automationConfig.value.auto_add_enabled,
+  auto_add_trigger_atr_multiple: automationConfig.value.auto_add_trigger_atr_multiple,
+  auto_add_tranche_margin_pct: automationConfig.value.auto_add_tranche_margin_pct,
+  auto_add_max_tranches: automationConfig.value.auto_add_max_tranches,
   provider: automationConfig.value.provider || null,
   model: automationConfig.value.model || null,
   reasoning_effort: automationConfig.value.reasoning_effort || null,
@@ -2777,6 +3098,18 @@ const applyAutomationConfigPayload = (payload: AutomationConfigPayload) => {
   }
   if (typeof payload.max_positions === "number") {
     updates.max_positions = payload.max_positions;
+  }
+  if (typeof payload.auto_add_enabled === "boolean") {
+    updates.auto_add_enabled = payload.auto_add_enabled;
+  }
+  if (typeof payload.auto_add_trigger_atr_multiple === "number") {
+    updates.auto_add_trigger_atr_multiple = payload.auto_add_trigger_atr_multiple;
+  }
+  if (typeof payload.auto_add_tranche_margin_pct === "number") {
+    updates.auto_add_tranche_margin_pct = payload.auto_add_tranche_margin_pct;
+  }
+  if (typeof payload.auto_add_max_tranches === "number") {
+    updates.auto_add_max_tranches = payload.auto_add_max_tranches;
   }
   if (typeof payload.include_entry_timing_15m_chart === "boolean") {
     updates.include_entry_timing_15m_chart = payload.include_entry_timing_15m_chart;
@@ -3114,6 +3447,10 @@ const startAutomation = async () => {
         quant_interval_seconds: automationConfig.value.quant_interval_seconds,
         pending_entry_timeout_seconds: automationConfig.value.pending_entry_timeout_seconds,
         max_positions: automationConfig.value.max_positions,
+        auto_add_enabled: automationConfig.value.auto_add_enabled,
+        auto_add_trigger_atr_multiple: automationConfig.value.auto_add_trigger_atr_multiple,
+        auto_add_tranche_margin_pct: automationConfig.value.auto_add_tranche_margin_pct,
+        auto_add_max_tranches: automationConfig.value.auto_add_max_tranches,
         include_entry_timing_15m_chart: automationConfig.value.include_entry_timing_15m_chart,
         use_all_monitored_interval_charts:
           automationConfig.value.use_all_monitored_interval_charts,
@@ -3312,7 +3649,7 @@ const loadLogs = async () => {
 
 const loadPositions = async () => {
   try {
-    const response = await fetch("/api/v1/portfolio/snapshot");
+    const response = await fetch("/api/v1/automation/positions");
     const data = await response.json();
     if (data?.data?.positions) {
       store.positions = data.data.positions;

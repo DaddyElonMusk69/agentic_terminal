@@ -138,21 +138,35 @@ class CCXTConnector(ExchangeConnector):
 
             return positions
 
-    async def fetch_open_orders(self, symbols: Optional[List[str]] = None) -> List[dict]:
+    async def fetch_open_orders(
+        self,
+        symbols: Optional[List[str]] = None,
+        *,
+        include_conditional_orders: bool = True,
+    ) -> List[dict]:
         async with self._client() as client:
             if not getattr(client, "has", {}).get("fetchOpenOrders"):
                 return []
 
+            normalized_symbols = _normalize_requested_symbols(symbols)
             orders: List[dict] = []
-            if symbols:
-                for symbol in symbols:
-                    try:
-                        market_symbol = _resolve_ccxt_market_symbol(client, symbol)
-                        fetched = await client.fetch_open_orders(market_symbol)
-                    except Exception:
-                        fetched = []
-                    if fetched:
-                        orders.extend([item for item in fetched if isinstance(item, dict)])
+            if normalized_symbols:
+                try:
+                    fetched = await client.fetch_open_orders()
+                except Exception:
+                    fetched = None
+                if fetched is None:
+                    for symbol in normalized_symbols:
+                        try:
+                            market_symbol = _resolve_ccxt_market_symbol(client, symbol)
+                            fetched_by_symbol = await client.fetch_open_orders(market_symbol)
+                        except Exception:
+                            fetched_by_symbol = []
+                        if fetched_by_symbol:
+                            orders.extend([item for item in fetched_by_symbol if isinstance(item, dict)])
+                else:
+                    all_orders = [item for item in fetched if isinstance(item, dict)]
+                    orders.extend(_filter_open_orders_by_symbols(client, all_orders, normalized_symbols))
             else:
                 try:
                     fetched = await client.fetch_open_orders()
@@ -161,8 +175,10 @@ class CCXTConnector(ExchangeConnector):
                 if fetched:
                     orders.extend([item for item in fetched if isinstance(item, dict)])
 
-            if (self._config.exchange_id or "").lower() == "binance":
-                algo_orders = await _fetch_binance_open_algo_orders(client, symbols)
+            if include_conditional_orders and (self._config.exchange_id or "").lower() == "binance":
+                algo_orders = await _fetch_binance_open_algo_orders(client, None)
+                if normalized_symbols:
+                    algo_orders = _filter_open_orders_by_symbols(client, algo_orders, normalized_symbols)
                 if algo_orders:
                     orders.extend(algo_orders)
 
@@ -186,13 +202,29 @@ class CCXTConnector(ExchangeConnector):
             return None
         async with self._client() as client:
             fetcher = getattr(client, "cancel_order", None)
-            if not callable(fetcher):
-                return None
             market_symbol = _resolve_ccxt_market_symbol(client, symbol)
             try:
-                return await fetcher(order_id, market_symbol)
+                if callable(fetcher):
+                    return await fetcher(order_id, market_symbol)
             except Exception:
-                return None
+                pass
+
+            exchange_id = (self._config.exchange_id or "").lower()
+            if exchange_id == "binance":
+                try:
+                    market = client.market(market_symbol)
+                    market_id = market.get("id") if isinstance(market, dict) else None
+                except Exception:
+                    market_id = None
+                if market_id:
+                    params = {"symbol": market_id, "algoId": order_id}
+                    try:
+                        if hasattr(client, "fapiPrivateDeleteAlgoOrder"):
+                            return await client.fapiPrivateDeleteAlgoOrder(params)
+                        return await client.request("algoOrder", "fapiPrivate", "DELETE", params)
+                    except Exception:
+                        return None
+            return None
 
     async def fetch_recent_trades(
         self,
@@ -281,7 +313,8 @@ class CCXTConnector(ExchangeConnector):
 
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> List[MarketCandle]:
         async with self._client() as client:
-            candles = await client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            market_symbol = _resolve_ccxt_market_symbol(client, symbol)
+            candles = await client.fetch_ohlcv(market_symbol, timeframe=timeframe, limit=limit)
             results: List[MarketCandle] = []
             for row in candles or []:
                 if len(row) < 6:
@@ -1216,6 +1249,63 @@ def _symbol_candidates(client: Any, symbol: str) -> List[str]:
             add(f"{parts[0]}/{parts[1]}")
 
     return candidates
+
+
+def _normalize_requested_symbols(symbols: Optional[List[str]]) -> List[str]:
+    if not symbols:
+        return []
+    normalized = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    return sorted(normalized)
+
+
+def _filter_open_orders_by_symbols(client: Any, orders: List[dict], symbols: List[str]) -> List[dict]:
+    if not symbols:
+        return orders
+    symbol_keys: set[str] = set()
+    market_ids: set[str] = set()
+    for symbol in symbols:
+        for candidate in _symbol_candidates(client, symbol):
+            symbol_keys.add(candidate.upper())
+            normalized = _normalize_position_symbol(candidate)
+            if normalized:
+                symbol_keys.add(normalized.upper())
+        market_id = _resolve_market_id(client, symbol)
+        if market_id:
+            market_ids.add(str(market_id).upper())
+
+    filtered: List[dict] = []
+    for order in orders:
+        if _order_matches_symbol_filters(order, symbol_keys, market_ids):
+            filtered.append(order)
+    return filtered
+
+
+def _order_matches_symbol_filters(order: Any, symbol_keys: set[str], market_ids: set[str]) -> bool:
+    if not isinstance(order, dict):
+        return False
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    candidates = [
+        order.get("symbol"),
+        order.get("marketId"),
+        order.get("pair"),
+        info.get("symbol"),
+        info.get("pair"),
+        info.get("marketId"),
+        info.get("instId"),
+    ]
+    for raw in candidates:
+        if raw is None:
+            continue
+        token = str(raw).strip()
+        if not token:
+            continue
+        upper_token = token.upper()
+        if upper_token in symbol_keys or upper_token in market_ids:
+            return True
+        normalized = _normalize_position_symbol(token)
+        if normalized and normalized.upper() in symbol_keys:
+            return True
+    return False
 
 
 def _resolve_ccxt_market_symbol(client: Any, symbol: str) -> str:

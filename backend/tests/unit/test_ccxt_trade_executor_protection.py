@@ -198,3 +198,59 @@ async def test_open_position_sets_initial_protection_for_fresh_entry():
     assert result.success is True
     assert result.status == "filled"
     executor._maybe_set_sl_tp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_maybe_set_sl_tp_prefers_explicit_initial_prices_over_roe_recalculation():
+    executor = _make_executor()
+    executor.set_sl_tp = AsyncMock(return_value=ExecutionResult(success=True, status="sl_tp_set"))
+
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        leverage=5,
+        stop_loss=99.0,
+        take_profit=104.0,
+        stop_loss_roe=0.03,
+        take_profit_roe=0.08,
+    )
+    result = ExecutionResult(
+        success=True,
+        status="filled",
+        fill_price=101.0,
+        filled_size=1.0,
+    )
+
+    protection = await executor._maybe_set_sl_tp("BTC/USDT:USDT", decision, result)
+
+    assert protection is not None
+    executor.set_sl_tp.assert_awaited_once_with("BTC/USDT:USDT", 99.0, 104.0)
+
+
+@pytest.mark.asyncio
+async def test_place_protection_order_uses_close_position_trigger_orders():
+    executor = _make_executor()
+    executor._client.create_order = AsyncMock(return_value={"id": "tp-1"})
+
+    result = await executor._place_protection_order(
+        symbol="BTC/USDT:USDT",
+        position={"side": "long", "contracts": 1.0, "info": {"positionSide": "LONG"}},
+        side="sell",
+        order_type="take_profit_market",
+        trigger_price=110.0,
+        success_status="tp_set",
+    )
+
+    assert result.success is True
+    executor._client.create_order.assert_awaited_once_with(
+        symbol="BTC/USDT:USDT",
+        type="take_profit_market",
+        side="sell",
+        amount=None,
+        price=None,
+        params={
+            "closePosition": True,
+            "stopPrice": 110.0,
+            "positionSide": "LONG",
+        },
+    )

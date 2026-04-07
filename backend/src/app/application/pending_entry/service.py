@@ -14,6 +14,7 @@ from app.application.bus.outbox_service import OutboxService
 from app.application.portfolio.service import PortfolioService
 from app.application.position_origin.service import PositionOriginService
 from app.application.trade_executor.service import TradeExecutorService
+from app.application.auto_add.service import AutoAddService
 from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.domain.pending_entry.interfaces import PendingEntryRepository
 from app.domain.pending_entry.models import (
@@ -25,6 +26,7 @@ from app.domain.pending_entry.models import (
 
 class PendingEntryService:
     POLL_INTERVAL_SECONDS = 3
+    ORPHAN_CONFIRMATION_MISSES = 2
 
     def __init__(
         self,
@@ -33,6 +35,7 @@ class PendingEntryService:
         trade_executor: TradeExecutorService,
         automation_config_service: AutomationConfigService,
         position_origin_service: PositionOriginService | None = None,
+        auto_add_service: AutoAddService | None = None,
         outbox: OutboxService | None = None,
     ) -> None:
         self._repository = repository
@@ -40,6 +43,7 @@ class PendingEntryService:
         self._trade_executor = trade_executor
         self._automation_config_service = automation_config_service
         self._position_origin_service = position_origin_service
+        self._auto_add_service = auto_add_service
         self._outbox = outbox
 
     async def register_resting_entry(
@@ -87,6 +91,8 @@ class PendingEntryService:
             filled_quantity=filled_quantity,
             leverage=decision.leverage,
             time_in_force=decision.time_in_force,
+            stop_loss=decision.stop_loss,
+            take_profit=decision.take_profit,
             stop_loss_roe=decision.stop_loss_roe,
             take_profit_roe=decision.take_profit_roe,
             anchor_frame=decision.anchor_frame,
@@ -163,6 +169,8 @@ class PendingEntryService:
             filled_quantity=filled_quantity,
             leverage=decision.leverage,
             time_in_force=decision.time_in_force,
+            stop_loss=decision.stop_loss,
+            take_profit=decision.take_profit,
             stop_loss_roe=decision.stop_loss_roe,
             take_profit_roe=decision.take_profit_roe,
             anchor_frame=decision.anchor_frame,
@@ -270,8 +278,13 @@ class PendingEntryService:
         if not records:
             return 0
 
-        positions = await self._get_live_positions_index()
         open_orders = await self._get_open_orders_index([record.symbol for record in records])
+        now = _utcnow()
+        should_fetch_positions = any(
+            _needs_live_position_lookup(record, open_orders.get(record.exchange_order_id), now=now)
+            for record in records
+        )
+        positions = await self._get_live_positions_index() if should_fetch_positions else {}
         handled = 0
         for record in records:
             position = positions.get(record.symbol)
@@ -437,6 +450,13 @@ class PendingEntryService:
             return True
 
         if order_info is None:
+            if not _should_mark_orphaned(record):
+                await self._update_record(
+                    record,
+                    last_reconciled_at=now,
+                    last_error=_next_missing_order_error(record),
+                )
+                return True
             updated = await self._update_record(
                 record,
                 status=PendingEntryStatus.ORPHANED,
@@ -477,13 +497,17 @@ class PendingEntryService:
                 last_error="missing_position_context_for_protection",
             )
 
-        if updated.stop_loss_roe is not None:
+        await self._sync_position_origin(updated)
+
+        stop_price = updated.stop_loss
+        if stop_price is None and updated.stop_loss_roe is not None:
             stop_price = _calculate_initial_stop_loss_from_roe(
                 risk_roe=updated.stop_loss_roe,
                 entry_price=entry_price,
                 leverage=leverage,
                 direction=direction,
             )
+        if stop_price is not None:
             result = await self._trade_executor.execute(
                 ExecutionIdea(
                     action=ExecutionAction.UPDATE_SL,
@@ -497,13 +521,15 @@ class PendingEntryService:
                     last_error=f"sl_attach_failed:{result.error or result.status}",
                 )
 
-        if updated.take_profit_roe is not None:
+        take_profit = updated.take_profit
+        if take_profit is None and updated.take_profit_roe is not None:
             take_profit = _calculate_take_profit_from_roe(
                 target_roe=updated.take_profit_roe,
                 entry_price=entry_price,
                 leverage=leverage,
                 direction=direction,
             )
+        if take_profit is not None:
             result = await self._trade_executor.execute(
                 ExecutionIdea(
                     action=ExecutionAction.UPDATE_TP,
@@ -517,13 +543,13 @@ class PendingEntryService:
                     last_error=f"tp_attach_failed:{result.error or result.status}",
                 )
 
-        await self._sync_position_origin(updated)
         finalized = await self._update_record(
             updated,
             status=final_status,
             resolved_at=_utcnow(),
             last_error=None,
         )
+        await self._register_auto_add(finalized)
         await self._emit(
             topics.PENDING_ENTRY_PROTECTED,
             {
@@ -534,6 +560,18 @@ class PendingEntryService:
             session_id=finalized.session_id,
         )
         return finalized
+
+    async def _register_auto_add(self, record: PendingEntryRecord) -> None:
+        if self._auto_add_service is None:
+            return
+        try:
+            await self._auto_add_service.register_limit_fill_after_protection(
+                symbol=record.symbol,
+                side=record.side,
+                session_id=record.session_id,
+            )
+        except Exception:
+            return
 
     async def _sync_position_origin(self, record: PendingEntryRecord) -> None:
         if self._position_origin_service is None:
@@ -546,6 +584,8 @@ class PendingEntryService:
                 symbol=record.symbol,
                 anchor_frame=record.anchor_frame,
                 active_tunnel=record.active_tunnel,
+                stop_loss_roe=record.stop_loss_roe,
+                take_profit_roe=record.take_profit_roe,
             )
         except Exception:
             return
@@ -573,7 +613,10 @@ class PendingEntryService:
     async def _get_open_orders_index(self, symbols: list[str]) -> dict[str, dict]:
         unique = sorted({_normalize_symbol(symbol) for symbol in symbols if symbol})
         try:
-            orders = await self._portfolio_service.get_open_orders(unique)
+            orders = await self._portfolio_service.get_open_orders(
+                unique,
+                include_conditional_orders=False,
+            )
         except Exception:
             return {}
         indexed: dict[str, dict] = {}
@@ -809,6 +852,21 @@ def _order_canceled(order: dict | None) -> bool:
     return status in {"canceled", "cancelled", "expired", "rejected"}
 
 
+def _needs_live_position_lookup(
+    record: PendingEntryRecord,
+    open_order: dict | None,
+    *,
+    now: datetime,
+) -> bool:
+    if record.status == PendingEntryStatus.PROTECTION_PENDING:
+        return True
+    if open_order is None:
+        return True
+    if now >= record.expires_at:
+        return False
+    return (_extract_filled_quantity(open_order) or 0.0) > 0
+
+
 def _calculate_initial_stop_loss_from_roe(
     *,
     risk_roe: float,
@@ -836,3 +894,25 @@ def _calculate_take_profit_from_roe(
     else:
         take_profit = entry_price * (1 - (target_roe / leverage))
     return float(f"{take_profit:.5g}")
+
+
+def _should_mark_orphaned(record: PendingEntryRecord) -> bool:
+    missing_count = _extract_missing_order_count(record.last_error)
+    return missing_count >= PendingEntryService.ORPHAN_CONFIRMATION_MISSES - 1
+
+
+def _next_missing_order_error(record: PendingEntryRecord) -> str:
+    missing_count = _extract_missing_order_count(record.last_error) + 1
+    return f"order_missing_from_exchange:{missing_count}"
+
+
+def _extract_missing_order_count(last_error: str | None) -> int:
+    if not last_error:
+        return 0
+    prefix = "order_missing_from_exchange:"
+    if not str(last_error).startswith(prefix):
+        return 0
+    try:
+        return int(str(last_error)[len(prefix):])
+    except (TypeError, ValueError):
+        return 0

@@ -73,7 +73,6 @@ class AutomationPipelineService:
     ) -> dict:
         mode = normalize_execution_mode(execution_mode)
         positions = await self._fetch_positions(session_id=session_id, cycle_number=cycle_number)
-        pending_entries = await self._fetch_pending_entries()
 
         async def log_event(event: str, data: Optional[dict] = None) -> None:
             payload = {"event": event, "data": data or {}, "cycle_number": cycle_number}
@@ -115,6 +114,7 @@ class AutomationPipelineService:
             )
             return {"signals": 0, "events": 0, "queued": 0}
 
+        pending_entries = await self._fetch_pending_entries(quote_asset=config.quote_asset)
         chart_store: dict[str, dict[str, dict]] = {}
         state_config = await self._ema_state_manager.get_config()
         events = []
@@ -327,7 +327,7 @@ class AutomationPipelineService:
             )
         return positions
 
-    async def _fetch_pending_entries(self) -> List[PendingEntrySnapshot]:
+    async def _fetch_pending_entries(self, quote_asset: str = "USDT") -> List[PendingEntrySnapshot]:
         if self._pending_entry_service is None:
             return []
         try:
@@ -336,7 +336,7 @@ class AutomationPipelineService:
             return []
         return [
             PendingEntrySnapshot(
-                symbol=entry.symbol,
+                symbol=_normalize_market_symbol(entry.symbol, quote_asset),
                 side=entry.side,
                 limit_price=entry.limit_price,
                 placed_at=entry.placed_at,
@@ -384,3 +384,13 @@ def _resolve_template_id(trigger_reason: str, template_map: dict[str, int] | Non
     if isinstance(value, int) and value > 0:
         return value
     return None
+
+
+def _normalize_market_symbol(symbol: str, quote_asset: str) -> str:
+    value = str(symbol or "").strip().upper()
+    quote = str(quote_asset or "USDT").strip().upper() or "USDT"
+    if not value:
+        return ""
+    if "/" in value or ":" in value:
+        return value
+    return f"{value}/{quote}"

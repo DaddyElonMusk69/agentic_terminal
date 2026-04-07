@@ -1,23 +1,37 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from app.application.automation.order_queue_service import OrderQueuePolicy
 from app.application.automation import topics
+from app.application.automation.config_service import (
+    AutomationConfigService,
+    DEFAULT_MAX_POSITIONS,
+)
 from app.application.automation.execution_mode import ExecutionMode, normalize_execution_mode, should_execute_trades
+from app.application.automation.order_queue_service import OrderQueuePolicy
+from app.application.auto_add.service import AutoAddService
 from app.application.bus.outbox_service import OutboxService
 from app.application.circuit_breaker.service import CircuitBreakerService
 from app.application.pending_entry.service import PendingEntryService
+from app.application.position_origin.service import PositionOriginService
 from app.application.trade_executor.service import TradeExecutorService
 from app.application.trade_guard.service import TradeGuardService
-from app.application.position_origin.service import PositionOriginService
-from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
-from app.infrastructure.repositories.order_queue_repository import OrderQueueRepository, OrderQueueItem
 from app.application.portfolio.service import PortfolioService
+from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
+from app.domain.trade_executor.models import ExecutionResult
+from app.infrastructure.repositories.order_queue_repository import OrderQueueRepository, OrderQueueItem
 
 
 class OrderQueueWorker:
+    LIMIT_ENTRY_EXECUTION_MAX_ATTEMPTS = 3
+    LIMIT_ENTRY_SLOT_MULTIPLIER = 2
+    LIMIT_ENTRY_RESERVATION_TTL_SECONDS = 90
+    _limit_entry_reservations_lock = asyncio.Lock()
+    _limit_entry_reservations: dict[str, dict[str, "_LimitEntryReservation"]] = {}
+
     def __init__(
         self,
         repository: OrderQueueRepository,
@@ -28,6 +42,8 @@ class OrderQueueWorker:
         portfolio_service: Optional[PortfolioService] = None,
         position_origin_service: Optional[PositionOriginService] = None,
         pending_entry_service: Optional[PendingEntryService] = None,
+        auto_add_service: Optional[AutoAddService] = None,
+        automation_config_service: Optional[AutomationConfigService] = None,
         policy: Optional[OrderQueuePolicy] = None,
     ) -> None:
         self._repository = repository
@@ -38,6 +54,8 @@ class OrderQueueWorker:
         self._portfolio_service = portfolio_service
         self._position_origin_service = position_origin_service
         self._pending_entry_service = pending_entry_service
+        self._auto_add_service = auto_add_service
+        self._automation_config_service = automation_config_service
         self._policy = policy or OrderQueuePolicy()
 
     async def process_next(self) -> bool:
@@ -270,8 +288,18 @@ class OrderQueueWorker:
             )
             return True
 
-        execution_result = await self._trade_executor.execute(guarded_decision)
-        result_payload = execution_result.__dict__
+        execution_result, execution_attempts, retry_errors = await self._execute_with_retries(
+            guarded_decision,
+            request_id=payload.get("source_request_id", item.id),
+            session_id=session_id,
+            cycle_number=cycle_number,
+            execution_mode=execution_mode.value,
+            open_positions=open_positions,
+        )
+        result_payload = dict(execution_result.__dict__)
+        result_payload["retry_attempts"] = execution_attempts
+        if retry_errors:
+            result_payload["retry_errors"] = retry_errors
 
         if execution_result.success:
             await self._repository.mark_done(item.id, result_payload)
@@ -285,6 +313,16 @@ class OrderQueueWorker:
                 final_order=final_order,
                 execution_result=execution_result,
             )
+            await self._register_auto_add_if_needed(
+                decision=guarded_decision,
+                execution_result=execution_result,
+                session_id=session_id,
+                open_positions=open_positions,
+            )
+            await self._cleanup_auto_add_if_needed(
+                decision=guarded_decision,
+                execution_result=execution_result,
+            )
             await self._outbox.enqueue_event(
                 topics.TRADE_EXECUTED,
                 _with_session(
@@ -293,22 +331,29 @@ class OrderQueueWorker:
                         "result": result_payload,
                         "execution_idea": idea_payload,
                         "final_order": final_order,
+                        "retry_attempts": execution_attempts,
+                        "retried": execution_attempts > 1,
+                        "retry_errors": retry_errors,
                         "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
             )
         else:
-            await self._repository.mark_failed(item.id, execution_result.error or "execution_failed")
+            final_error = execution_result.error or "execution_failed"
+            await self._repository.mark_failed(item.id, final_error)
             await self._outbox.enqueue_event(
                 topics.TRADE_FAILED,
                 _with_session(
                     {
                         "request_id": item.id,
-                        "error": execution_result.error,
+                        "error": final_error,
                         "result": result_payload,
                         "execution_idea": idea_payload,
                         "final_order": final_order,
+                        "retry_attempts": execution_attempts,
+                        "retried": execution_attempts > 1,
+                        "retry_errors": retry_errors,
                         "cycle_number": cycle_number,
                     },
                     session_id,
@@ -330,7 +375,14 @@ class OrderQueueWorker:
 
         action = str(final_order.get("action") or "").upper()
         symbol = final_order.get("symbol")
-        if not symbol or not _is_filled_status(getattr(execution_result, "status", None)):
+        if not symbol:
+            return
+
+        status = getattr(execution_result, "status", None)
+        if action in _OPEN_ACTIONS or action == ExecutionAction.CLOSE.value:
+            if not _is_filled_status(status):
+                return
+        elif not getattr(execution_result, "success", False):
             return
 
         try:
@@ -347,6 +399,30 @@ class OrderQueueWorker:
                     symbol=symbol,
                     anchor_frame=final_order.get("anchor_frame"),
                     active_tunnel=final_order.get("active_tunnel"),
+                    stop_loss_roe=_safe_float(final_order.get("stop_loss_roe")),
+                    take_profit_roe=_safe_float(final_order.get("take_profit_roe")),
+                )
+            except Exception:
+                return
+            return
+
+        if action == ExecutionAction.UPDATE_SL.value:
+            try:
+                await self._position_origin_service.upsert(
+                    account_id=account.id,
+                    symbol=symbol,
+                    stop_loss_roe=_safe_float(final_order.get("stop_loss_roe")),
+                )
+            except Exception:
+                return
+            return
+
+        if action == ExecutionAction.UPDATE_TP.value:
+            try:
+                await self._position_origin_service.upsert(
+                    account_id=account.id,
+                    symbol=symbol,
+                    take_profit_roe=_safe_float(final_order.get("take_profit_roe")),
                 )
             except Exception:
                 return
@@ -538,6 +614,329 @@ class OrderQueueWorker:
 
         return _fetch
 
+    async def _register_auto_add_if_needed(
+        self,
+        *,
+        decision: ExecutionIdea,
+        execution_result: Any,
+        session_id: str | None,
+        open_positions: Optional[list],
+    ) -> None:
+        if self._auto_add_service is None:
+            return
+        if decision.action not in (
+            ExecutionAction.OPEN_LONG,
+            ExecutionAction.OPEN_SHORT,
+            ExecutionAction.OPEN_LONG_LIMIT,
+            ExecutionAction.OPEN_SHORT_LIMIT,
+        ):
+            return
+        try:
+            await self._auto_add_service.register_fresh_entry(
+                decision=decision,
+                execution_result=execution_result,
+                session_id=session_id,
+                open_positions_before=open_positions,
+            )
+        except Exception:
+            return
+
+    async def _cleanup_auto_add_if_needed(
+        self,
+        *,
+        decision: ExecutionIdea,
+        execution_result: Any,
+    ) -> None:
+        if self._auto_add_service is None:
+            return
+        if decision.action != ExecutionAction.CLOSE:
+            return
+        if not _is_filled_status(getattr(execution_result, "status", None)):
+            return
+        try:
+            await self._auto_add_service.cancel_for_symbol(
+                decision.symbol,
+                reason="position_closed",
+            )
+        except Exception:
+            return
+
+    async def _execute_with_retries(
+        self,
+        decision: ExecutionIdea,
+        *,
+        request_id: str,
+        session_id: str | None,
+        cycle_number: int | None,
+        execution_mode: str,
+        open_positions: Optional[list],
+    ) -> tuple[ExecutionResult, int, list[str]]:
+        max_attempts = (
+            self.LIMIT_ENTRY_EXECUTION_MAX_ATTEMPTS
+            if decision.action in _LIMIT_OPEN_ACTIONS
+            else 1
+        )
+
+        attempt = 0
+        errors: list[str] = []
+        result = ExecutionResult(success=False, status="error", error="execution_not_attempted")
+        reservation: _LimitEntryReservation | None = None
+        try:
+            while attempt < max_attempts:
+                attempt += 1
+                await self._cleanup_stale_limit_entries_if_needed(
+                    decision,
+                    request_id=request_id,
+                    session_id=session_id,
+                    cycle_number=cycle_number,
+                    execution_mode=execution_mode,
+                    attempt=attempt,
+                )
+                if reservation is None and decision.action in _LIMIT_OPEN_ACTIONS:
+                    reservation_outcome = await self._reserve_limit_entry_slot_if_available(
+                        decision,
+                        request_id=request_id,
+                        open_positions=open_positions,
+                    )
+                    if reservation_outcome.reservation is None:
+                        result = ExecutionResult(
+                            success=False,
+                            status="invalid",
+                            error=reservation_outcome.error or "limit_entry_slot_cap_reached",
+                            raw_response=reservation_outcome.details,
+                        )
+                        return result, attempt, errors
+                    reservation = reservation_outcome.reservation
+                try:
+                    result = await self._trade_executor.execute(decision)
+                except Exception as exc:
+                    result = ExecutionResult(success=False, status="error", error=str(exc))
+
+                if result.success:
+                    return result, attempt, errors
+
+                error_text = result.error or result.status or "execution_failed"
+                errors.append(error_text)
+                if attempt >= max_attempts or not _is_retryable_limit_entry_failure(result):
+                    return result, attempt, errors
+
+                await self._outbox.enqueue_event(
+                    topics.ORDER_MODIFIED,
+                    _with_session(
+                        {
+                            "request_id": request_id,
+                            "symbol": decision.symbol,
+                            "execution_mode": execution_mode,
+                            "execution_retry": {
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "error": error_text,
+                                "action": decision.action.value,
+                            },
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+        finally:
+            if reservation is not None:
+                await self._release_limit_entry_reservation(reservation)
+
+        return result, attempt, errors
+
+    async def _cleanup_stale_limit_entries_if_needed(
+        self,
+        decision: ExecutionIdea,
+        *,
+        request_id: str,
+        session_id: str | None,
+        cycle_number: int | None,
+        execution_mode: str,
+        attempt: int,
+    ) -> None:
+        if self._portfolio_service is None:
+            return
+        if decision.action not in _LIMIT_OPEN_ACTIONS:
+            return
+
+        try:
+            open_orders = await self._portfolio_service.get_open_orders([decision.symbol])
+        except Exception:
+            return
+
+        target_symbol = _normalize_symbol(decision.symbol)
+        canceled_orders: list[dict[str, str]] = []
+        canceled_ids: set[str] = set()
+
+        for order in open_orders or []:
+            if _normalize_symbol(order.get("symbol")) != target_symbol:
+                continue
+            if _is_protection_order(order):
+                continue
+            order_id = _extract_order_id(order)
+            order_symbol = str(order.get("symbol") or decision.symbol)
+            if not order_id:
+                continue
+            try:
+                await self._portfolio_service.cancel_order(order_id, order_symbol)
+            except Exception:
+                continue
+            canceled_ids.add(order_id)
+            canceled_orders.append(
+                {
+                    "order_id": order_id,
+                    "symbol": order_symbol,
+                    "type": _extract_order_type(order),
+                }
+            )
+
+        canceled_pending_ids: list[str] = []
+        if self._pending_entry_service is not None:
+            try:
+                pending_entries = await self._pending_entry_service.list_active_records_for_active_account()
+            except Exception:
+                pending_entries = []
+            for entry in pending_entries:
+                if _normalize_symbol(getattr(entry, "symbol", None)) != target_symbol:
+                    continue
+                entry_order_id = str(getattr(entry, "exchange_order_id", "") or "")
+                if canceled_ids and entry_order_id and entry_order_id not in canceled_ids:
+                    continue
+                try:
+                    await self._pending_entry_service.cancel_pending_entry(entry.id)
+                except Exception:
+                    continue
+                canceled_pending_ids.append(entry.id)
+
+        if not canceled_orders and not canceled_pending_ids:
+            return
+
+        await self._outbox.enqueue_event(
+            topics.ORDER_MODIFIED,
+            _with_session(
+                {
+                    "request_id": request_id,
+                    "symbol": decision.symbol,
+                    "execution_mode": execution_mode,
+                    "execution_cleanup": {
+                        "attempt": attempt,
+                        "action": decision.action.value,
+                        "canceled_entry_orders": canceled_orders,
+                        "canceled_pending_entries": canceled_pending_ids,
+                    },
+                    "cycle_number": cycle_number,
+                },
+                session_id,
+            ),
+        )
+
+    async def _reserve_limit_entry_slot_if_available(
+        self,
+        decision: ExecutionIdea,
+        *,
+        request_id: str,
+        open_positions: Optional[list],
+    ) -> "_LimitEntryReservationOutcome":
+        account_id = await self._get_active_account_id()
+        if not account_id:
+            return _LimitEntryReservationOutcome(
+                reservation=None,
+                error="limit_entry_slot_reservation_failed:no_active_account",
+                details=None,
+            )
+
+        slot_limit = await self._get_limit_entry_slot_limit()
+        pending_entries = []
+        if self._pending_entry_service is not None:
+            try:
+                pending_entries = await self._pending_entry_service.list_active_records_for_active_account()
+            except Exception:
+                pending_entries = []
+
+        open_positions_count = _count_open_positions(open_positions)
+        pending_entries_count = len(pending_entries)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=self.LIMIT_ENTRY_RESERVATION_TTL_SECONDS)
+
+        async with self._limit_entry_reservations_lock:
+            reservations = self._limit_entry_reservations.setdefault(account_id, {})
+            _prune_expired_limit_entry_reservations(reservations, now)
+            existing = reservations.get(request_id)
+            if existing is not None:
+                return _LimitEntryReservationOutcome(
+                    reservation=existing,
+                    error=None,
+                    details=None,
+                )
+
+            reservations_count = len(reservations)
+            slots_used = open_positions_count + pending_entries_count + reservations_count
+            if slots_used >= slot_limit:
+                if not reservations:
+                    self._limit_entry_reservations.pop(account_id, None)
+                return _LimitEntryReservationOutcome(
+                    reservation=None,
+                    error=f"limit_entry_slot_cap_reached: used={slots_used} limit={slot_limit}",
+                    details={
+                        "slot_limit": slot_limit,
+                        "slots_used": slots_used,
+                        "open_positions": open_positions_count,
+                        "pending_entries": pending_entries_count,
+                        "inflight_limit_entries": reservations_count,
+                    },
+                )
+
+            reservation = _LimitEntryReservation(
+                account_id=account_id,
+                request_id=request_id,
+                symbol=_normalize_symbol(decision.symbol),
+                expires_at=expires_at,
+            )
+            reservations[request_id] = reservation
+            return _LimitEntryReservationOutcome(
+                reservation=reservation,
+                error=None,
+                details=None,
+            )
+
+    async def _release_limit_entry_reservation(self, reservation: "_LimitEntryReservation") -> None:
+        async with self._limit_entry_reservations_lock:
+            reservations = self._limit_entry_reservations.get(reservation.account_id)
+            if reservations is None:
+                return
+            reservations.pop(reservation.request_id, None)
+            if not reservations:
+                self._limit_entry_reservations.pop(reservation.account_id, None)
+
+    async def _get_active_account_id(self) -> str | None:
+        if self._portfolio_service is None:
+            return None
+        try:
+            account = await self._portfolio_service.get_active_account()
+        except Exception:
+            return None
+        if account is None:
+            return None
+        value = str(getattr(account, "id", "") or "").strip()
+        return value or None
+
+    async def _get_limit_entry_slot_limit(self) -> int:
+        max_positions = DEFAULT_MAX_POSITIONS
+        if self._automation_config_service is not None:
+            try:
+                config = await self._automation_config_service.get_config()
+            except Exception:
+                config = None
+            if config is not None:
+                try:
+                    max_positions = max(
+                        1,
+                        int(getattr(config, "max_positions", DEFAULT_MAX_POSITIONS)),
+                    )
+                except (TypeError, ValueError):
+                    max_positions = DEFAULT_MAX_POSITIONS
+        return max(1, max_positions * self.LIMIT_ENTRY_SLOT_MULTIPLIER)
+
 
 def _is_expired(item: OrderQueueItem, policy: OrderQueuePolicy) -> bool:
     now = datetime.now(timezone.utc)
@@ -560,6 +959,26 @@ _OPEN_ACTIONS = {
     ExecutionAction.OPEN_LONG_LIMIT.value,
     ExecutionAction.OPEN_SHORT_LIMIT.value,
 }
+
+_LIMIT_OPEN_ACTIONS = {
+    ExecutionAction.OPEN_LONG_LIMIT,
+    ExecutionAction.OPEN_SHORT_LIMIT,
+}
+
+
+@dataclass(frozen=True)
+class _LimitEntryReservation:
+    account_id: str
+    request_id: str
+    symbol: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class _LimitEntryReservationOutcome:
+    reservation: _LimitEntryReservation | None
+    error: str | None
+    details: dict[str, Any] | None
 
 
 def _is_filled_status(value: Any) -> bool:
@@ -595,6 +1014,16 @@ def _position_exists_before_execution(open_positions: Optional[list], symbol: st
     return False
 
 
+def _count_open_positions(open_positions: Optional[list]) -> int:
+    count = 0
+    for position in open_positions or []:
+        if not isinstance(position, dict):
+            continue
+        if _normalize_symbol(position.get("symbol")):
+            count += 1
+    return count
+
+
 def _requires_initial_protection(decision: ExecutionIdea) -> bool:
     return any(
         value is not None
@@ -616,3 +1045,92 @@ def _protection_attach_needs_retry(execution_result: Any) -> bool:
         return False
     protection_status = str(payload.get("protection_status") or "").strip().lower()
     return protection_status in {"partial", "failed", "rolled_back", "error"}
+
+
+def _is_retryable_limit_entry_failure(execution_result: ExecutionResult) -> bool:
+    status = str(getattr(execution_result, "status", "") or "").strip().lower()
+    if status in {"invalid", "unsupported", "no_account", "no_credentials"}:
+        return False
+    return True
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized
+
+
+def _extract_order_id(order: dict | None) -> str | None:
+    if not isinstance(order, dict):
+        return None
+    for candidate in (
+        order.get("id"),
+        order.get("orderId"),
+        order.get("algoId"),
+    ):
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if value:
+            return value
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    for candidate in (info.get("orderId"), info.get("algoId"), info.get("id")):
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if value:
+            return value
+    return None
+
+
+def _extract_order_type(order: dict | None) -> str:
+    if not isinstance(order, dict):
+        return ""
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    return str(
+        order.get("type")
+        or order.get("orderType")
+        or info.get("type")
+        or info.get("orderType")
+        or params.get("type")
+        or ""
+    ).lower()
+
+
+def _extract_order_flag(order: dict | None, key: str) -> bool:
+    if not isinstance(order, dict):
+        return False
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for source in (order, info, params):
+        if source.get(key) is True:
+            return True
+        value = source.get(key)
+        if isinstance(value, str) and value.strip().lower() == "true":
+            return True
+    return False
+
+
+def _is_protection_order(order: dict | None) -> bool:
+    order_type = _extract_order_type(order)
+    if "take_profit" in order_type or "take-profit" in order_type or order_type.startswith("tp"):
+        return True
+    return _extract_order_flag(order, "reduceOnly") or _extract_order_flag(order, "closePosition")
+
+
+def _prune_expired_limit_entry_reservations(
+    reservations: dict[str, _LimitEntryReservation],
+    now: datetime,
+) -> None:
+    expired = [
+        request_id
+        for request_id, reservation in reservations.items()
+        if reservation.expires_at <= now
+    ]
+    for request_id in expired:
+        reservations.pop(request_id, None)

@@ -4,6 +4,34 @@ export type AutomationSession = {
   startedAt: string;
 };
 
+export type AutoAddTranche = {
+  tranche_index: number;
+  kind: "INITIAL" | "ADD" | string;
+  status?: string | null;
+  exchange_order_id?: string | null;
+  trigger_price?: number | null;
+  fill_price?: number | null;
+  filled_quantity?: number | null;
+  margin_used?: number | null;
+  position_notional_usd?: number | null;
+  fill_time?: string | null;
+  atr_value?: number | null;
+  trigger_basis_price?: number | null;
+};
+
+export type AutoAddPosition = {
+  status: string;
+  filled_add_count: number;
+  max_tranches: number;
+  next_trigger_basis_price?: number | null;
+  next_trigger_price?: number | null;
+  latest_atr_value?: number | null;
+  original_risk_usd?: number | null;
+  initial_margin_used?: number | null;
+  last_error?: string | null;
+  tranches: AutoAddTranche[];
+};
+
 export type AutomationPosition = {
   id?: string;
   symbol: string;
@@ -16,6 +44,10 @@ export type AutomationPosition = {
   liquidation_price?: number | null;
   margin?: number;
   leverage?: number;
+  opened_at?: string | null;
+  stop_loss?: number | null;
+  take_profit?: number | null;
+  auto_add?: AutoAddPosition | null;
 };
 
 export type AutomationTrade = {

@@ -22,6 +22,7 @@ from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.position_origin.dependencies import get_position_origin_service
 from app.application.telegram.dependencies import get_telegram_notification_service
 from app.application.pending_entry.dependencies import get_pending_entry_service
+from app.application.auto_add.dependencies import get_auto_add_service
 from app.infrastructure.bus.outbox_repository import OutboxRepository
 from app.infrastructure.crypto.cipher import get_credentials_cipher
 from app.infrastructure.db import get_sessionmaker
@@ -138,4 +139,6 @@ def get_order_queue_worker() -> OrderQueueWorker:
         portfolio_service=get_portfolio_service(),
         position_origin_service=get_position_origin_service(),
         pending_entry_service=get_pending_entry_service(),
+        auto_add_service=get_auto_add_service(),
+        automation_config_service=get_automation_config_service(),
     )

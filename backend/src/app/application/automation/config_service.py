@@ -17,6 +17,18 @@ DEFAULT_PENDING_ENTRY_TIMEOUT_SECONDS = 900
 MIN_MAX_POSITIONS = 1
 MAX_MAX_POSITIONS = 10
 DEFAULT_MAX_POSITIONS = 3
+MIN_AUTO_ADD_TRIGGER_ATR_MULTIPLE = 0.25
+MAX_AUTO_ADD_TRIGGER_ATR_MULTIPLE = 3.0
+DEFAULT_AUTO_ADD_TRIGGER_ATR_MULTIPLE = 1.0
+MIN_AUTO_ADD_TRANCHE_MARGIN_PCT = 0.10
+MAX_AUTO_ADD_TRANCHE_MARGIN_PCT = 1.0
+DEFAULT_AUTO_ADD_TRANCHE_MARGIN_PCT = 0.80
+MIN_AUTO_ADD_MAX_TRANCHES = 1
+MAX_AUTO_ADD_MAX_TRANCHES = 5
+DEFAULT_AUTO_ADD_MAX_TRANCHES = 3
+MIN_AUTO_ADD_PROTECTED_STOP_ROE = 0.0
+MAX_AUTO_ADD_PROTECTED_STOP_ROE = 0.02
+DEFAULT_AUTO_ADD_PROTECTED_STOP_ROE = 0.002
 CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 
@@ -40,6 +52,11 @@ class AutomationConfigService:
         max_positions: int,
         provider: Optional[str],
         model: Optional[str],
+        auto_add_enabled: bool = False,
+        auto_add_trigger_atr_multiple: float = DEFAULT_AUTO_ADD_TRIGGER_ATR_MULTIPLE,
+        auto_add_tranche_margin_pct: float = DEFAULT_AUTO_ADD_TRANCHE_MARGIN_PCT,
+        auto_add_max_tranches: int = DEFAULT_AUTO_ADD_MAX_TRANCHES,
+        auto_add_protected_stop_roe: float = DEFAULT_AUTO_ADD_PROTECTED_STOP_ROE,
         reasoning_effort: Optional[str] = None,
         include_entry_timing_15m_chart: bool = False,
         use_all_monitored_interval_charts: bool = False,
@@ -54,6 +71,11 @@ class AutomationConfigService:
             max_positions=max_positions,
             provider=provider,
             model=model,
+            auto_add_enabled=auto_add_enabled,
+            auto_add_trigger_atr_multiple=auto_add_trigger_atr_multiple,
+            auto_add_tranche_margin_pct=auto_add_tranche_margin_pct,
+            auto_add_max_tranches=auto_add_max_tranches,
+            auto_add_protected_stop_roe=auto_add_protected_stop_roe,
             reasoning_effort=reasoning_effort,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
             use_all_monitored_interval_charts=use_all_monitored_interval_charts,
@@ -72,6 +94,11 @@ class AutomationConfigService:
             max_positions=DEFAULT_MAX_POSITIONS,
             provider=None,
             model=None,
+            auto_add_enabled=False,
+            auto_add_trigger_atr_multiple=DEFAULT_AUTO_ADD_TRIGGER_ATR_MULTIPLE,
+            auto_add_tranche_margin_pct=DEFAULT_AUTO_ADD_TRANCHE_MARGIN_PCT,
+            auto_add_max_tranches=DEFAULT_AUTO_ADD_MAX_TRANCHES,
+            auto_add_protected_stop_roe=DEFAULT_AUTO_ADD_PROTECTED_STOP_ROE,
             reasoning_effort=None,
             include_entry_timing_15m_chart=False,
             use_all_monitored_interval_charts=False,
@@ -94,6 +121,31 @@ class AutomationConfigService:
             config.max_positions,
             DEFAULT_MAX_POSITIONS,
         )
+        auto_add_enabled = _normalize_bool(config.auto_add_enabled)
+        auto_add_trigger_atr_multiple = _normalize_float_range(
+            config.auto_add_trigger_atr_multiple,
+            DEFAULT_AUTO_ADD_TRIGGER_ATR_MULTIPLE,
+            min_value=MIN_AUTO_ADD_TRIGGER_ATR_MULTIPLE,
+            max_value=MAX_AUTO_ADD_TRIGGER_ATR_MULTIPLE,
+        )
+        auto_add_tranche_margin_pct = _normalize_float_range(
+            config.auto_add_tranche_margin_pct,
+            DEFAULT_AUTO_ADD_TRANCHE_MARGIN_PCT,
+            min_value=MIN_AUTO_ADD_TRANCHE_MARGIN_PCT,
+            max_value=MAX_AUTO_ADD_TRANCHE_MARGIN_PCT,
+        )
+        auto_add_max_tranches = _normalize_int_range(
+            config.auto_add_max_tranches,
+            DEFAULT_AUTO_ADD_MAX_TRANCHES,
+            min_value=MIN_AUTO_ADD_MAX_TRANCHES,
+            max_value=MAX_AUTO_ADD_MAX_TRANCHES,
+        )
+        auto_add_protected_stop_roe = _normalize_float_range(
+            config.auto_add_protected_stop_roe,
+            DEFAULT_AUTO_ADD_PROTECTED_STOP_ROE,
+            min_value=MIN_AUTO_ADD_PROTECTED_STOP_ROE,
+            max_value=MAX_AUTO_ADD_PROTECTED_STOP_ROE,
+        )
         include_entry_timing_15m_chart = _normalize_bool(config.include_entry_timing_15m_chart)
         use_all_monitored_interval_charts = _normalize_bool(config.use_all_monitored_interval_charts)
         reverse_order_enabled = _normalize_bool(config.reverse_order_enabled)
@@ -107,6 +159,11 @@ class AutomationConfigService:
             max_positions=max_positions,
             provider=provider or None,
             model=model or None,
+            auto_add_enabled=auto_add_enabled,
+            auto_add_trigger_atr_multiple=auto_add_trigger_atr_multiple,
+            auto_add_tranche_margin_pct=auto_add_tranche_margin_pct,
+            auto_add_max_tranches=auto_add_max_tranches,
+            auto_add_protected_stop_roe=auto_add_protected_stop_roe,
             reasoning_effort=reasoning_effort,
             include_entry_timing_15m_chart=include_entry_timing_15m_chart,
             use_all_monitored_interval_charts=use_all_monitored_interval_charts,
@@ -148,6 +205,36 @@ def _normalize_max_positions(value: int, default: int) -> int:
         return MIN_MAX_POSITIONS
     if parsed > MAX_MAX_POSITIONS:
         return MAX_MAX_POSITIONS
+    return parsed
+
+
+def _normalize_int_range(value: int, default: int, *, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < min_value:
+        return min_value
+    if parsed > max_value:
+        return max_value
+    return parsed
+
+
+def _normalize_float_range(
+    value: float,
+    default: float,
+    *,
+    min_value: float,
+    max_value: float,
+) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < min_value:
+        return min_value
+    if parsed > max_value:
+        return max_value
     return parsed
 
 

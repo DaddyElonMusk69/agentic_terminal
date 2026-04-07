@@ -4,6 +4,8 @@ from app.domain.position_origin.interfaces import ActivePositionOriginRepository
 from app.domain.position_origin.models import ActivePositionOriginRecord
 from app.domain.position_origin.symbols import normalize_position_origin_symbol
 
+_UNSET = object()
+
 
 class PositionOriginService:
     def __init__(self, repository: ActivePositionOriginRepository) -> None:
@@ -13,17 +15,40 @@ class PositionOriginService:
         self,
         account_id: str,
         symbol: Any,
-        anchor_frame: Any,
-        active_tunnel: Any,
+        anchor_frame: Any = _UNSET,
+        active_tunnel: Any = _UNSET,
+        *,
+        stop_loss_roe: Any = _UNSET,
+        take_profit_roe: Any = _UNSET,
     ) -> ActivePositionOriginRecord | None:
         normalized_account_id = str(account_id or "").strip()
         normalized_symbol = normalize_position_origin_symbol(symbol)
         if not normalized_account_id or not normalized_symbol:
             return None
 
-        normalized_anchor = _normalize_anchor_frame(anchor_frame)
-        normalized_tunnel = _normalize_active_tunnel(active_tunnel)
-        if normalized_anchor is None and normalized_tunnel is None:
+        existing = await self.get_one(normalized_account_id, normalized_symbol)
+
+        normalized_anchor = (
+            existing.anchor_frame if anchor_frame is _UNSET else _normalize_anchor_frame(anchor_frame)
+        )
+        normalized_tunnel = (
+            existing.active_tunnel if active_tunnel is _UNSET else _normalize_active_tunnel(active_tunnel)
+        )
+        normalized_stop_loss_roe = (
+            existing.stop_loss_roe if stop_loss_roe is _UNSET else _normalize_optional_float(stop_loss_roe)
+        )
+        normalized_take_profit_roe = (
+            existing.take_profit_roe
+            if take_profit_roe is _UNSET
+            else _normalize_optional_float(take_profit_roe)
+        )
+
+        if (
+            normalized_anchor is None
+            and normalized_tunnel is None
+            and normalized_stop_loss_roe is None
+            and normalized_take_profit_roe is None
+        ):
             await self._repository.delete(normalized_account_id, normalized_symbol)
             return None
 
@@ -32,7 +57,23 @@ class PositionOriginService:
             symbol=normalized_symbol,
             anchor_frame=normalized_anchor,
             active_tunnel=normalized_tunnel,
+            stop_loss_roe=normalized_stop_loss_roe,
+            take_profit_roe=normalized_take_profit_roe,
         )
+
+    async def get_one(
+        self,
+        account_id: str,
+        symbol: Any,
+    ) -> ActivePositionOriginRecord | None:
+        normalized_account_id = str(account_id or "").strip()
+        normalized_symbol = normalize_position_origin_symbol(symbol)
+        if not normalized_account_id or not normalized_symbol:
+            return None
+        rows = await self._repository.get_many(normalized_account_id, [normalized_symbol])
+        if not rows:
+            return None
+        return rows[0]
 
     async def get_many(
         self,
@@ -101,3 +142,13 @@ def _normalize_active_tunnel(value: Any) -> str | None:
         return None
     candidate = str(value).strip()
     return candidate or None
+
+
+def _normalize_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized

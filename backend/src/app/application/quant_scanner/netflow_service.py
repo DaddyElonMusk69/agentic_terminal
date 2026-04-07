@@ -15,15 +15,22 @@ class NetflowService:
         self,
         client: Optional[NofXOSClient] = None,
         api_key_provider: Optional[ApiKeyProvider] = None,
+        enabled: bool = True,
     ) -> None:
         self._client = client or NofXOSClient()
         self._api_key_provider = api_key_provider
         self._api_key_checked = False
+        self._enabled = bool(enabled)
+
+    def is_enabled(self) -> bool:
+        return self._enabled
 
     def is_configured(self) -> bool:
         return self._client.is_configured()
 
     async def fetch_raw(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if not self.is_enabled():
+            return None
         await self._ensure_api_key()
         if not self.is_configured():
             return None
@@ -44,6 +51,8 @@ class NetflowService:
     def build_metrics(
         self, raw_data: Optional[Dict[str, Any]], timeframe: str
     ) -> Optional[NetflowMetrics]:
+        if not self.is_enabled():
+            return None
         if not raw_data:
             return None
         resolved = _resolve_timeframe(raw_data, timeframe)

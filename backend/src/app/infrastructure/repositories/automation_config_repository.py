@@ -41,6 +41,11 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             model.quant_interval_seconds = config.quant_interval_seconds
             model.pending_entry_timeout_seconds = config.pending_entry_timeout_seconds
             model.max_positions = config.max_positions
+            model.auto_add_enabled = bool(config.auto_add_enabled)
+            model.auto_add_trigger_atr_multiple = config.auto_add_trigger_atr_multiple
+            model.auto_add_tranche_margin_pct = config.auto_add_tranche_margin_pct
+            model.auto_add_max_tranches = config.auto_add_max_tranches
+            model.auto_add_protected_stop_roe = config.auto_add_protected_stop_roe
             model.provider = config.provider
             model.model = config.model
             model.reasoning_effort = config.reasoning_effort
@@ -62,6 +67,11 @@ class SqlAutomationConfigRepository(AutomationConfigRepository):
             max_positions=model.max_positions,
             provider=model.provider,
             model=model.model,
+            auto_add_enabled=bool(model.auto_add_enabled),
+            auto_add_trigger_atr_multiple=model.auto_add_trigger_atr_multiple,
+            auto_add_tranche_margin_pct=model.auto_add_tranche_margin_pct,
+            auto_add_max_tranches=model.auto_add_max_tranches,
+            auto_add_protected_stop_roe=model.auto_add_protected_stop_roe,
             reasoning_effort=model.reasoning_effort,
             include_entry_timing_15m_chart=bool(model.include_entry_timing_15m_chart),
             use_all_monitored_interval_charts=bool(model.use_all_monitored_interval_charts),

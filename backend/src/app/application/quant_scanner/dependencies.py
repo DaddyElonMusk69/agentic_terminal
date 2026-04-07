@@ -25,7 +25,10 @@ def get_quant_scanner_service() -> QuantScannerService:
         config = await dynamic_assets.get_config()
         return config.api_key
 
-    netflow_service = NetflowService(api_key_provider=_resolve_nofxos_key)
+    netflow_service = NetflowService(
+        api_key_provider=_resolve_nofxos_key,
+        enabled=False,
+    )
     return QuantScannerService(
         cache=QuantDataCache(),
         netflow_service=netflow_service,

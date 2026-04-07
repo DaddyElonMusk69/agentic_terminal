@@ -206,14 +206,22 @@ class QuantScannerService:
                     "warning",
                 )
 
-            await _raise_if_cancelled(cancel_check)
-            raw_netflow = await self._netflow_service.fetch_raw(symbol)
-            await _raise_if_cancelled(cancel_check)
-            if raw_netflow is None and not self._netflow_service.is_configured():
+            netflow_enabled = self._netflow_service.is_enabled()
+            if netflow_enabled:
+                await _raise_if_cancelled(cancel_check)
+                raw_netflow = await self._netflow_service.fetch_raw(symbol)
+                await _raise_if_cancelled(cancel_check)
+                if raw_netflow is None and not self._netflow_service.is_configured():
+                    await _emit_log(
+                        log_callback,
+                        "  netflow: missing NofXOS API key",
+                        "warning",
+                    )
+            else:
                 await _emit_log(
                     log_callback,
-                    "  netflow: missing NofXOS API key",
-                    "warning",
+                    "  netflow: disabled (NofXOS deprecated)",
+                    "info",
                 )
 
             for timeframe in config.timeframes:
@@ -391,10 +399,10 @@ class QuantScannerService:
 
                 netflow = (
                     self._netflow_service.build_metrics(raw_netflow, timeframe)
-                    if raw_netflow
+                    if raw_netflow and netflow_enabled
                     else None
                 )
-                if netflow:
+                if netflow_enabled and netflow:
                     if netflow.timeframe != timeframe:
                         await _emit_log(
                             log_callback,
@@ -413,7 +421,7 @@ class QuantScannerService:
                         ),
                         "info",
                     )
-                else:
+                elif netflow_enabled:
                     await _emit_log(
                         log_callback,
                         "  netflow: unavailable",

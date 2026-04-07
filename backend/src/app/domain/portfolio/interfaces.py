@@ -64,7 +64,12 @@ class ExchangeConnector(Protocol):
     async def fetch_positions(self) -> List[Position]:
         ...
 
-    async def fetch_open_orders(self, symbols: Optional[List[str]] = None) -> List[dict]:
+    async def fetch_open_orders(
+        self,
+        symbols: Optional[List[str]] = None,
+        *,
+        include_conditional_orders: bool = True,
+    ) -> List[dict]:
         ...
 
     async def fetch_order(self, order_id: str, symbol: str) -> Optional[dict]:

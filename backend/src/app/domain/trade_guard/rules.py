@@ -754,7 +754,7 @@ class StopLossROEModifier(ModifierRule):
 
     @property
     def description(self) -> str:
-        return f"Sets initial stop_loss from configured sl_min_roe ({self._min_roe*100:.0f}%)"
+        return "Uses model initial stop_loss price when provided, translated to ROE and clamped to configured bounds"
 
     def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
         if decision.action not in self.OPEN_ACTIONS:
@@ -764,20 +764,47 @@ class StopLossROEModifier(ModifierRule):
         if leverage <= 0:
             leverage = 1
 
-        current_price = context.get_current_price(decision.symbol)
-        if current_price is None or current_price <= 0:
-            return self._no_change(decision, f"Could not fetch price for {decision.symbol}")
+        reference_price = _resolve_initial_entry_reference_price(decision, context)
+        if reference_price is None or reference_price <= 0:
+            return self._no_change(decision, f"Could not resolve initial entry reference price for {decision.symbol}")
 
-        target_roe = self._min_roe if self._min_roe > 0 else DEFAULT_TRADE_GUARD_CONFIG.sl_min_roe
+        fallback_roe = self._min_roe if self._min_roe > 0 else DEFAULT_TRADE_GUARD_CONFIG.sl_min_roe
+        requested_price = _safe_float(decision.stop_loss)
+        requested_roe = _safe_float(decision.stop_loss_roe)
+        derived_roe = None
+        target_roe = _clamp_initial_roe(
+            (
+                _calculate_stop_loss_roe_from_price(
+                    stop_price=requested_price,
+                    entry_price=reference_price,
+                    leverage=leverage,
+                    direction=_open_direction(decision.action),
+                )
+                if requested_price is not None
+                else requested_roe
+            ),
+            min_roe=fallback_roe,
+            max_roe=self._max_roe,
+            fallback_roe=fallback_roe,
+        )
         original_sl = decision.stop_loss
         original_sl_roe = decision.stop_loss_roe
         is_long = decision.action in self.LONG_ACTIONS
         direction = "LONG" if is_long else "SHORT"
+        direction_lower = "long" if is_long else "short"
+
+        if requested_price is not None:
+            derived_roe = _calculate_stop_loss_roe_from_price(
+                stop_price=requested_price,
+                entry_price=reference_price,
+                leverage=leverage,
+                direction=direction_lower,
+            )
 
         if is_long:
-            calculated_sl = current_price * (1 - (target_roe / leverage))
+            calculated_sl = reference_price * (1 - (target_roe / leverage))
         else:
-            calculated_sl = current_price * (1 + (target_roe / leverage))
+            calculated_sl = reference_price * (1 + (target_roe / leverage))
 
         calculated_sl = float(f"{calculated_sl:.5g}")
         new_decision = replace(
@@ -785,10 +812,35 @@ class StopLossROEModifier(ModifierRule):
             stop_loss=calculated_sl,
             stop_loss_roe=target_roe,
         )
-        reason = (
-            f"{direction} initial SL set from config: {calculated_sl:.5g} "
-            f"(price: {current_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
-        )
+        if requested_price is not None:
+            if derived_roe is not None and _same_float(derived_roe, target_roe) and _same_float(requested_price, calculated_sl):
+                reason = (
+                    f"{direction} initial SL honored from model price {requested_price:.5g} "
+                    f"(ref: {reference_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+                )
+            else:
+                requested_roe_label = f"{abs(derived_roe) * 100:.1f}%" if derived_roe is not None else "unknown"
+                reason = (
+                    f"{direction} initial SL clamped from model price {requested_price:.5g} "
+                    f"(implied ROE: {requested_roe_label}) to {calculated_sl:.5g} "
+                    f"(ROE: {target_roe*100:.1f}%, ref: {reference_price}, lev: {leverage}x)"
+                )
+        elif requested_roe is None:
+            reason = (
+                f"{direction} initial SL set from default config: {calculated_sl:.5g} "
+                f"(price: {reference_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+            )
+        elif _same_float(requested_roe, target_roe):
+            reason = (
+                f"{direction} initial SL honored from model: {calculated_sl:.5g} "
+                f"(price: {reference_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+            )
+        else:
+            reason = (
+                f"{direction} initial SL clamped from model {requested_roe*100:.1f}% "
+                f"to {target_roe*100:.1f}%: {calculated_sl:.5g} "
+                f"(price: {reference_price}, lev: {leverage}x)"
+            )
         if _same_float(original_sl, calculated_sl) and _same_float(original_sl_roe, target_roe):
             return self._no_change(new_decision, reason)
 
@@ -816,7 +868,7 @@ class TakeProfitROEModifier(ModifierRule):
 
     @property
     def description(self) -> str:
-        return "Sets initial take_profit from configured tp_min_roe"
+        return "Uses model initial take_profit price when provided, translated to ROE and clamped to configured bounds"
 
     def modify(self, decision: ExecutionIdea, context: GuardContext) -> tuple:
         if decision.action not in self.OPEN_ACTIONS:
@@ -826,17 +878,47 @@ class TakeProfitROEModifier(ModifierRule):
         if leverage <= 0:
             leverage = 1
 
-        current_price = context.get_current_price(decision.symbol)
-        if current_price is None or current_price <= 0:
-            return self._no_change(decision, f"Could not fetch price for {decision.symbol}")
+        reference_price = _resolve_initial_entry_reference_price(decision, context)
+        if reference_price is None or reference_price <= 0:
+            return self._no_change(decision, f"Could not resolve initial entry reference price for {decision.symbol}")
 
         original_tp = decision.take_profit
         original_tp_roe = decision.take_profit_roe
         configured_min_roe = self._min_roe if self._min_roe > 0 else None
+        requested_price = _safe_float(decision.take_profit)
+        requested_roe = _safe_float(decision.take_profit_roe)
         direction = "LONG" if decision.action in self.LONG_ACTIONS else "SHORT"
         is_long = decision.action in self.LONG_ACTIONS
+        direction_lower = "long" if is_long else "short"
 
-        if configured_min_roe is None:
+        if configured_min_roe is None and requested_roe is None and requested_price is None:
+            cleared_decision = replace(decision, take_profit=None, take_profit_roe=None)
+            reason = "Initial TP disabled by config"
+            if original_tp is None and original_tp_roe is None:
+                return self._no_change(cleared_decision, reason)
+            return self._modified(
+                cleared_decision,
+                field_name="initial_take_profit",
+                original_value={"take_profit": original_tp, "take_profit_roe": original_tp_roe},
+                new_value={"take_profit": None, "take_profit_roe": None},
+                reason=reason,
+            )
+
+        derived_roe = None
+        if requested_price is not None:
+            derived_roe = _calculate_take_profit_roe_from_price(
+                target_price=requested_price,
+                entry_price=reference_price,
+                leverage=leverage,
+                direction=direction_lower,
+            )
+        target_roe = _clamp_initial_roe(
+            derived_roe if requested_price is not None else requested_roe,
+            min_roe=(configured_min_roe or 0.0),
+            max_roe=self._max_roe,
+            fallback_roe=configured_min_roe,
+        )
+        if target_roe is None:
             cleared_decision = replace(decision, take_profit=None, take_profit_roe=None)
             reason = "Initial TP disabled by config"
             if original_tp is None and original_tp_roe is None:
@@ -850,29 +932,54 @@ class TakeProfitROEModifier(ModifierRule):
             )
 
         if is_long:
-            calculated_tp = current_price * (1 + (configured_min_roe / leverage))
+            calculated_tp = reference_price * (1 + (target_roe / leverage))
         else:
-            calculated_tp = current_price * (1 - (configured_min_roe / leverage))
+            calculated_tp = reference_price * (1 - (target_roe / leverage))
 
         calculated_tp = float(f"{calculated_tp:.5g}")
         new_decision = replace(
             decision,
             take_profit=calculated_tp,
-            take_profit_roe=configured_min_roe,
+            take_profit_roe=target_roe,
         )
-        reason = (
-            f"{direction} initial TP set from config: {calculated_tp:.5g} "
-            f"(price: {current_price}, ROE: {configured_min_roe*100:.1f}%, lev: {leverage}x)"
-        )
+        if requested_price is not None:
+            if derived_roe is not None and _same_float(derived_roe, target_roe) and _same_float(requested_price, calculated_tp):
+                reason = (
+                    f"{direction} initial TP honored from model price {requested_price:.5g} "
+                    f"(ref: {reference_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+                )
+            else:
+                requested_roe_label = f"{abs(derived_roe) * 100:.1f}%" if derived_roe is not None else "unknown"
+                reason = (
+                    f"{direction} initial TP clamped from model price {requested_price:.5g} "
+                    f"(implied ROE: {requested_roe_label}) to {calculated_tp:.5g} "
+                    f"(ROE: {target_roe*100:.1f}%, ref: {reference_price}, lev: {leverage}x)"
+                )
+        elif requested_roe is None:
+            reason = (
+                f"{direction} initial TP set from default config: {calculated_tp:.5g} "
+                f"(price: {reference_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+            )
+        elif _same_float(requested_roe, target_roe):
+            reason = (
+                f"{direction} initial TP honored from model: {calculated_tp:.5g} "
+                f"(price: {reference_price}, ROE: {target_roe*100:.1f}%, lev: {leverage}x)"
+            )
+        else:
+            reason = (
+                f"{direction} initial TP clamped from model {requested_roe*100:.1f}% "
+                f"to {target_roe*100:.1f}%: {calculated_tp:.5g} "
+                f"(price: {reference_price}, lev: {leverage}x)"
+            )
 
-        if _same_float(original_tp, calculated_tp) and _same_float(original_tp_roe, configured_min_roe):
+        if _same_float(original_tp, calculated_tp) and _same_float(original_tp_roe, target_roe):
             return self._no_change(new_decision, reason)
 
         return self._modified(
             new_decision,
             field_name="initial_take_profit",
             original_value={"take_profit": original_tp, "take_profit_roe": original_tp_roe},
-            new_value={"take_profit": calculated_tp, "take_profit_roe": configured_min_roe},
+            new_value={"take_profit": calculated_tp, "take_profit_roe": target_roe},
             reason=reason,
         )
 
@@ -1364,6 +1471,40 @@ def _calculate_take_profit_roe_from_price(
     return (entry_price - target_price) / entry_price * leverage
 
 
+def _calculate_stop_loss_roe_from_price(
+    *,
+    stop_price: float,
+    entry_price: float,
+    leverage: float,
+    direction: str,
+) -> Optional[float]:
+    if leverage <= 0 or entry_price <= 0 or stop_price <= 0 or direction not in ("long", "short"):
+        return None
+    if direction == "long":
+        return (entry_price - stop_price) / entry_price * leverage
+    return (stop_price - entry_price) / entry_price * leverage
+
+
+def _resolve_initial_entry_reference_price(
+    decision: ExecutionIdea,
+    context: GuardContext,
+) -> Optional[float]:
+    if decision.action in (ExecutionAction.OPEN_LONG_LIMIT, ExecutionAction.OPEN_SHORT_LIMIT):
+        limit_price = _safe_float(decision.limit_price)
+        if limit_price is not None and limit_price > 0:
+            return limit_price
+    current_price = context.get_current_price(decision.symbol)
+    if current_price is None or current_price <= 0:
+        return None
+    return current_price
+
+
+def _open_direction(action: ExecutionAction) -> str:
+    if action in (ExecutionAction.OPEN_LONG, ExecutionAction.OPEN_LONG_LIMIT):
+        return "long"
+    return "short"
+
+
 def _extract_stop_prices(orders: list, symbol: str) -> List[float]:
     prices: List[float] = []
     target = _normalize_symbol(symbol)
@@ -1521,6 +1662,28 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _clamp_initial_roe(
+    requested_roe: float | None,
+    *,
+    min_roe: float,
+    max_roe: float | None,
+    fallback_roe: float | None,
+) -> float | None:
+    target = fallback_roe if requested_roe is None else requested_roe
+    if target is None:
+        return None
+    target = abs(float(target))
+    lower_bound = max(0.0, float(min_roe or 0.0))
+    upper_bound = None if max_roe is None or max_roe <= 0 else float(max_roe)
+    if upper_bound is not None and upper_bound < lower_bound:
+        upper_bound = lower_bound
+    if target < lower_bound:
+        target = lower_bound
+    if upper_bound is not None and target > upper_bound:
+        target = upper_bound
+    return target
 
 
 def _same_float(left: Any, right: Any, tolerance: float = 1e-9) -> bool:

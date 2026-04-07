@@ -43,6 +43,11 @@ class AutomationRuntimeConfig:
     quant_interval_seconds: int = 60
     pending_entry_timeout_seconds: int = 900
     max_positions: int = 3
+    auto_add_enabled: bool = False
+    auto_add_trigger_atr_multiple: float = 1.0
+    auto_add_tranche_margin_pct: float = 0.80
+    auto_add_max_tranches: int = 3
+    auto_add_protected_stop_roe: float = 0.002
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -122,6 +127,11 @@ class AutomationRuntime:
             "quant_interval_seconds": self._config.quant_interval_seconds,
             "pending_entry_timeout_seconds": self._config.pending_entry_timeout_seconds,
             "max_positions": self._config.max_positions,
+            "auto_add_enabled": self._config.auto_add_enabled,
+            "auto_add_trigger_atr_multiple": self._config.auto_add_trigger_atr_multiple,
+            "auto_add_tranche_margin_pct": self._config.auto_add_tranche_margin_pct,
+            "auto_add_max_tranches": self._config.auto_add_max_tranches,
+            "auto_add_protected_stop_roe": self._config.auto_add_protected_stop_roe,
             "provider": self._config.provider,
             "model": self._config.model,
             "reasoning_effort": self._config.reasoning_effort,
@@ -239,6 +249,11 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
         quant_interval_seconds=max(1, int(config.quant_interval_seconds)),
         pending_entry_timeout_seconds=max(300, min(3600, int(config.pending_entry_timeout_seconds))),
         max_positions=max(1, min(10, int(config.max_positions))),
+        auto_add_enabled=bool(config.auto_add_enabled),
+        auto_add_trigger_atr_multiple=max(0.25, min(3.0, float(config.auto_add_trigger_atr_multiple))),
+        auto_add_tranche_margin_pct=max(0.10, min(1.0, float(config.auto_add_tranche_margin_pct))),
+        auto_add_max_tranches=max(1, min(5, int(config.auto_add_max_tranches))),
+        auto_add_protected_stop_roe=max(0.0, min(0.02, float(config.auto_add_protected_stop_roe))),
         provider=provider or None,
         model=model or None,
         reasoning_effort=reasoning_effort or None,

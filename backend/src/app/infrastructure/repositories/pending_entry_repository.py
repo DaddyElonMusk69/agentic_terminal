@@ -49,6 +49,8 @@ class SqlPendingEntryRepository(PendingEntryRepository):
             model.filled_quantity = record.filled_quantity
             model.leverage = record.leverage
             model.time_in_force = record.time_in_force
+            model.stop_loss = record.stop_loss
+            model.take_profit = record.take_profit
             model.stop_loss_roe = record.stop_loss_roe
             model.take_profit_roe = record.take_profit_roe
             model.anchor_frame = record.anchor_frame
@@ -155,6 +157,8 @@ def _to_model(record: PendingEntryRecord) -> PendingEntryOrderModel:
         filled_quantity=record.filled_quantity,
         leverage=record.leverage,
         time_in_force=record.time_in_force,
+        stop_loss=record.stop_loss,
+        take_profit=record.take_profit,
         stop_loss_roe=record.stop_loss_roe,
         take_profit_roe=record.take_profit_roe,
         anchor_frame=record.anchor_frame,
@@ -184,6 +188,8 @@ def _to_record(model: PendingEntryOrderModel) -> PendingEntryRecord:
         filled_quantity=model.filled_quantity,
         leverage=model.leverage,
         time_in_force=model.time_in_force,
+        stop_loss=model.stop_loss,
+        take_profit=model.take_profit,
         stop_loss_roe=model.stop_loss_roe,
         take_profit_roe=model.take_profit_roe,
         anchor_frame=model.anchor_frame,

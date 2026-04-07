@@ -239,6 +239,45 @@ class CCXTTradeExecutor:
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
 
+    async def place_open_stop_market(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size_usd: float,
+        trigger_price: float,
+        leverage: int,
+    ) -> ExecutionResult:
+        if size_usd <= 0:
+            return ExecutionResult(success=False, status="invalid", error="size_usd required")
+        if trigger_price <= 0:
+            return ExecutionResult(success=False, status="invalid", error="trigger_price required")
+
+        try:
+            symbol = self._normalize_symbol(symbol)
+            await self._set_margin_mode(symbol)
+            await self._client.set_leverage(leverage, symbol)
+            amount = size_usd / trigger_price
+            hedge_side = "LONG" if side == "buy" else "SHORT"
+            order = await self._create_order_with_reduce_only_fallback(
+                symbol=symbol,
+                type="stop_market",
+                side=side,
+                amount=amount,
+                params={"stopPrice": trigger_price},
+                hedge_position_side=hedge_side,
+            )
+            order_id = str(order.get("id") or order.get("orderId") or order.get("algoId") or "")
+            return ExecutionResult(
+                success=True,
+                status="resting",
+                order_id=order_id,
+                filled_size=float(order.get("filled") or 0) if order.get("filled") else None,
+                raw_response=order,
+            )
+        except Exception as exc:
+            return ExecutionResult(success=False, status="error", error=str(exc))
+
     async def _close_position(self, symbol: str) -> ExecutionResult:
         try:
             positions = await self._client.fetch_positions([symbol])
@@ -375,7 +414,6 @@ class CCXTTradeExecutor:
             symbol=symbol,
             position=position,
             side=position_result.side,
-            amount=position_result.amount,
             order_type=order_type,
             trigger_price=trigger_price,
             success_status=success_status,
@@ -390,7 +428,6 @@ class CCXTTradeExecutor:
             symbol=symbol,
             position=position,
             side=position_result.side,
-            amount=position_result.amount,
             order_type=previous_order.order_type or order_type,
             trigger_price=previous_order.trigger_price,
             success_status=success_status,
@@ -431,7 +468,6 @@ class CCXTTradeExecutor:
         symbol: str,
         position: Dict[str, Any],
         side: str,
-        amount: float,
         order_type: str,
         trigger_price: float,
         success_status: str,
@@ -441,8 +477,10 @@ class CCXTTradeExecutor:
                 symbol=symbol,
                 type=order_type,
                 side=side,
-                amount=amount,
-                params=self._reduce_only_params(position, {"stopPrice": trigger_price}),
+                amount=None,
+                price=None,
+                params=self._close_position_trigger_params(position, {"stopPrice": trigger_price}),
+                hedge_position_side=self._resolve_binance_position_side(position),
             )
         except Exception as exc:
             return ExecutionResult(success=False, status="error", error=str(exc))
@@ -761,6 +799,20 @@ class CCXTTradeExecutor:
                 params["positionSide"] = position_side
         return params
 
+    def _close_position_trigger_params(
+        self,
+        position: Dict[str, Any],
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"closePosition": True}
+        if extra:
+            params.update(extra)
+        if (self._config.exchange_id or "").lower() == "binance":
+            position_side = self._resolve_binance_position_side(position)
+            if position_side:
+                params["positionSide"] = position_side
+        return params
+
     async def _create_order_with_reduce_only_fallback(self, **kwargs: Any) -> Dict[str, Any]:
         hedge_position_side = kwargs.pop("hedge_position_side", None)
         params = dict(kwargs.get("params") or {})
@@ -816,14 +868,14 @@ class CCXTTradeExecutor:
         reference_price = _resolve_bracket_reference_price(result, decision)
 
         if direction and leverage > 0 and reference_price and reference_price > 0:
-            if decision.stop_loss_roe is not None:
+            if stop_loss_price is None and decision.stop_loss_roe is not None:
                 stop_loss_price = _calculate_initial_stop_loss_from_roe(
                     risk_roe=decision.stop_loss_roe,
                     entry_price=reference_price,
                     leverage=leverage,
                     direction=direction,
                 )
-            if decision.take_profit_roe is not None and decision.take_profit_roe > 0:
+            if take_profit_price is None and decision.take_profit_roe is not None and decision.take_profit_roe > 0:
                 take_profit_price = _calculate_take_profit_from_roe(
                     target_roe=decision.take_profit_roe,
                     entry_price=reference_price,

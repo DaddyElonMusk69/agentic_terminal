@@ -12,11 +12,13 @@ from app.application.automation.dependencies import (
     get_automation_config_service,
     get_automation_history_service,
 )
+from app.application.auto_add.dependencies import get_auto_add_service
 from app.application.pending_entry.dependencies import get_pending_entry_service
 from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.trade_executor.dependencies import get_trade_executor_service
 from app.application.bus.outbox_service import OutboxService
 from app.common.api import ApiMeta
+from app.domain.auto_add.models import AutoAddStatus
 from app.domain.llm_response_worker.models import ExecutionAction, ExecutionIdea
 from app.infrastructure.bus.outbox_repository import OutboxRepository
 from app.infrastructure.db import get_sessionmaker
@@ -34,6 +36,11 @@ class AutomationStartRequest(BaseModel):
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
     max_positions: int = Field(3, ge=1, le=10)
+    auto_add_enabled: bool = False
+    auto_add_trigger_atr_multiple: float = Field(1.0, ge=0.25, le=3.0)
+    auto_add_tranche_margin_pct: float = Field(0.80, ge=0.10, le=1.0)
+    auto_add_max_tranches: int = Field(3, ge=1, le=5)
+    auto_add_protected_stop_roe: float = Field(0.002, ge=0.0, le=0.02)
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -51,6 +58,11 @@ class AutomationStateResponse(BaseModel):
     quant_interval_seconds: int
     pending_entry_timeout_seconds: int
     max_positions: int
+    auto_add_enabled: bool = False
+    auto_add_trigger_atr_multiple: float = 1.0
+    auto_add_tranche_margin_pct: float = 0.80
+    auto_add_max_tranches: int = 3
+    auto_add_protected_stop_roe: float = 0.002
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -77,6 +89,11 @@ class AutomationConfigPayload(BaseModel):
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
     pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
     max_positions: int = Field(3, ge=1, le=10)
+    auto_add_enabled: bool = False
+    auto_add_trigger_atr_multiple: float = Field(1.0, ge=0.25, le=3.0)
+    auto_add_tranche_margin_pct: float = Field(0.80, ge=0.10, le=1.0)
+    auto_add_max_tranches: int = Field(3, ge=1, le=5)
+    auto_add_protected_stop_roe: float = Field(0.002, ge=0.0, le=0.02)
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -92,6 +109,11 @@ class AutomationConfigView(BaseModel):
     quant_interval_seconds: int
     pending_entry_timeout_seconds: int
     max_positions: int
+    auto_add_enabled: bool = False
+    auto_add_trigger_atr_multiple: float = 1.0
+    auto_add_tranche_margin_pct: float = 0.80
+    auto_add_max_tranches: int = 3
+    auto_add_protected_stop_roe: float = 0.002
     provider: Optional[str] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -245,6 +267,61 @@ class AutomationClosePositionResponse(BaseModel):
     meta: Optional[ApiMeta] = None
 
 
+class AutoAddTrancheView(BaseModel):
+    tranche_index: int
+    kind: str
+    status: Optional[str] = None
+    exchange_order_id: Optional[str] = None
+    trigger_price: Optional[float] = None
+    fill_price: Optional[float] = None
+    filled_quantity: Optional[float] = None
+    margin_used: Optional[float] = None
+    position_notional_usd: Optional[float] = None
+    fill_time: Optional[str] = None
+    atr_value: Optional[float] = None
+    trigger_basis_price: Optional[float] = None
+
+
+class AutoAddPositionView(BaseModel):
+    status: str
+    filled_add_count: int
+    max_tranches: int
+    next_trigger_basis_price: Optional[float] = None
+    next_trigger_price: Optional[float] = None
+    latest_atr_value: Optional[float] = None
+    original_risk_usd: Optional[float] = None
+    initial_margin_used: Optional[float] = None
+    protected_stop_roe: Optional[float] = None
+    last_error: Optional[str] = None
+    tranches: List[AutoAddTrancheView]
+
+
+class AutomationPositionView(BaseModel):
+    symbol: str
+    direction: Optional[str] = None
+    side: Optional[str] = None
+    size: Optional[float] = None
+    entry_price: Optional[float] = None
+    mark_price: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    liquidation_price: Optional[float] = None
+    margin: Optional[float] = None
+    leverage: Optional[float] = None
+    opened_at: Optional[str] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    auto_add: Optional[AutoAddPositionView] = None
+
+
+class AutomationPositionListPayload(BaseModel):
+    positions: List[AutomationPositionView]
+
+
+class AutomationPositionListResponse(BaseModel):
+    data: AutomationPositionListPayload
+    meta: Optional[ApiMeta] = None
+
+
 class PendingEntryView(BaseModel):
     id: str
     symbol: str
@@ -327,6 +404,60 @@ def _normalize_close_symbol(symbol: str) -> str:
         if value.endswith(suffix) and len(value) > len(suffix):
             return value[: -len(suffix)]
     return value
+
+
+def _index_orders(orders: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for order in orders or []:
+        symbol = _normalize_close_symbol(str(order.get("symbol") or _extract_order_symbol(order) or ""))
+        if not symbol:
+            continue
+        grouped.setdefault(symbol, []).append(order)
+    return grouped
+
+
+def _extract_order_symbol(order: dict) -> str | None:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    value = order.get("symbol") or info.get("symbol")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _extract_sl_tp(orders: list[dict]) -> tuple[float | None, float | None]:
+    stop_loss = None
+    take_profit = None
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        order_type = str(order.get("type") or info.get("type") or info.get("orderType") or "").lower()
+        trigger_price = _safe_float(
+            order.get("stopPrice")
+            or order.get("triggerPrice")
+            or order.get("triggerPx")
+            or info.get("stopPrice")
+            or info.get("triggerPrice")
+            or info.get("triggerPx")
+            or order.get("price")
+            or info.get("price")
+        )
+        if trigger_price is None:
+            continue
+        if "take" in order_type and take_profit is None:
+            take_profit = trigger_price
+        elif "stop" in order_type and stop_loss is None:
+            stop_loss = trigger_price
+    return stop_loss, take_profit
+
+
+def _safe_float(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_session_summary(session) -> AutomationSessionSummary:
@@ -420,6 +551,59 @@ def _to_pending_entry_view(entry) -> PendingEntryView:
     )
 
 
+def _to_auto_add_tranche_view(tranche) -> AutoAddTrancheView:
+    return AutoAddTrancheView(
+        tranche_index=tranche.tranche_index,
+        kind=tranche.kind.value,
+        status=getattr(tranche.status, "value", None),
+        exchange_order_id=getattr(tranche, "exchange_order_id", None),
+        trigger_price=getattr(tranche, "trigger_price", None),
+        fill_price=tranche.fill_price,
+        filled_quantity=tranche.filled_quantity,
+        margin_used=tranche.margin_used,
+        position_notional_usd=tranche.position_notional_usd,
+        fill_time=_format_dt(tranche.fill_time),
+        atr_value=tranche.atr_value,
+        trigger_basis_price=tranche.trigger_basis_price,
+    )
+
+
+def _to_auto_add_view(snapshot) -> AutoAddPositionView:
+    record = snapshot.record
+    return AutoAddPositionView(
+        status=record.status.value,
+        filled_add_count=record.add_count,
+        max_tranches=record.max_tranches,
+        next_trigger_basis_price=record.trigger_basis_price,
+        next_trigger_price=record.next_trigger_price,
+        latest_atr_value=record.last_atr_value,
+        original_risk_usd=record.original_risk_usd,
+        initial_margin_used=record.initial_margin_used,
+        protected_stop_roe=None,
+        last_error=record.last_error,
+        tranches=[_to_auto_add_tranche_view(tranche) for tranche in snapshot.tranches],
+    )
+
+
+def _to_automation_position_view(position, *, stop_loss: float | None, take_profit: float | None, auto_add_snapshot) -> AutomationPositionView:
+    return AutomationPositionView(
+        symbol=position.symbol,
+        direction=position.direction,
+        side=position.direction,
+        size=position.size,
+        entry_price=position.entry_price,
+        mark_price=position.mark_price,
+        unrealized_pnl=position.unrealized_pnl,
+        liquidation_price=position.liquidation_price,
+        margin=position.margin,
+        leverage=position.leverage,
+        opened_at=_format_dt(position.opened_at),
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        auto_add=_to_auto_add_view(auto_add_snapshot) if auto_add_snapshot is not None else None,
+    )
+
+
 def _to_pending_entry_view_from_record(record) -> PendingEntryView:
     intended_quantity = getattr(record, "intended_quantity", None)
     filled_quantity = getattr(record, "filled_quantity", None)
@@ -462,6 +646,11 @@ async def get_automation_config(request: Request) -> AutomationConfigResponse:
         quant_interval_seconds=config.quant_interval_seconds,
         pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
         max_positions=config.max_positions,
+        auto_add_enabled=config.auto_add_enabled,
+        auto_add_trigger_atr_multiple=config.auto_add_trigger_atr_multiple,
+        auto_add_tranche_margin_pct=config.auto_add_tranche_margin_pct,
+        auto_add_max_tranches=config.auto_add_max_tranches,
+        auto_add_protected_stop_roe=config.auto_add_protected_stop_roe,
         provider=config.provider,
         model=config.model,
         reasoning_effort=config.reasoning_effort,
@@ -485,6 +674,11 @@ async def update_automation_config(
         quant_interval_seconds=payload.quant_interval_seconds,
         pending_entry_timeout_seconds=payload.pending_entry_timeout_seconds,
         max_positions=payload.max_positions,
+        auto_add_enabled=payload.auto_add_enabled,
+        auto_add_trigger_atr_multiple=payload.auto_add_trigger_atr_multiple,
+        auto_add_tranche_margin_pct=payload.auto_add_tranche_margin_pct,
+        auto_add_max_tranches=payload.auto_add_max_tranches,
+        auto_add_protected_stop_roe=payload.auto_add_protected_stop_roe,
         provider=payload.provider,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
@@ -499,6 +693,11 @@ async def update_automation_config(
         quant_interval_seconds=config.quant_interval_seconds,
         pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
         max_positions=config.max_positions,
+        auto_add_enabled=config.auto_add_enabled,
+        auto_add_trigger_atr_multiple=config.auto_add_trigger_atr_multiple,
+        auto_add_tranche_margin_pct=config.auto_add_tranche_margin_pct,
+        auto_add_max_tranches=config.auto_add_max_tranches,
+        auto_add_protected_stop_roe=config.auto_add_protected_stop_roe,
         provider=config.provider,
         model=config.model,
         reasoning_effort=config.reasoning_effort,
@@ -529,6 +728,11 @@ async def start_automation(
         quant_interval_seconds=payload.quant_interval_seconds,
         pending_entry_timeout_seconds=payload.pending_entry_timeout_seconds,
         max_positions=payload.max_positions,
+        auto_add_enabled=payload.auto_add_enabled,
+        auto_add_trigger_atr_multiple=payload.auto_add_trigger_atr_multiple,
+        auto_add_tranche_margin_pct=payload.auto_add_tranche_margin_pct,
+        auto_add_max_tranches=payload.auto_add_max_tranches,
+        auto_add_protected_stop_roe=payload.auto_add_protected_stop_roe,
         provider=payload.provider,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
@@ -550,6 +754,11 @@ async def start_automation(
             "quant_interval_seconds": config.quant_interval_seconds,
             "pending_entry_timeout_seconds": config.pending_entry_timeout_seconds,
             "max_positions": config.max_positions,
+            "auto_add_enabled": config.auto_add_enabled,
+            "auto_add_trigger_atr_multiple": config.auto_add_trigger_atr_multiple,
+            "auto_add_tranche_margin_pct": config.auto_add_tranche_margin_pct,
+            "auto_add_max_tranches": config.auto_add_max_tranches,
+            "auto_add_protected_stop_roe": config.auto_add_protected_stop_roe,
             "provider": config.provider,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
@@ -568,6 +777,11 @@ async def start_automation(
                 quant_interval_seconds=config.quant_interval_seconds,
                 pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
                 max_positions=config.max_positions,
+                auto_add_enabled=config.auto_add_enabled,
+                auto_add_trigger_atr_multiple=config.auto_add_trigger_atr_multiple,
+                auto_add_tranche_margin_pct=config.auto_add_tranche_margin_pct,
+                auto_add_max_tranches=config.auto_add_max_tranches,
+                auto_add_protected_stop_roe=config.auto_add_protected_stop_roe,
                 provider=config.provider,
                 model=config.model,
                 reasoning_effort=config.reasoning_effort,
@@ -588,6 +802,11 @@ async def start_automation(
         "quant_interval_seconds": config.quant_interval_seconds,
         "pending_entry_timeout_seconds": config.pending_entry_timeout_seconds,
         "max_positions": config.max_positions,
+        "auto_add_enabled": config.auto_add_enabled,
+        "auto_add_trigger_atr_multiple": config.auto_add_trigger_atr_multiple,
+        "auto_add_tranche_margin_pct": config.auto_add_tranche_margin_pct,
+        "auto_add_max_tranches": config.auto_add_max_tranches,
+        "auto_add_protected_stop_roe": config.auto_add_protected_stop_roe,
         "provider": config.provider,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
@@ -698,6 +917,61 @@ async def stop_automation(request: Request) -> AutomationStateDataResponse:
     return AutomationStateDataResponse(data=AutomationStateResponse(**state), meta=_meta(request))
 
 
+@router.get("/positions", response_model=AutomationPositionListResponse)
+async def list_automation_positions(request: Request) -> AutomationPositionListResponse:
+    portfolio_service = get_portfolio_service()
+    try:
+        snapshot = await portfolio_service.get_portfolio_snapshot()
+    except Exception:
+        return AutomationPositionListResponse(
+            data=AutomationPositionListPayload(positions=[]),
+            meta=_meta(request),
+        )
+
+    normalized_symbols = [
+        _normalize_close_symbol(getattr(position, "symbol", ""))
+        for position in snapshot.positions or []
+        if getattr(position, "symbol", None)
+    ]
+    unique_symbols = sorted({symbol for symbol in normalized_symbols if symbol})
+
+    try:
+        open_orders = await portfolio_service.get_open_orders(unique_symbols) if unique_symbols else []
+    except Exception:
+        open_orders = []
+    orders_index = _index_orders(open_orders)
+
+    try:
+        auto_add_snapshots = await get_auto_add_service().list_position_snapshots_for_active_account(
+            symbols=unique_symbols,
+        )
+    except Exception:
+        auto_add_snapshots = []
+    auto_add_index = {
+        snapshot.record.symbol: snapshot
+        for snapshot in auto_add_snapshots
+        if getattr(snapshot.record, "symbol", None)
+    }
+
+    positions: list[AutomationPositionView] = []
+    for position in snapshot.positions or []:
+        symbol = _normalize_close_symbol(getattr(position, "symbol", ""))
+        stop_loss, take_profit = _extract_sl_tp(orders_index.get(symbol, []))
+        positions.append(
+            _to_automation_position_view(
+                position,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                auto_add_snapshot=auto_add_index.get(symbol),
+            )
+        )
+
+    return AutomationPositionListResponse(
+        data=AutomationPositionListPayload(positions=positions),
+        meta=_meta(request),
+    )
+
+
 @router.post("/positions/close", response_model=AutomationClosePositionResponse)
 async def close_position(
     payload: AutomationClosePositionRequest,
@@ -711,6 +985,15 @@ async def close_position(
     result = await executor.execute(
         ExecutionIdea(action=ExecutionAction.CLOSE, symbol=symbol)
     )
+    if result.success:
+        try:
+            await get_auto_add_service().cancel_for_symbol(
+                symbol,
+                reason="manual_close",
+                final_status=AutoAddStatus.CLOSED,
+            )
+        except Exception:
+            pass
 
     return AutomationClosePositionResponse(
         data=AutomationClosePositionPayload(

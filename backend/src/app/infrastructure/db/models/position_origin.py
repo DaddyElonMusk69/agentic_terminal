@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.db.models.base import Base
@@ -22,6 +22,8 @@ class ActivePositionOriginModel(Base):
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     anchor_frame: Mapped[str | None] = mapped_column(Text, nullable=True)
     active_tunnel: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    stop_loss_roe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit_roe: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
