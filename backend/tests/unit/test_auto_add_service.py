@@ -326,6 +326,57 @@ async def test_poll_once_cancels_remaining_orders_when_position_disappears():
 
 
 @pytest.mark.asyncio
+async def test_poll_once_treats_zero_size_position_as_closed_and_cancels_ladder():
+    service, repository, portfolio = await _build_service(
+        positions=[_position(entry_price=100.0, mark_price=100.2, margin=20.0, leverage=5.0)],
+        stop_market_results=[
+            ExecutionResult(success=True, status="resting", order_id="ladder-1"),
+            ExecutionResult(success=True, status="resting", order_id="ladder-2"),
+        ],
+    )
+    portfolio.open_orders = [
+        {
+            "id": "sl-1",
+            "symbol": "BTC/USDT:USDT",
+            "type": "stop_market",
+            "stopPrice": 98.0,
+            "reduceOnly": True,
+            "status": "open",
+        }
+    ]
+    record = await service.register_fresh_entry(
+        decision=ExecutionIdea(
+            action=ExecutionAction.OPEN_LONG,
+            symbol="BTC",
+            position_size_usd=100.0,
+            leverage=5,
+        ),
+        execution_result=ExecutionResult(success=True, status="filled", order_id="entry-1", fill_price=100.0),
+        session_id="session-1",
+        open_positions_before=[],
+    )
+    assert record is not None
+
+    portfolio.positions = [_position(size=0.0, margin=0.0, leverage=5.0)]
+    portfolio.open_orders = [
+        {"id": "ladder-1", "symbol": "BTC/USDT:USDT", "type": "stop_market", "stopPrice": 101.0, "status": "open"},
+        {"id": "ladder-2", "symbol": "BTC/USDT:USDT", "type": "stop_market", "stopPrice": 102.0, "status": "open"},
+    ]
+
+    handled = await service.poll_once()
+
+    stored = await repository.get_position(record.id)
+    tranches = await repository.list_tranches(record.id)
+    assert handled == 1
+    assert stored is not None
+    assert stored.status == AutoAddStatus.CLOSED
+    assert stored.active is False
+    assert portfolio.canceled == [("ladder-1", "BTC"), ("ladder-2", "BTC")]
+    assert tranches[1].status == AutoAddTrancheStatus.CANCELED
+    assert tranches[2].status == AutoAddTrancheStatus.CANCELED
+
+
+@pytest.mark.asyncio
 async def test_waiting_record_arms_when_limit_fill_position_becomes_visible():
     service, repository, portfolio = await _build_service(
         positions=[],

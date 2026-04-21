@@ -34,7 +34,7 @@ class AutomationStartRequest(BaseModel):
     execution_mode: str = Field("dry_run", min_length=1)
     ema_interval_seconds: int = Field(60, ge=5, le=3600)
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
-    pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
+    pending_entry_timeout_seconds: int = Field(900, ge=300, le=7200)
     max_positions: int = Field(3, ge=1, le=10)
     auto_add_enabled: bool = False
     auto_add_trigger_atr_multiple: float = Field(1.0, ge=0.25, le=3.0)
@@ -87,7 +87,7 @@ class AutomationConfigPayload(BaseModel):
     execution_mode: str = Field("dry_run", min_length=1)
     ema_interval_seconds: int = Field(60, ge=5, le=3600)
     quant_interval_seconds: int = Field(60, ge=5, le=3600)
-    pending_entry_timeout_seconds: int = Field(900, ge=300, le=3600)
+    pending_entry_timeout_seconds: int = Field(900, ge=300, le=7200)
     max_positions: int = Field(3, ge=1, le=10)
     auto_add_enabled: bool = False
     auto_add_trigger_atr_multiple: float = Field(1.0, ge=0.25, le=3.0)

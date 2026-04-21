@@ -110,6 +110,8 @@ class GuardContext:
     config: Optional[Dict[str, Any]] = None
     price_fetcher: Optional[Any] = None
     portfolio_exposure_pct: Optional[float] = None
+    max_positions: Optional[int] = None
+    inflight_market_open_count: int = 0
 
     def get_config_value(self, key: str, default: Any = None) -> Any:
         if self.config is None:
@@ -285,6 +287,8 @@ class TradeGuard:
         config: Optional[Dict[str, Any]] = None,
         price_fetcher: Optional[Any] = None,
         portfolio_exposure_pct: Optional[float] = None,
+        max_positions: Optional[int] = None,
+        inflight_market_open_count: int = 0,
     ) -> GuardResult:
         context = GuardContext(
             decision=decision,
@@ -297,6 +301,8 @@ class TradeGuard:
             config=config,
             price_fetcher=price_fetcher,
             portfolio_exposure_pct=portfolio_exposure_pct,
+            max_positions=max_positions,
+            inflight_market_open_count=inflight_market_open_count,
         )
 
         errors: List[str] = []

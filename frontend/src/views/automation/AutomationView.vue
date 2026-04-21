@@ -191,21 +191,45 @@
 
               <label class="text-[11px] text-muted">
                 Model
-                <select
+                <input
                   class="mt-2 w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-text"
-                  :disabled="availableModels.length === 0"
                   :value="automationConfig.model"
-                  @change="handleModelChange"
+                  :list="automationConfig.provider ? `automation-models-${automationConfig.provider}` : undefined"
+                  type="text"
+                  placeholder="Enter model or pick a suggestion"
+                  spellcheck="false"
+                  autocomplete="off"
+                  @input="handleModelChange"
+                />
+                <datalist
+                  v-if="automationConfig.provider"
+                  :id="`automation-models-${automationConfig.provider}`"
                 >
-                  <option value="">Select model</option>
                   <option
                     v-for="model in availableModels"
                     :key="modelKey(model)"
                     :value="modelValue(model)"
+                  />
+                </datalist>
+                <div class="mt-2 flex flex-wrap gap-2" v-if="availableModels.length > 0">
+                  <button
+                    v-for="model in availableModels"
+                    :key="modelKey(model)"
+                    class="rounded-md border px-2 py-1 text-[11px] transition"
+                    :class="
+                      modelValue(model) === automationConfig.model
+                        ? 'border-accent/60 bg-accent/10 text-text'
+                        : 'border-border bg-panel text-muted hover:text-text'
+                    "
+                    type="button"
+                    @click="selectModel(modelValue(model))"
                   >
                     {{ modelLabel(model) }}
-                  </option>
-                </select>
+                  </button>
+                </div>
+                <p class="mt-2 text-[10px] text-muted">
+                  Supports provider-listed models and manual entries saved from AI Settings.
+                </p>
               </label>
 
               <label v-if="showCodexReasoningEffort" class="text-[11px] text-muted">
@@ -417,7 +441,7 @@
                   class="w-full"
                   type="range"
                   min="300"
-                  max="3600"
+                  max="7200"
                   step="300"
                   @change="
                     updateConfigPersisted({

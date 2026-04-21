@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -10,11 +10,12 @@ from app.domain.trade_executor.models import ExecutionResult
 
 
 class StubPosition:
-    def __init__(self, *, symbol: str, direction: str, entry_price: float, leverage: float) -> None:
+    def __init__(self, *, symbol: str, direction: str, entry_price: float, leverage: float, size: float = 1.0) -> None:
         self.symbol = symbol
         self.direction = direction
         self.entry_price = entry_price
         self.leverage = leverage
+        self.size = size
 
 
 class StubPortfolioSnapshot:
@@ -58,6 +59,16 @@ class StubPositionOriginService:
     async def get_many(self, account_id: str, symbols: list[str]):  # noqa: ARG002
         return {symbol: self.rows[symbol] for symbol in symbols if symbol in self.rows}
 
+    async def sync_live_positions(self, account_id: str, positions):  # noqa: ARG002, ANN001
+        symbols = []
+        for position in positions:
+            symbol = str(getattr(position, "symbol", "") or "").upper()
+            if symbol.endswith("/USDT"):
+                symbol = symbol.split("/", 1)[0]
+            if symbol:
+                symbols.append(symbol)
+        return {symbol: self.rows[symbol] for symbol in symbols if symbol in self.rows}
+
 
 class StubTradeExecutor:
     def __init__(self, results=None):  # noqa: ANN001
@@ -77,6 +88,15 @@ class StubOutbox:
 
     async def enqueue_event(self, topic: str, payload: dict):  # noqa: ANN001
         self.events.append((topic, payload))
+
+
+class StubAutoAddService:
+    def __init__(self) -> None:
+        self.live_symbol_calls: list[list[str]] = []
+
+    async def cancel_missing_parent_positions(self, live_symbols: list[str]) -> int:
+        self.live_symbol_calls.append(list(live_symbols))
+        return 0
 
 
 @pytest.mark.asyncio
@@ -149,3 +169,62 @@ async def test_protection_reconciler_restores_only_missing_tp_when_stop_exists()
     assert len(executor.decisions) == 1
     assert executor.decisions[0].action == ExecutionAction.UPDATE_TP
     assert executor.decisions[0].new_take_profit == pytest.approx(100.6)
+
+
+@pytest.mark.asyncio
+async def test_protection_reconciler_does_not_prune_on_first_empty_snapshot():
+    origin_service = StubPositionOriginService({})
+    portfolio = StubPortfolioService()
+    service = ProtectionReconcilerService(
+        position_origin_service=origin_service,
+        portfolio_service=portfolio,
+        trade_executor=StubTradeExecutor(),
+        outbox=StubOutbox(),
+    )
+
+    handled = await service.poll_once()
+
+    assert handled == 0
+    assert origin_service.prune_calls == []
+
+
+@pytest.mark.asyncio
+async def test_protection_reconciler_prunes_after_empty_snapshot_grace_period():
+    origin_service = StubPositionOriginService({})
+    portfolio = StubPortfolioService()
+    service = ProtectionReconcilerService(
+        position_origin_service=origin_service,
+        portfolio_service=portfolio,
+        trade_executor=StubTradeExecutor(),
+        outbox=StubOutbox(),
+    )
+    service._empty_snapshot_started_at["acc-1"] = datetime.now(timezone.utc) - timedelta(
+        seconds=service.EMPTY_SNAPSHOT_PRUNE_GRACE_SECONDS + 1
+    )
+
+    handled = await service.poll_once()
+
+    assert handled == 0
+    assert origin_service.prune_calls == [("acc-1", [])]
+
+
+@pytest.mark.asyncio
+async def test_protection_reconciler_uses_live_snapshot_for_auto_add_cleanup():
+    portfolio = StubPortfolioService()
+    portfolio.positions = [
+        StubPosition(symbol="BTC/USDT", direction="long", entry_price=100.0, leverage=5.0, size=1.0),
+        StubPosition(symbol="ETH/USDT", direction="long", entry_price=10.0, leverage=3.0, size=0.0),
+    ]
+    auto_add = StubAutoAddService()
+    service = ProtectionReconcilerService(
+        position_origin_service=StubPositionOriginService({}),
+        portfolio_service=portfolio,
+        trade_executor=StubTradeExecutor(),
+        auto_add_service=auto_add,
+        outbox=StubOutbox(),
+    )
+
+    handled = await service.poll_once()
+
+    assert handled == 0
+    assert auto_add.live_symbol_calls == [["BTC"]]

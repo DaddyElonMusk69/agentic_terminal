@@ -160,6 +160,69 @@ class ManagedLimitEntryRule(ValidationRule):
         return self._pass()
 
 
+class MarketPositionCapRule(ValidationRule):
+    OPEN_ACTIONS = {
+        ExecutionAction.OPEN_LONG,
+        ExecutionAction.OPEN_SHORT,
+    }
+
+    @property
+    def name(self) -> str:
+        return "market_position_cap"
+
+    @property
+    def category(self) -> RuleCategory:
+        return RuleCategory.ACCOUNT_STATE
+
+    @property
+    def description(self) -> str:
+        return "Prevents fresh market entries from exceeding max_positions"
+
+    def check(self, context: GuardContext) -> RuleResult:
+        decision = context.decision
+        if decision.action not in self.OPEN_ACTIONS:
+            return self._pass("Not a market OPEN action")
+
+        try:
+            max_positions = (
+                int(context.max_positions) if context.max_positions is not None else None
+            )
+        except (TypeError, ValueError):
+            max_positions = None
+        if max_positions is None or max_positions <= 0:
+            return self._pass("No max_positions cap configured")
+
+        if _resolve_open_position(context.open_positions, decision.symbol) is not None:
+            return self._pass(f"Existing position already open for {decision.symbol}")
+
+        open_positions_count = _count_distinct_open_position_symbols(context.open_positions)
+        try:
+            inflight_market_open_count = max(0, int(context.inflight_market_open_count))
+        except (TypeError, ValueError):
+            inflight_market_open_count = 0
+
+        projected_positions = open_positions_count + inflight_market_open_count
+        if projected_positions > max_positions:
+            return self._fail(
+                f"Market entry rejected: max positions reached ({projected_positions}/{max_positions})",
+                details={
+                    "max_positions": max_positions,
+                    "open_positions": open_positions_count,
+                    "inflight_market_opens": inflight_market_open_count,
+                    "projected_positions": projected_positions,
+                },
+            )
+
+        return self._pass(
+            details={
+                "max_positions": max_positions,
+                "open_positions": open_positions_count,
+                "inflight_market_opens": inflight_market_open_count,
+                "projected_positions": projected_positions,
+            }
+        )
+
+
 class ReduceActionFieldsRule(ValidationRule):
     @property
     def name(self) -> str:
@@ -1295,6 +1358,7 @@ def create_default_guard(
     guard.register_rule(OpenActionFieldsRule())
     guard.register_rule(LimitOrderFieldsRule())
     guard.register_rule(ManagedLimitEntryRule())
+    guard.register_rule(MarketPositionCapRule())
     guard.register_rule(ReduceActionFieldsRule())
     guard.register_rule(UpdateSLFieldsRule())
     guard.register_rule(UpdateTPFieldsRule())
@@ -1390,6 +1454,17 @@ def _resolve_open_position(open_positions: Optional[list], symbol: str) -> Optio
             continue
         return pos
     return None
+
+
+def _count_distinct_open_position_symbols(open_positions: Optional[list]) -> int:
+    symbols: set[str] = set()
+    for pos in open_positions or []:
+        if not isinstance(pos, dict):
+            continue
+        symbol = _normalize_symbol(pos.get("symbol"))
+        if symbol:
+            symbols.add(symbol)
+    return len(symbols)
 
 
 def _resolve_position_side(open_positions: Optional[list], symbol: str) -> Optional[str]:

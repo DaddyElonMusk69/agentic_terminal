@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Protocol
 
 from app.domain.position_origin.models import ActivePositionOriginRecord
@@ -12,6 +13,14 @@ class ActivePositionOriginRepository(Protocol):
         active_tunnel: str | None,
         stop_loss_roe: float | None,
         take_profit_roe: float | None,
+        position_side: str | None,
+        exchange_opened_at: datetime | None,
+        last_seen_at: datetime | None,
+        peak_roe: float | None,
+        peak_roe_updated_at: datetime | None,
+        peak_roe_basis_entry_price: float | None,
+        peak_roe_basis_size: float | None,
+        peak_roe_basis_leverage: float | None,
     ) -> ActivePositionOriginRecord:
         ...
 

@@ -19,6 +19,8 @@ from app.domain.chart_generator.models import (
     VwapOverlay,
 )
 from app.application.image_uploader.service import ImageUploaderService
+from app.domain.auto_add.interfaces import AutoAddRepository
+from app.domain.auto_add.models import AutoAddPositionSnapshot
 from app.domain.prompt_builder.interfaces import PromptTemplateRepository, QuantSnapshotProvider
 from app.domain.prompt_builder.models import (
     ChartRequest,
@@ -44,6 +46,7 @@ class PromptBuilderService:
         portfolio_service: PortfolioService,
         risk_config_service: RiskManagementConfigService,
         position_origin_service: PositionOriginService | None = None,
+        auto_add_repository: AutoAddRepository | None = None,
         codex_temp_images: CodexTempImageStore | None = None,
         upload_concurrency: int = 4,
         recent_trades_limit: int = 10,
@@ -57,8 +60,8 @@ class PromptBuilderService:
         self._portfolio_service = portfolio_service
         self._risk_config_service = risk_config_service
         self._position_origin_service = position_origin_service
+        self._auto_add_repository = auto_add_repository
         self._recent_trades_limit = max(1, int(recent_trades_limit))
-        self._peak_roe_tracker: Dict[str, float] = {}
 
     async def build(self, request: PromptBuildRequest) -> PromptBuildResult:
         template = await self._load_template(request.template_id)
@@ -160,20 +163,35 @@ class PromptBuilderService:
 
         account_id = getattr(getattr(snapshot, "account", None), "id", None)
         try:
-            origin_rows = await self._position_origin_service.get_many(account_id, [ticker])
+            origin_rows = await self._position_origin_service.sync_live_positions(
+                account_id,
+                snapshot.positions or [],
+            )
         except Exception:
-            return context
+            try:
+                origin_rows = await self._position_origin_service.get_many(account_id, [ticker])
+            except Exception:
+                return context
 
         origin = origin_rows.get(normalize_position_origin_symbol(ticker))
         if origin is None:
             return context
 
         active_tunnel = _format_active_tunnel_template_value(getattr(origin, "active_tunnel", None))
+        origin_opened_at = _resolve_prompt_position_opened_at(
+            getattr(origin, "exchange_opened_at", None),
+            None,
+            getattr(origin, "created_at", None),
+        )
         return _merge_position_template_context(
             {
                 "anchor_frame": getattr(origin, "anchor_frame", None),
                 "signal_frame": getattr(origin, "anchor_frame", None),
                 "active_tunnel": active_tunnel,
+                "duration": _format_duration(origin_opened_at),
+                "held_for": _format_duration(origin_opened_at),
+                "opened_at": origin_opened_at.isoformat() if origin_opened_at else None,
+                "peak_roe": getattr(origin, "peak_roe", None),
             },
             context,
         )
@@ -266,19 +284,39 @@ class PromptBuilderService:
 
         data: Dict[str, Any] = {}
         position_origin_payload: Dict[str, Any] = {}
+        auto_add_payload: Dict[str, AutoAddPositionSnapshot] = {}
+        live_symbols = (
+            [getattr(position, "symbol", None) for position in (snapshot.positions or [])]
+            if snapshot
+            else []
+        )
+        account_id = getattr(getattr(snapshot, "account", None), "id", None) if snapshot is not None else None
 
         if (
             "open_positions" in selections
             and snapshot is not None
             and self._position_origin_service is not None
         ):
-            account_id = getattr(getattr(snapshot, "account", None), "id", None)
-            live_symbols = [getattr(position, "symbol", None) for position in (snapshot.positions or [])]
             try:
                 await self._position_origin_service.prune_missing(account_id, live_symbols)
-                position_origin_payload = await self._position_origin_service.get_many(account_id, live_symbols)
+                position_origin_payload = await self._position_origin_service.sync_live_positions(
+                    account_id,
+                    snapshot.positions or [],
+                )
             except Exception:
-                position_origin_payload = {}
+                try:
+                    position_origin_payload = await self._position_origin_service.get_many(
+                        account_id,
+                        live_symbols,
+                    )
+                except Exception:
+                    position_origin_payload = {}
+
+        if "open_positions" in selections:
+            auto_add_payload = await self._build_auto_add_payload(
+                account_id=account_id,
+                live_symbols=live_symbols,
+            )
 
         if "portfolio_overview" in selections:
             portfolio_overview = {
@@ -358,8 +396,8 @@ class PromptBuilderService:
                 snapshot,
                 snapshot_error,
                 open_orders,
-                self._peak_roe_tracker,
                 position_origin_payload,
+                auto_add_payload,
             )
             allowed_fields = field_selections.get("open_positions")
             if allowed_fields:
@@ -373,6 +411,45 @@ class PromptBuilderService:
             data["open_positions"] = _normalize_values(positions_payload)
 
         return data
+
+    async def _build_auto_add_payload(
+        self,
+        *,
+        account_id: str | None,
+        live_symbols: Sequence[Any],
+    ) -> Dict[str, AutoAddPositionSnapshot]:
+        if self._auto_add_repository is None or not account_id:
+            return {}
+
+        normalized_symbols = sorted(
+            {
+                normalize_position_origin_symbol(symbol)
+                for symbol in live_symbols
+                if normalize_position_origin_symbol(symbol)
+            }
+        )
+        if not normalized_symbols:
+            return {}
+
+        try:
+            records = await self._auto_add_repository.list_latest_positions_for_symbols(
+                account_id,
+                normalized_symbols,
+            )
+        except Exception:
+            return {}
+
+        snapshots: Dict[str, AutoAddPositionSnapshot] = {}
+        for record in records:
+            try:
+                tranches = await self._auto_add_repository.list_tranches(record.id)
+            except Exception:
+                tranches = []
+            snapshots[normalize_position_origin_symbol(record.symbol)] = AutoAddPositionSnapshot(
+                record=record,
+                tranches=tuple(tranches),
+            )
+        return snapshots
 
     async def _load_template(self, template_id: Optional[int]) -> PromptTemplate:
         template = None
@@ -663,11 +740,15 @@ def _format_number(value: float | int, key: str, parent: str) -> Any:
         return value
 
     if isinstance(value, int) and not isinstance(value, bool):
+        if _is_price_like_key(key):
+            return float(_format_trade_price(float(value)))
         if _is_currency_key(key, parent):
             return f"${value:,.2f}"
         return value
 
     numeric = float(value)
+    if _is_price_like_key(key):
+        return float(_format_trade_price(numeric))
     if _is_currency_key(key, parent):
         return f"${numeric:,.2f}"
     return round(numeric, 2)
@@ -689,6 +770,20 @@ def _is_currency_key(key: str, parent: str) -> bool:
     if any(hint in parent_lower for hint in _CURRENCY_HINTS):
         return True
     return False
+
+
+def _is_price_like_key(key: str) -> bool:
+    normalized = str(key or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized in {
+        "entry",
+        "entry_price",
+        "current_price",
+        "stop_loss",
+        "take_profit",
+        "liquidation",
+    }
 
 
 def _flatten_snapshot_dict(snapshot: Dict[str, Any], ticker: str, interval: str) -> Dict[str, Any]:
@@ -901,10 +996,8 @@ def _index_orders(orders: List[dict]) -> Dict[str, List[dict]]:
     for order in orders:
         if not isinstance(order, dict):
             continue
-        symbol = _normalize_order_symbol(order.get("symbol"))
-        if not symbol:
-            continue
-        index.setdefault(symbol, []).append(order)
+        for symbol in _order_symbol_candidates(order):
+            index.setdefault(symbol, []).append(order)
     return index
 
 
@@ -917,6 +1010,28 @@ def _normalize_order_symbol(value: Any) -> str:
     if ":" in symbol:
         return symbol.split(":", 1)[0]
     return symbol
+
+
+def _order_symbol_candidates(order: dict) -> list[str]:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    raw_values = [
+        order.get("symbol"),
+        order.get("exchange_symbol"),
+        order.get("marketId"),
+        order.get("market_id"),
+        info.get("symbol"),
+    ]
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        normalized = _normalize_order_symbol(raw)
+        base = normalize_position_origin_symbol(raw)
+        for value in (normalized, base):
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            candidates.append(value)
+    return candidates
 
 
 def _assert_required_charts(
@@ -975,16 +1090,8 @@ def _extract_sl_tp(orders: List[dict]) -> tuple[Optional[float], Optional[float]
     for order in orders:
         if not isinstance(order, dict):
             continue
-        info = order.get("info") if isinstance(order.get("info"), dict) else {}
-        order_type = str(order.get("type") or info.get("type") or "").lower()
-        stop_price = (
-            order.get("stopPrice")
-            or order.get("triggerPrice")
-            or info.get("stopPrice")
-            or info.get("triggerPrice")
-        )
-        price = order.get("price") or info.get("price")
-        candidate = _safe_float(stop_price if stop_price is not None else price)
+        order_type = _extract_order_type(order)
+        candidate = _extract_trigger_price(order)
         if candidate is None:
             continue
         if "take" in order_type:
@@ -996,6 +1103,41 @@ def _extract_sl_tp(orders: List[dict]) -> tuple[Optional[float], Optional[float]
                 stop_loss = candidate
             continue
     return stop_loss, take_profit
+
+
+def _extract_order_type(order: dict) -> str:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    return str(
+        order.get("type")
+        or order.get("orderType")
+        or info.get("type")
+        or info.get("orderType")
+        or params.get("type")
+        or ""
+    ).lower()
+
+
+def _extract_trigger_price(order: dict) -> Optional[float]:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for candidate in (
+        order.get("stopPrice"),
+        order.get("triggerPrice"),
+        order.get("triggerPx"),
+        info.get("stopPrice"),
+        info.get("triggerPrice"),
+        info.get("triggerPx"),
+        params.get("stopPrice"),
+        params.get("triggerPrice"),
+        params.get("triggerPx"),
+        order.get("price"),
+        info.get("price"),
+    ):
+        value = _safe_float(candidate)
+        if value is not None and value > 0:
+            return value
+    return None
 
 
 def _calculate_price_target_roe_pct(
@@ -1164,8 +1306,8 @@ def _build_open_positions_payload(
     snapshot: Optional[Any],
     error_message: Optional[str],
     open_orders: List[dict],
-    peak_roe_tracker: Dict[str, float],
     position_origin_payload: Dict[str, Any],
+    auto_add_payload: Dict[str, AutoAddPositionSnapshot],
 ) -> Dict[str, Any]:
     if snapshot is None:
         return {"status": error_message or "No active account configured"}
@@ -1193,18 +1335,18 @@ def _build_open_positions_payload(
             except Exception:
                 roe = None
 
-        peak_roe = None
-        if roe is not None:
-            peak = peak_roe_tracker.get(symbol)
-            if peak is None or roe > peak:
-                peak_roe_tracker[symbol] = roe
-                peak = roe
-            peak_roe = peak
-
-        stop_loss, take_profit = _extract_sl_tp(order_index.get(symbol, []))
-        opened_at = position.opened_at
-        held_for = _format_duration(opened_at)
         origin = position_origin_payload.get(normalized_symbol)
+        peak_roe = getattr(origin, "peak_roe", None) if origin is not None else None
+        if peak_roe is None:
+            peak_roe = roe
+        stop_loss, take_profit = _extract_sl_tp(_orders_for_position(order_index, symbol))
+        opened_at = _resolve_prompt_position_opened_at(
+            getattr(origin, "exchange_opened_at", None) if origin is not None else None,
+            position.opened_at,
+            getattr(origin, "created_at", None) if origin is not None else None,
+        )
+        held_for = _format_duration(opened_at)
+        tranche_summary = _build_tranche_summary(auto_add_payload.get(normalized_symbol))
 
         payload[symbol] = {
             "side": position.direction.lower() if position.direction else None,
@@ -1240,9 +1382,121 @@ def _build_open_positions_payload(
             "peak_roe": peak_roe,
             "anchor_frame": getattr(origin, "anchor_frame", None),
             "active_tunnel": getattr(origin, "active_tunnel", None),
+            "filled_tranche_count": tranche_summary["filled_tranche_count"],
+            "total_tranches": tranche_summary["total_tranches"],
+            "tranches": tranche_summary["tranches"],
         }
 
     return payload
+
+
+def _build_tranche_summary(snapshot: AutoAddPositionSnapshot | None) -> Dict[str, Any]:
+    if snapshot is None:
+        return {
+            "filled_tranche_count": 1,
+            "total_tranches": 1,
+            "tranches": [
+                {
+                    "tranche_index": 0,
+                    "kind": "INITIAL",
+                    "filled": True,
+                    "status": "FILLED",
+                }
+            ],
+        }
+
+    record = getattr(snapshot, "record", None)
+    raw_tranches = list(getattr(snapshot, "tranches", ()) or ())
+    tranche_map = {int(getattr(tranche, "tranche_index", -1)): tranche for tranche in raw_tranches}
+    max_add_tranches = max(0, int(getattr(record, "max_tranches", 0) or 0))
+    total_tranches = max(1, max_add_tranches + 1)
+
+    tranches: List[Dict[str, Any]] = []
+    filled_tranche_count = 0
+    for tranche_index in range(total_tranches):
+        tranche = tranche_map.get(tranche_index)
+        kind = _normalize_tranche_kind(tranche, tranche_index)
+        filled = _is_tranche_filled(tranche, tranche_index)
+        status = _normalize_tranche_status(tranche, tranche_index, filled)
+        if filled:
+            filled_tranche_count += 1
+        tranches.append(
+            {
+                "tranche_index": tranche_index,
+                "kind": kind,
+                "filled": filled,
+                "status": status,
+            }
+        )
+
+    return {
+        "filled_tranche_count": filled_tranche_count,
+        "total_tranches": total_tranches,
+        "tranches": tranches,
+    }
+
+
+def _normalize_tranche_kind(tranche: Any, tranche_index: int) -> str:
+    kind = getattr(tranche, "kind", None)
+    if hasattr(kind, "value"):
+        kind = kind.value
+    if kind is not None:
+        normalized = str(kind).strip().upper()
+        if normalized:
+            return normalized
+    return "INITIAL" if tranche_index == 0 else "ADD"
+
+
+def _is_tranche_filled(tranche: Any, tranche_index: int) -> bool:
+    if tranche_index == 0:
+        return True
+    if tranche is None:
+        return False
+    status = getattr(tranche, "status", None)
+    if hasattr(status, "value"):
+        status = status.value
+    normalized = str(status or "").strip().upper()
+    return normalized in {"INITIAL", "RESOLVED", "FILLED"}
+
+
+def _normalize_tranche_status(tranche: Any, tranche_index: int, filled: bool) -> str:
+    if tranche_index == 0:
+        return "FILLED"
+    if tranche is None:
+        return "PLANNED"
+
+    status = getattr(tranche, "status", None)
+    if hasattr(status, "value"):
+        status = status.value
+    normalized = str(status or "").strip().upper()
+    if filled:
+        return "FILLED"
+    if normalized == "PLACED":
+        return "PENDING"
+    if normalized:
+        return normalized
+    return "PLANNED"
+
+
+def _orders_for_position(order_index: Dict[str, List[dict]], symbol: Any) -> List[dict]:
+    candidates = [
+        _normalize_order_symbol(symbol),
+        normalize_position_origin_symbol(symbol),
+    ]
+    merged: List[dict] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        for order in order_index.get(candidate, []):
+            if not isinstance(order, dict):
+                continue
+            order_key = str(order.get("id") or order.get("orderId") or id(order))
+            if order_key in seen:
+                continue
+            seen.add(order_key)
+            merged.append(order)
+    return merged
 
 
 def _days_left(goal_deadline: Optional[date]) -> Optional[int]:
@@ -1284,6 +1538,7 @@ def _extract_position_template_context(
         "duration": position.get("duration") or position.get("held_for"),
         "held_for": position.get("held_for") or position.get("duration"),
         "opened_at": position.get("opened_at"),
+        "peak_roe": position.get("peak_roe"),
         "anchor_frame": position.get("anchor_frame"),
         "signal_frame": position.get("signal_frame") or position.get("anchor_frame"),
         "active_tunnel": _format_active_tunnel_template_value(position.get("active_tunnel")),
@@ -1329,6 +1584,17 @@ def _extract_position_template_context_from_snapshot(
             "opened_at": opened_at.isoformat() if opened_at else None,
         }
     return {}
+
+
+def _resolve_prompt_position_opened_at(
+    primary_opened_at: Optional[datetime],
+    secondary_opened_at: Optional[datetime],
+    tertiary_opened_at: Optional[datetime] = None,
+) -> Optional[datetime]:
+    for candidate in (primary_opened_at, secondary_opened_at, tertiary_opened_at):
+        if candidate is not None and hasattr(candidate, "isoformat"):
+            return candidate
+    return None
 
 
 def _format_position_price(value: Optional[float]) -> Optional[str]:

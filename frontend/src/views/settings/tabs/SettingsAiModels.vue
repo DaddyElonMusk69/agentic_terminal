@@ -92,16 +92,24 @@
 
                 <label class="text-[11px] text-muted">
                   Default Model
-                  <select
+                  <input
                     v-model="form.defaultModel"
                     class="mt-2 w-full rounded-md border border-border bg-panel px-3 py-2 text-xs text-text"
-                    :disabled="modelList.length === 0"
+                    type="text"
+                    :list="activeProvider ? `provider-models-${activeProvider.name}` : undefined"
+                    placeholder="Enter model or pick a suggestion"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <datalist
+                    v-if="activeProvider"
+                    :id="`provider-models-${activeProvider.name}`"
                   >
-                    <option value="">Select model</option>
-                    <option v-for="model in modelList" :key="model" :value="model">
-                      {{ model }}
-                    </option>
-                  </select>
+                    <option v-for="model in modelList" :key="model" :value="model" />
+                  </datalist>
+                  <p class="mt-2 text-[11px] text-muted">
+                    You can type a model manually if the provider's `/models` endpoint is incomplete.
+                  </p>
                 </label>
 
                 <div class="rounded-md border border-border bg-panel/50 p-3 sm:col-span-2">
@@ -373,6 +381,18 @@ const setCustomStatus = (message: string, tone: "info" | "success" | "error" = "
   }, 4000);
 };
 
+const mergeModelOptions = (models: Array<string | null | undefined>) => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  models.forEach((model) => {
+    const value = String(model || "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    result.push(value);
+  });
+  return result;
+};
+
 const syncForm = (provider: ProviderInfo | null) => {
   if (!provider) return;
   form.apiKey = "";
@@ -387,11 +407,12 @@ const syncForm = (provider: ProviderInfo | null) => {
 const loadProviderModels = async (providerName: string, force = false) => {
   if (!providerName) return;
   const normalized = providerName.toLowerCase();
+  const providerEntry = providers.value.find((item) => item.name === providerName) || null;
   const shouldUseCache = normalized !== "codex";
   if (!force && shouldUseCache) {
     const cached = readModelCache(providerName);
     if (cached) {
-      providerModels.value = cached;
+      providerModels.value = mergeModelOptions([providerEntry?.default_model, ...cached]);
       return;
     }
   }
@@ -399,8 +420,9 @@ const loadProviderModels = async (providerName: string, force = false) => {
     const response = await fetch(`/api/v1/ai/providers/${providerName}/models`);
     const data = await response.json();
     if (data?.data?.models && Array.isArray(data.data.models)) {
-      providerModels.value = data.data.models;
-      writeModelCache(providerName, data.data.models);
+      const merged = mergeModelOptions([providerEntry?.default_model, ...data.data.models]);
+      providerModels.value = merged;
+      writeModelCache(providerName, merged);
     }
   } catch {
     // Ignore model fetch errors
@@ -481,6 +503,13 @@ const saveProvider = async () => {
     const data = await response.json();
     if (!response.ok) throw new Error(data?.error?.message || "Failed to save provider.");
     form.apiKey = "";
+    if (activeProvider.value?.name && form.defaultModel.trim()) {
+      const cached = readModelCache(activeProvider.value.name) || [];
+      writeModelCache(
+        activeProvider.value.name,
+        mergeModelOptions([form.defaultModel, ...cached]),
+      );
+    }
     setStatus("Provider configuration saved.", "success");
     await loadProviders(true);
     if (activeProvider.value) {

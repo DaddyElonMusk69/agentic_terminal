@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from app.application.auto_add.dependencies import get_auto_add_service
 from app.application.automation.dependencies import get_outbox_service
 from app.application.portfolio.dependencies import get_portfolio_service
 from app.application.position_origin.dependencies import get_position_origin_service
@@ -13,5 +14,6 @@ def get_protection_reconciler_service() -> ProtectionReconcilerService:
         position_origin_service=get_position_origin_service(),
         portfolio_service=get_portfolio_service(),
         trade_executor=get_trade_executor_service(),
+        auto_add_service=get_auto_add_service(),
         outbox=get_outbox_service(),
     )

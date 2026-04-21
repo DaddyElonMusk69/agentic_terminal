@@ -718,7 +718,7 @@ const contextCategories = [
   {
     id: "open_positions",
     label: "Open Positions",
-    description: "Current active trades with side, size, entry, PnL, duration",
+    description: "Current active trades with protection, thesis metadata, and tranche state",
     fields: [
       { id: "side", label: "Side" },
       { id: "margin_used", label: "Margin Used" },
@@ -734,6 +734,9 @@ const contextCategories = [
       { id: "peak_roe", label: "Peak ROE" },
       { id: "anchor_frame", label: "Anchor Frame" },
       { id: "active_tunnel", label: "Active Tunnel" },
+      { id: "filled_tranche_count", label: "Filled Tranche Count" },
+      { id: "total_tranches", label: "Total Tranches" },
+      { id: "tranches", label: "Tranche Detail" },
       { id: "status", label: "Status" },
     ],
   },
@@ -785,7 +788,7 @@ const contextCategories = [
   },
 ];
 
-const DEFAULT_VEGAS_INTERVALS: string[] = ["30m", "1h", "2h", "4h", "8h", "12h"];
+const DEFAULT_VEGAS_INTERVALS: string[] = ["5m", "30m", "1h", "2h", "4h", "8h", "12h"];
 
 const monitoredIntervals = ref<string[]>([]);
 const isLoadingIntervals = ref(false);

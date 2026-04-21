@@ -19,6 +19,7 @@ from app.application.ema_state_manager.dependencies import get_ema_state_manager
 from app.application.prompt_builder.queue_service import PromptBuildQueueService
 from app.application.quant_scanner.dependencies import get_quant_config_service, get_quant_scanner_service
 from app.application.portfolio.dependencies import get_portfolio_service
+from app.application.monitored_assets.dependencies import get_monitored_assets_service
 from app.application.position_origin.dependencies import get_position_origin_service
 from app.application.telegram.dependencies import get_telegram_notification_service
 from app.application.pending_entry.dependencies import get_pending_entry_service
@@ -92,6 +93,7 @@ def get_automation_pipeline_service() -> AutomationPipelineService:
         prompt_queue=get_prompt_queue_service(),
         outbox=get_outbox_service(),
         portfolio_service=get_portfolio_service(),
+        monitored_assets_service=get_monitored_assets_service(),
         pending_entry_service=get_pending_entry_service(),
         telegram_notifier=get_telegram_notification_service(),
         history_service=get_automation_history_service(),

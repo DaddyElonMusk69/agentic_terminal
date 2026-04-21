@@ -51,6 +51,8 @@ class TradeGuardService:
         pending_entries: Optional[List[Dict[str, Any]]] = None,
         price_fetcher: Optional[Any] = None,
         tradeable_symbols: Optional[Set[str]] = None,
+        max_positions: Optional[int] = None,
+        inflight_market_open_count: int = 0,
     ) -> GuardResult:
         config = await self.get_config()
         exposure_pct = await self.get_exposure_pct()
@@ -64,6 +66,8 @@ class TradeGuardService:
             pending_entries=pending_entries,
             price_fetcher=price_fetcher,
             portfolio_exposure_pct=exposure_pct,
+            max_positions=max_positions,
+            inflight_market_open_count=inflight_market_open_count,
         )
 
     def _normalize_config(self, config: TradeGuardConfig) -> TradeGuardConfig:

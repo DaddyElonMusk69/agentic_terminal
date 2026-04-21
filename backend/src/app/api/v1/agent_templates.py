@@ -241,6 +241,21 @@ def _select_primary_interval(intervals: List[str]) -> str:
     return best or ""
 
 
+def _select_available_quant_intervals(
+    ticker: str,
+    intervals: List[str],
+    quant_service,
+) -> tuple[List[str], List[str]]:
+    available: List[str] = []
+    missing: List[str] = []
+    for interval in intervals:
+        if quant_service.get_snapshot(ticker, interval) is None:
+            missing.append(f"{ticker}@{interval}")
+            continue
+        available.append(interval)
+    return available, missing
+
+
 @router.get("", response_model=PromptTemplateListResponse)
 async def list_templates(request: Request) -> PromptTemplateListResponse:
     service = get_prompt_template_service()
@@ -316,7 +331,7 @@ async def preview_template(
     monitored_intervals = [item.strip() for item in await market_service.list_intervals() if item.strip()]
     chart_requests = _build_chart_requests(template.chart_defaults, payload, monitored_intervals)
     if payload.intervals:
-        intervals = _dedupe(
+        requested_intervals = _dedupe(
             [
                 interval.strip()
                 for interval in payload.intervals
@@ -324,18 +339,18 @@ async def preview_template(
             ]
         )
     else:
-        intervals = _dedupe([item.interval for item in chart_requests if item.interval])
+        requested_intervals = _dedupe([item.interval for item in chart_requests if item.interval])
 
-    if not intervals:
+    if not requested_intervals:
         raise AppError(code="intervals_required", message="Intervals are required for preview")
 
     quant_service = get_quant_scanner_service()
-    missing = [
-        f"{ticker}@{interval}"
-        for interval in intervals
-        if quant_service.get_snapshot(ticker, interval) is None
-    ]
-    if missing:
+    intervals, missing = _select_available_quant_intervals(
+        ticker,
+        requested_intervals,
+        quant_service,
+    )
+    if not intervals:
         raise AppError(
             code="quant_snapshot_missing",
             message="Quant snapshots missing for preview",
@@ -343,7 +358,6 @@ async def preview_template(
         )
 
     base, quote = _split_symbol(ticker)
-    primary_interval = _select_primary_interval(intervals)
     build_request = PromptBuildRequest(
         request_id=str(uuid4()),
         template_id=template.id,
@@ -355,9 +369,9 @@ async def preview_template(
             "ticker": base,
             "symbol": ticker,
             "quote": quote,
-            "interval": primary_interval,
-            "intervals": ", ".join(intervals),
-            "active_intervals": ", ".join(intervals),
+            "interval": _select_primary_interval(requested_intervals),
+            "intervals": ", ".join(requested_intervals),
+            "active_intervals": ", ".join(requested_intervals),
             "trigger_reason": "context_preview",
         },
     )

@@ -29,8 +29,11 @@ class OrderQueueWorker:
     LIMIT_ENTRY_EXECUTION_MAX_ATTEMPTS = 3
     LIMIT_ENTRY_SLOT_MULTIPLIER = 2
     LIMIT_ENTRY_RESERVATION_TTL_SECONDS = 90
+    MARKET_OPEN_RESERVATION_TTL_SECONDS = 90
     _limit_entry_reservations_lock = asyncio.Lock()
     _limit_entry_reservations: dict[str, dict[str, "_LimitEntryReservation"]] = {}
+    _market_open_reservations_lock = asyncio.Lock()
+    _market_open_reservations: dict[str, dict[str, "_MarketOpenReservation"]] = {}
 
     def __init__(
         self,
@@ -140,99 +143,141 @@ class OrderQueueWorker:
         open_orders = None
         if decision.action in (ExecutionAction.UPDATE_SL, ExecutionAction.UPDATE_TP):
             open_orders = await self._fetch_open_orders(decision)
-        guard_result = await self._trade_guard.validate(
+        max_positions = await self._get_max_positions()
+        market_open_reservation = await self._reserve_market_open_slot_if_needed(
             decision,
-            account_state=account_state,
-            market_data=market_data,
-            open_orders=open_orders,
+            request_id=payload.get("source_request_id", item.id),
             open_positions=open_positions,
-            pending_entries=pending_entries,
-            price_fetcher=price_fetcher,
         )
-        guard_payload = guard_result.to_dict()
-        if not guard_result.is_valid:
-            await self._repository.mark_failed(item.id, "trade_guard_rejected")
+        try:
+            inflight_market_open_count = 0
+            if market_open_reservation is not None:
+                inflight_market_open_count = await self._count_inflight_market_open_reservations(
+                    market_open_reservation.account_id,
+                    open_positions=open_positions,
+                )
+
+            guard_result = await self._trade_guard.validate(
+                decision,
+                account_state=account_state,
+                market_data=market_data,
+                open_orders=open_orders,
+                open_positions=open_positions,
+                pending_entries=pending_entries,
+                price_fetcher=price_fetcher,
+                max_positions=max_positions,
+                inflight_market_open_count=inflight_market_open_count,
+            )
+            guard_payload = guard_result.to_dict()
+            if not guard_result.is_valid:
+                await self._repository.mark_failed(item.id, "trade_guard_rejected")
+                await self._outbox.enqueue_event(
+                    topics.GUARD_REJECTED,
+                    _with_session(
+                        {
+                            "request_id": payload.get("source_request_id", item.id),
+                            "symbol": decision.symbol,
+                            "errors": guard_result.errors,
+                            "guard": guard_payload,
+                            "execution_idea": idea_payload,
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+                await self._outbox.enqueue_event(
+                    topics.TRADE_FAILED,
+                    _with_session(
+                        {
+                            "request_id": item.id,
+                            "error": "trade_guard_rejected",
+                            "details": guard_result.to_dict(),
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+                return True
+
+            modified = [
+                item.to_dict() for item in guard_result.modifications if item.modified
+            ]
+            final_order = (
+                guard_result.decision.to_dict()
+                if guard_result.decision is not None and hasattr(guard_result.decision, "to_dict")
+                else idea_payload
+            )
             await self._outbox.enqueue_event(
-                topics.GUARD_REJECTED,
+                topics.GUARD_PASSED,
                 _with_session(
                     {
                         "request_id": payload.get("source_request_id", item.id),
                         "symbol": decision.symbol,
-                        "errors": guard_result.errors,
+                        "modifications": len(modified),
+                        "warnings": guard_result.warnings,
                         "guard": guard_payload,
-                        "execution_idea": idea_payload,
+                        "final_order": final_order,
                         "cycle_number": cycle_number,
                     },
                     session_id,
                 ),
             )
-            await self._outbox.enqueue_event(
-                topics.TRADE_FAILED,
-                _with_session(
-                    {
-                        "request_id": item.id,
-                        "error": "trade_guard_rejected",
-                        "details": guard_result.to_dict(),
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
-            )
-            return True
+            if modified:
+                await self._outbox.enqueue_event(
+                    topics.ORDER_MODIFIED,
+                    _with_session(
+                        {
+                            "symbol": decision.symbol,
+                            "modifications": modified,
+                            "execution_mode": execution_mode.value,
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
 
-        modified = [
-            item.to_dict() for item in guard_result.modifications if item.modified
-        ]
-        final_order = (
-            guard_result.decision.to_dict()
-            if guard_result.decision is not None and hasattr(guard_result.decision, "to_dict")
-            else idea_payload
-        )
-        await self._outbox.enqueue_event(
-            topics.GUARD_PASSED,
-            _with_session(
-                {
-                    "request_id": payload.get("source_request_id", item.id),
-                    "symbol": decision.symbol,
-                    "modifications": len(modified),
-                    "warnings": guard_result.warnings,
-                    "guard": guard_payload,
-                    "final_order": final_order,
-                    "cycle_number": cycle_number,
-                },
-                session_id,
-            ),
-        )
-        if modified:
+            guarded_decision = guard_result.decision
+            breaker_result = self._circuit_breaker.evaluate(guarded_decision)
+            circuit_payload = {
+                "allowed": breaker_result.allowed,
+                "reasons": breaker_result.reasons,
+                "checked_at": breaker_result.checked_at.isoformat(),
+            }
+            if not breaker_result.allowed:
+                await self._repository.mark_failed(item.id, "circuit_breaker_blocked")
+                await self._outbox.enqueue_event(
+                    topics.CIRCUIT_BLOCKED,
+                    _with_session(
+                        {
+                            "request_id": payload.get("source_request_id", item.id),
+                            "symbol": decision.symbol,
+                            "reasons": breaker_result.reasons,
+                            "circuit_breaker": circuit_payload,
+                            "final_order": final_order,
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+                await self._outbox.enqueue_event(
+                    topics.TRADE_FAILED,
+                    _with_session(
+                        {
+                            "request_id": item.id,
+                            "error": "circuit_breaker_blocked",
+                            "reasons": breaker_result.reasons,
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+                return True
             await self._outbox.enqueue_event(
-                topics.ORDER_MODIFIED,
-                _with_session(
-                    {
-                        "symbol": decision.symbol,
-                        "modifications": modified,
-                        "execution_mode": execution_mode.value,
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
-            )
-
-        guarded_decision = guard_result.decision
-        breaker_result = self._circuit_breaker.evaluate(guarded_decision)
-        circuit_payload = {
-            "allowed": breaker_result.allowed,
-            "reasons": breaker_result.reasons,
-            "checked_at": breaker_result.checked_at.isoformat(),
-        }
-        if not breaker_result.allowed:
-            await self._repository.mark_failed(item.id, "circuit_breaker_blocked")
-            await self._outbox.enqueue_event(
-                topics.CIRCUIT_BLOCKED,
+                topics.CIRCUIT_PASSED,
                 _with_session(
                     {
                         "request_id": payload.get("source_request_id", item.id),
                         "symbol": decision.symbol,
-                        "reasons": breaker_result.reasons,
                         "circuit_breaker": circuit_payload,
                         "final_order": final_order,
                         "cycle_number": cycle_number,
@@ -240,127 +285,104 @@ class OrderQueueWorker:
                     session_id,
                 ),
             )
-            await self._outbox.enqueue_event(
-                topics.TRADE_FAILED,
-                _with_session(
-                    {
-                        "request_id": item.id,
-                        "error": "circuit_breaker_blocked",
-                        "reasons": breaker_result.reasons,
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
-            )
-            return True
-        await self._outbox.enqueue_event(
-            topics.CIRCUIT_PASSED,
-            _with_session(
-                {
-                    "request_id": payload.get("source_request_id", item.id),
-                    "symbol": decision.symbol,
-                    "circuit_breaker": circuit_payload,
-                    "final_order": final_order,
-                    "cycle_number": cycle_number,
-                },
-                session_id,
-            ),
-        )
 
-        if not should_execute_trades(execution_mode):
-            await self._repository.mark_dropped(item.id, f"execution_mode:{execution_mode.value}")
-            await self._outbox.enqueue_event(
-                topics.ORDER_DROPPED,
-                _with_session(
-                    {
-                        "request_id": payload.get("source_request_id", item.id),
-                        "error": f"execution_mode:{execution_mode.value}",
-                        "guard": guard_result.to_dict(),
-                        "circuit_breaker": {
-                            "allowed": breaker_result.allowed,
-                            "reasons": breaker_result.reasons,
+            if not should_execute_trades(execution_mode):
+                await self._repository.mark_dropped(item.id, f"execution_mode:{execution_mode.value}")
+                await self._outbox.enqueue_event(
+                    topics.ORDER_DROPPED,
+                    _with_session(
+                        {
+                            "request_id": payload.get("source_request_id", item.id),
+                            "error": f"execution_mode:{execution_mode.value}",
+                            "guard": guard_result.to_dict(),
+                            "circuit_breaker": {
+                                "allowed": breaker_result.allowed,
+                                "reasons": breaker_result.reasons,
+                            },
+                            "execution_idea": idea_payload,
+                            "cycle_number": cycle_number,
                         },
-                        "execution_idea": idea_payload,
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
+                        session_id,
+                    ),
+                )
+                return True
+
+            execution_result, execution_attempts, retry_errors = await self._execute_with_retries(
+                guarded_decision,
+                request_id=payload.get("source_request_id", item.id),
+                session_id=session_id,
+                cycle_number=cycle_number,
+                execution_mode=execution_mode.value,
+                open_positions=open_positions,
             )
+            result_payload = dict(execution_result.__dict__)
+            result_payload["retry_attempts"] = execution_attempts
+            if retry_errors:
+                result_payload["retry_errors"] = retry_errors
+
+            if execution_result.success:
+                await self._repository.mark_done(item.id, result_payload)
+                await self._register_pending_entry_if_needed(
+                    decision=guarded_decision,
+                    execution_result=execution_result,
+                    session_id=session_id,
+                    open_positions=open_positions,
+                )
+                await self._sync_position_origin_metadata(
+                    final_order=final_order,
+                    execution_result=execution_result,
+                )
+                await self._register_auto_add_if_needed(
+                    decision=guarded_decision,
+                    execution_result=execution_result,
+                    session_id=session_id,
+                    open_positions=open_positions,
+                )
+                await self._cleanup_auto_add_if_needed(
+                    decision=guarded_decision,
+                    execution_result=execution_result,
+                )
+                await self._outbox.enqueue_event(
+                    topics.TRADE_EXECUTED,
+                    _with_session(
+                        {
+                            "request_id": item.id,
+                            "result": result_payload,
+                            "execution_idea": idea_payload,
+                            "final_order": final_order,
+                            "retry_attempts": execution_attempts,
+                            "retried": execution_attempts > 1,
+                            "retry_errors": retry_errors,
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+            else:
+                final_error = execution_result.error or "execution_failed"
+                await self._repository.mark_failed(item.id, final_error)
+                await self._outbox.enqueue_event(
+                    topics.TRADE_FAILED,
+                    _with_session(
+                        {
+                            "request_id": item.id,
+                            "error": final_error,
+                            "result": result_payload,
+                            "execution_idea": idea_payload,
+                            "final_order": final_order,
+                            "retry_attempts": execution_attempts,
+                            "retried": execution_attempts > 1,
+                            "retry_errors": retry_errors,
+                            "cycle_number": cycle_number,
+                        },
+                        session_id,
+                    ),
+                )
+
             return True
-
-        execution_result, execution_attempts, retry_errors = await self._execute_with_retries(
-            guarded_decision,
-            request_id=payload.get("source_request_id", item.id),
-            session_id=session_id,
-            cycle_number=cycle_number,
-            execution_mode=execution_mode.value,
-            open_positions=open_positions,
-        )
-        result_payload = dict(execution_result.__dict__)
-        result_payload["retry_attempts"] = execution_attempts
-        if retry_errors:
-            result_payload["retry_errors"] = retry_errors
-
-        if execution_result.success:
-            await self._repository.mark_done(item.id, result_payload)
-            await self._register_pending_entry_if_needed(
-                decision=guarded_decision,
-                execution_result=execution_result,
-                session_id=session_id,
-                open_positions=open_positions,
-            )
-            await self._sync_position_origin_metadata(
-                final_order=final_order,
-                execution_result=execution_result,
-            )
-            await self._register_auto_add_if_needed(
-                decision=guarded_decision,
-                execution_result=execution_result,
-                session_id=session_id,
-                open_positions=open_positions,
-            )
-            await self._cleanup_auto_add_if_needed(
-                decision=guarded_decision,
-                execution_result=execution_result,
-            )
-            await self._outbox.enqueue_event(
-                topics.TRADE_EXECUTED,
-                _with_session(
-                    {
-                        "request_id": item.id,
-                        "result": result_payload,
-                        "execution_idea": idea_payload,
-                        "final_order": final_order,
-                        "retry_attempts": execution_attempts,
-                        "retried": execution_attempts > 1,
-                        "retry_errors": retry_errors,
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
-            )
-        else:
-            final_error = execution_result.error or "execution_failed"
-            await self._repository.mark_failed(item.id, final_error)
-            await self._outbox.enqueue_event(
-                topics.TRADE_FAILED,
-                _with_session(
-                    {
-                        "request_id": item.id,
-                        "error": final_error,
-                        "result": result_payload,
-                        "execution_idea": idea_payload,
-                        "final_order": final_order,
-                        "retry_attempts": execution_attempts,
-                        "retried": execution_attempts > 1,
-                        "retry_errors": retry_errors,
-                        "cycle_number": cycle_number,
-                    },
-                    session_id,
-                ),
-            )
-
-        return True
+        finally:
+            if market_open_reservation is not None:
+                await self._release_market_open_reservation(market_open_reservation)
 
     async def _sync_position_origin_metadata(
         self,
@@ -543,6 +565,77 @@ class OrderQueueWorker:
             }
             for entry in entries
         ]
+
+    async def _reserve_market_open_slot_if_needed(
+        self,
+        decision: ExecutionIdea,
+        *,
+        request_id: str,
+        open_positions: Optional[list],
+    ) -> "_MarketOpenReservation | None":
+        if decision.action not in _MARKET_OPEN_ACTIONS:
+            return None
+        if _position_exists_before_execution(open_positions, decision.symbol):
+            return None
+
+        account_id = await self._get_active_account_id()
+        if not account_id:
+            return None
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=self.MARKET_OPEN_RESERVATION_TTL_SECONDS)
+
+        async with self._market_open_reservations_lock:
+            reservations = self._market_open_reservations.setdefault(account_id, {})
+            _prune_expired_market_open_reservations(reservations, now)
+            existing = reservations.get(request_id)
+            if existing is not None:
+                return existing
+
+            reservation = _MarketOpenReservation(
+                account_id=account_id,
+                request_id=request_id,
+                symbol=_normalize_symbol(decision.symbol),
+                expires_at=expires_at,
+            )
+            reservations[request_id] = reservation
+            return reservation
+
+    async def _count_inflight_market_open_reservations(
+        self,
+        account_id: str,
+        *,
+        open_positions: Optional[list],
+    ) -> int:
+        live_symbols = _collect_open_position_symbols(open_positions)
+        now = datetime.now(timezone.utc)
+
+        async with self._market_open_reservations_lock:
+            reservations = self._market_open_reservations.get(account_id)
+            if reservations is None:
+                return 0
+            _prune_expired_market_open_reservations(reservations, now)
+            if not reservations:
+                self._market_open_reservations.pop(account_id, None)
+                return 0
+            symbols = {
+                reservation.symbol
+                for reservation in reservations.values()
+                if reservation.symbol and reservation.symbol not in live_symbols
+            }
+            return len(symbols)
+
+    async def _release_market_open_reservation(
+        self,
+        reservation: "_MarketOpenReservation",
+    ) -> None:
+        async with self._market_open_reservations_lock:
+            reservations = self._market_open_reservations.get(reservation.account_id)
+            if reservations is None:
+                return
+            reservations.pop(reservation.request_id, None)
+            if not reservations:
+                self._market_open_reservations.pop(reservation.account_id, None)
 
     async def _register_pending_entry_if_needed(
         self,
@@ -920,7 +1013,7 @@ class OrderQueueWorker:
         value = str(getattr(account, "id", "") or "").strip()
         return value or None
 
-    async def _get_limit_entry_slot_limit(self) -> int:
+    async def _get_max_positions(self) -> int:
         max_positions = DEFAULT_MAX_POSITIONS
         if self._automation_config_service is not None:
             try:
@@ -935,6 +1028,10 @@ class OrderQueueWorker:
                     )
                 except (TypeError, ValueError):
                     max_positions = DEFAULT_MAX_POSITIONS
+        return max(1, max_positions)
+
+    async def _get_limit_entry_slot_limit(self) -> int:
+        max_positions = await self._get_max_positions()
         return max(1, max_positions * self.LIMIT_ENTRY_SLOT_MULTIPLIER)
 
 
@@ -965,6 +1062,11 @@ _LIMIT_OPEN_ACTIONS = {
     ExecutionAction.OPEN_SHORT_LIMIT,
 }
 
+_MARKET_OPEN_ACTIONS = {
+    ExecutionAction.OPEN_LONG,
+    ExecutionAction.OPEN_SHORT,
+}
+
 
 @dataclass(frozen=True)
 class _LimitEntryReservation:
@@ -979,6 +1081,14 @@ class _LimitEntryReservationOutcome:
     reservation: _LimitEntryReservation | None
     error: str | None
     details: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _MarketOpenReservation:
+    account_id: str
+    request_id: str
+    symbol: str
+    expires_at: datetime
 
 
 def _is_filled_status(value: Any) -> bool:
@@ -1022,6 +1132,17 @@ def _count_open_positions(open_positions: Optional[list]) -> int:
         if _normalize_symbol(position.get("symbol")):
             count += 1
     return count
+
+
+def _collect_open_position_symbols(open_positions: Optional[list]) -> set[str]:
+    symbols: set[str] = set()
+    for position in open_positions or []:
+        if not isinstance(position, dict):
+            continue
+        symbol = _normalize_symbol(position.get("symbol"))
+        if symbol:
+            symbols.add(symbol)
+    return symbols
 
 
 def _requires_initial_protection(decision: ExecutionIdea) -> bool:
@@ -1125,6 +1246,19 @@ def _is_protection_order(order: dict | None) -> bool:
 
 def _prune_expired_limit_entry_reservations(
     reservations: dict[str, _LimitEntryReservation],
+    now: datetime,
+) -> None:
+    expired = [
+        request_id
+        for request_id, reservation in reservations.items()
+        if reservation.expires_at <= now
+    ]
+    for request_id in expired:
+        reservations.pop(request_id, None)
+
+
+def _prune_expired_market_open_reservations(
+    reservations: dict[str, _MarketOpenReservation],
     now: datetime,
 ) -> None:
     expired = [

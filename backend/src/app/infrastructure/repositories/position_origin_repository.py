@@ -25,6 +25,14 @@ class SqlActivePositionOriginRepository(ActivePositionOriginRepository):
         active_tunnel: str | None,
         stop_loss_roe: float | None,
         take_profit_roe: float | None,
+        position_side: str | None,
+        exchange_opened_at: datetime | None,
+        last_seen_at: datetime | None,
+        peak_roe: float | None,
+        peak_roe_updated_at: datetime | None,
+        peak_roe_basis_entry_price: float | None,
+        peak_roe_basis_size: float | None,
+        peak_roe_basis_leverage: float | None,
     ) -> ActivePositionOriginRecord:
         async with self._sessionmaker() as session:
             result = await session.execute(
@@ -43,6 +51,14 @@ class SqlActivePositionOriginRepository(ActivePositionOriginRepository):
                     active_tunnel=active_tunnel,
                     stop_loss_roe=stop_loss_roe,
                     take_profit_roe=take_profit_roe,
+                    position_side=position_side,
+                    exchange_opened_at=exchange_opened_at,
+                    last_seen_at=last_seen_at,
+                    peak_roe=peak_roe,
+                    peak_roe_updated_at=peak_roe_updated_at,
+                    peak_roe_basis_entry_price=peak_roe_basis_entry_price,
+                    peak_roe_basis_size=peak_roe_basis_size,
+                    peak_roe_basis_leverage=peak_roe_basis_leverage,
                     created_at=now,
                     updated_at=now,
                 )
@@ -52,6 +68,14 @@ class SqlActivePositionOriginRepository(ActivePositionOriginRepository):
                 model.active_tunnel = active_tunnel
                 model.stop_loss_roe = stop_loss_roe
                 model.take_profit_roe = take_profit_roe
+                model.position_side = position_side
+                model.exchange_opened_at = exchange_opened_at
+                model.last_seen_at = last_seen_at
+                model.peak_roe = peak_roe
+                model.peak_roe_updated_at = peak_roe_updated_at
+                model.peak_roe_basis_entry_price = peak_roe_basis_entry_price
+                model.peak_roe_basis_size = peak_roe_basis_size
+                model.peak_roe_basis_leverage = peak_roe_basis_leverage
                 model.updated_at = now
 
             await session.commit()
@@ -114,6 +138,14 @@ def _to_record(model: ActivePositionOriginModel) -> ActivePositionOriginRecord:
         active_tunnel=_normalize_active_tunnel_value(model.active_tunnel),
         stop_loss_roe=model.stop_loss_roe,
         take_profit_roe=model.take_profit_roe,
+        position_side=_normalize_side(model.position_side),
+        exchange_opened_at=model.exchange_opened_at,
+        last_seen_at=model.last_seen_at,
+        peak_roe=model.peak_roe,
+        peak_roe_updated_at=model.peak_roe_updated_at,
+        peak_roe_basis_entry_price=model.peak_roe_basis_entry_price,
+        peak_roe_basis_size=model.peak_roe_basis_size,
+        peak_roe_basis_leverage=model.peak_roe_basis_leverage,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -130,3 +162,12 @@ def _normalize_active_tunnel_value(value) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _normalize_side(value) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"long", "short"}:
+        return normalized
+    return None

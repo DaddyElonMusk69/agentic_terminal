@@ -60,3 +60,36 @@ async def test_pending_entry_timeout_round_trip_in_automation_config():
     assert reloaded.auto_add_tranche_margin_pct == 0.65
     assert reloaded.auto_add_max_tranches == 4
     assert reloaded.auto_add_protected_stop_roe == 0.004
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_timeout_allows_up_to_two_hours():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    repository = SqlAutomationConfigRepository(sessionmaker)
+    service = AutomationConfigService(repository)
+
+    updated = await service.update_config(
+        execution_mode="dry_run",
+        ema_interval_seconds=60,
+        quant_interval_seconds=60,
+        pending_entry_timeout_seconds=99999,
+        max_positions=3,
+        provider="openai",
+        model="gpt-5",
+        auto_add_enabled=False,
+        auto_add_trigger_atr_multiple=1.0,
+        auto_add_tranche_margin_pct=0.80,
+        auto_add_max_tranches=3,
+        auto_add_protected_stop_roe=0.002,
+        reasoning_effort=None,
+        include_entry_timing_15m_chart=False,
+        use_all_monitored_interval_charts=False,
+        reverse_order_enabled=False,
+        vegas_prompt_configs=None,
+    )
+
+    assert updated.pending_entry_timeout_seconds == 7200

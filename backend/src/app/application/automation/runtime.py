@@ -247,7 +247,7 @@ def _normalize_config(config: AutomationRuntimeConfig) -> AutomationRuntimeConfi
         execution_mode=mode,
         ema_interval_seconds=max(1, int(config.ema_interval_seconds)),
         quant_interval_seconds=max(1, int(config.quant_interval_seconds)),
-        pending_entry_timeout_seconds=max(300, min(3600, int(config.pending_entry_timeout_seconds))),
+        pending_entry_timeout_seconds=max(300, min(7200, int(config.pending_entry_timeout_seconds))),
         max_positions=max(1, min(10, int(config.max_positions))),
         auto_add_enabled=bool(config.auto_add_enabled),
         auto_add_trigger_atr_multiple=max(0.25, min(3.0, float(config.auto_add_trigger_atr_multiple))),

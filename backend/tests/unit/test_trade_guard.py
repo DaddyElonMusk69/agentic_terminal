@@ -738,3 +738,62 @@ def test_limit_entry_rejected_when_symbol_is_not_flat():
 
     assert result.is_valid is False
     assert "only allowed when flat" in result.errors[0]
+
+
+def test_market_open_rejected_when_projected_positions_exceed_max_positions():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="SOL",
+        confidence=80,
+    )
+
+    result = guard.validate(
+        decision,
+        open_positions=[{"symbol": "BTC/USDT:USDT", "direction": "long", "size": 1}],
+        max_positions=1,
+        inflight_market_open_count=1,
+    )
+
+    assert result.is_valid is False
+    assert "max positions reached" in result.errors[0].lower()
+
+
+def test_market_open_cap_does_not_block_same_symbol_adds():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        confidence=80,
+    )
+
+    result = guard.validate(
+        decision,
+        open_positions=[{"symbol": "BTC/USDT:USDT", "direction": "long", "size": 1}],
+        max_positions=1,
+        inflight_market_open_count=1,
+    )
+
+    assert result.is_valid is True
+
+
+def test_market_open_cap_does_not_apply_to_limit_entries():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG_LIMIT,
+        symbol="SOL",
+        limit_price=100.0,
+        confidence=80,
+    )
+
+    result = guard.validate(
+        decision,
+        open_positions=[{"symbol": "BTC/USDT:USDT", "direction": "long", "size": 1}],
+        max_positions=1,
+        inflight_market_open_count=3,
+    )
+
+    assert result.is_valid is True

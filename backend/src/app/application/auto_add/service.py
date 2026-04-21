@@ -117,7 +117,7 @@ class AutoAddService:
         position_index = {
             _normalize_symbol(getattr(position, "symbol", None)): position
             for position in live_positions or []
-            if _normalize_symbol(getattr(position, "symbol", None))
+            if _is_open_position(position) and _normalize_symbol(getattr(position, "symbol", None))
         }
 
         open_orders_index = await self._get_open_orders_index([record.symbol for record in records])
@@ -132,6 +132,37 @@ class AutoAddService:
             )
             if changed:
                 handled += 1
+        return handled
+
+    async def cancel_missing_parent_positions(self, live_symbols: list[str]) -> int:
+        account = await self._portfolio_service.get_active_account()
+        if account is None:
+            return 0
+
+        tracked_symbols = {
+            _normalize_symbol(symbol)
+            for symbol in live_symbols or []
+            if _normalize_symbol(symbol)
+        }
+        if not tracked_symbols:
+            return 0
+
+        records = await self._repository.list_active_positions(account.id)
+        if not records:
+            return 0
+
+        handled = 0
+        for record in records:
+            if record.symbol in tracked_symbols:
+                continue
+            tranches = await self._repository.list_tranches(record.id)
+            await self._cancel_and_finalize(
+                record,
+                tranches=tranches,
+                status=AutoAddStatus.CLOSED,
+                reason="parent_position_closed",
+            )
+            handled += 1
         return handled
 
     async def list_position_snapshots_for_active_account(
@@ -563,6 +594,8 @@ class AutoAddService:
         except Exception:
             return None
         for position in positions or []:
+            if not _is_open_position(position):
+                continue
             if _normalize_symbol(getattr(position, "symbol", None)) == symbol:
                 return position
         return None
@@ -677,6 +710,13 @@ def _position_quantity(position) -> float | None:
     if value is None:
         return None
     return abs(value)
+
+
+def _is_open_position(position) -> bool:
+    quantity = _position_quantity(position)
+    if quantity is None:
+        return True
+    return quantity > 1e-8
 
 
 def _position_margin(position) -> float | None:

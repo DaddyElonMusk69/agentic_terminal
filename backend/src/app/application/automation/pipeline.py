@@ -24,6 +24,7 @@ from app.application.prompt_builder.queue_service import PromptBuildQueueService
 from app.application.quant_scanner.config_service import QuantScannerConfigService
 from app.application.quant_scanner.service import QuantScannerService
 from app.application.quant_scanner.presenter import snapshot_to_signal
+from app.application.monitored_assets.service import MonitoredAssetsService
 from app.application.portfolio.service import PortfolioService
 from app.application.telegram.notifications_service import TelegramNotificationService
 from app.domain.ema_scanner.models import EmaScannerSignal
@@ -42,6 +43,7 @@ class AutomationPipelineService:
         prompt_queue: PromptBuildQueueService,
         outbox: OutboxService,
         portfolio_service: PortfolioService,
+        monitored_assets_service: MonitoredAssetsService | None = None,
         pending_entry_service: PendingEntryService | None = None,
         telegram_notifier: TelegramNotificationService | None = None,
         history_service: AutomationHistoryService | None = None,
@@ -54,6 +56,7 @@ class AutomationPipelineService:
         self._prompt_queue = prompt_queue
         self._outbox = outbox
         self._portfolio_service = portfolio_service
+        self._monitored_assets_service = monitored_assets_service
         self._pending_entry_service = pending_entry_service
         self._telegram_notifier = telegram_notifier
         self._history_service = history_service
@@ -315,6 +318,12 @@ class AutomationPipelineService:
                 self._with_session(payload, session_id),
             )
             return []
+
+        if self._monitored_assets_service is not None:
+            try:
+                await self._monitored_assets_service.sync_positions(snapshot.positions)
+            except Exception:
+                pass
 
         positions: List[PositionSnapshot] = []
         for position in snapshot.positions:

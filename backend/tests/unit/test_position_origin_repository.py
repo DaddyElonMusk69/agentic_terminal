@@ -52,20 +52,69 @@ async def test_position_origin_repository_upsert_prune_and_delete(sessionmaker):
         ),
     )
 
-    created = await repo.upsert("acc-1", "BTC", "4h", "fast", 0.01, 0.03)
+    created = await repo.upsert(
+        "acc-1",
+        "BTC",
+        "4h",
+        "fast",
+        0.01,
+        0.03,
+        "long",
+        now,
+        now,
+        5.0,
+        now,
+        100.0,
+        0.01,
+        5.0,
+    )
     assert created.symbol == "BTC"
     assert created.anchor_frame == "4h"
     assert created.active_tunnel == "fast"
     assert created.stop_loss_roe == 0.01
     assert created.take_profit_roe == 0.03
+    assert created.peak_roe == 5.0
+    assert created.position_side == "long"
 
-    updated = await repo.upsert("acc-1", "BTC", "2h", "mid", 0.02, 0.04)
+    updated = await repo.upsert(
+        "acc-1",
+        "BTC",
+        "2h",
+        "mid",
+        0.02,
+        0.04,
+        "long",
+        now,
+        now,
+        6.0,
+        now,
+        101.0,
+        0.02,
+        4.0,
+    )
     assert updated.anchor_frame == "2h"
     assert updated.active_tunnel == "mid"
     assert updated.stop_loss_roe == 0.02
     assert updated.take_profit_roe == 0.04
+    assert updated.peak_roe == 6.0
+    assert updated.peak_roe_basis_size == 0.02
 
-    await repo.upsert("acc-1", "ETH", "1h", "fast", None, 0.05)
+    await repo.upsert(
+        "acc-1",
+        "ETH",
+        "1h",
+        "fast",
+        None,
+        0.05,
+        "short",
+        now,
+        now,
+        -1.0,
+        now,
+        200.0,
+        1.0,
+        2.0,
+    )
 
     rows = await repo.get_many("acc-1", ["BTC", "ETH"])
     row_by_symbol = {row.symbol: row for row in rows}
@@ -108,7 +157,22 @@ async def test_position_origin_repository_cascades_on_account_delete(sessionmake
             passphrase=None,
         ),
     )
-    await repo.upsert("acc-1", "BTC", "4h", "fast", 0.01, 0.03)
+    await repo.upsert(
+        "acc-1",
+        "BTC",
+        "4h",
+        "fast",
+        0.01,
+        0.03,
+        "long",
+        now,
+        now,
+        5.0,
+        now,
+        100.0,
+        0.01,
+        5.0,
+    )
 
     await exchange_repo.delete_account("acc-1")
 

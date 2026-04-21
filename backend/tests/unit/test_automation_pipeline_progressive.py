@@ -59,12 +59,43 @@ class StubEmaScanner:
         return [btc_signal, eth_signal]
 
 
+class StubDynamicEmaScanner:
+    async def scan(
+        self,
+        config,
+        log_callback=None,
+        chart_store=None,
+        asset_callback=None,
+    ):
+        del log_callback, chart_store
+        emitted = []
+        for asset in config.assets:
+            symbol = f"{asset}/USDT"
+            await asset_callback(symbol, [], {})
+            emitted.append(symbol)
+        return []
+
+
 class StubEmaConfig:
     async def build_config(self, log_callback=None) -> EmaScannerConfig:
         del log_callback
         return EmaScannerConfig(
             assets=["BTC", "ETH"],
             timeframes=["2h", "4h"],
+            ema_lengths=[144],
+            tolerance_pct=0.5,
+        )
+
+
+class StubEmaConfigFromMonitoredAssets:
+    def __init__(self, monitored_assets) -> None:
+        self._monitored_assets = monitored_assets
+
+    async def build_config(self, log_callback=None) -> EmaScannerConfig:
+        del log_callback
+        return EmaScannerConfig(
+            assets=list(self._monitored_assets.assets),
+            timeframes=["2h"],
             ema_lengths=[144],
             tolerance_pct=0.5,
         )
@@ -168,6 +199,48 @@ class StubPendingEntryService:
         return list(self._entries)
 
 
+class _PositionedPortfolioSnapshot:
+    def __init__(self, positions):
+        self.positions = list(positions)
+
+
+class StubPortfolioWithPosition:
+    def __init__(self, positions):
+        self._snapshot = _PositionedPortfolioSnapshot(positions)
+
+    async def get_portfolio_snapshot(self):
+        return self._snapshot
+
+    async def get_recent_trades(self, limit: int):  # pragma: no cover - production only
+        del limit
+        return []
+
+
+class StubPosition:
+    def __init__(self, symbol: str, direction: str = "long", entry_price: float = 100.0) -> None:
+        self.symbol = symbol
+        self.direction = direction
+        self.entry_price = entry_price
+
+
+class StubMonitoredAssetsService:
+    def __init__(self, assets):
+        self.assets = list(assets)
+        self.sync_calls: list[list[str]] = []
+
+    async def sync_positions(self, positions):
+        symbols = []
+        for position in positions:
+            symbol = getattr(position, "symbol", None)
+            if not symbol:
+                continue
+            base = str(symbol).split("/")[0].upper()
+            symbols.append(base)
+            if base not in self.assets:
+                self.assets.append(base)
+        self.sync_calls.append(symbols)
+
+
 @pytest.mark.asyncio
 async def test_pipeline_enqueues_prompts_progressively(monkeypatch):
     def _fake_prompt_payload(event, timeframes, **kwargs):
@@ -259,3 +332,46 @@ async def test_pipeline_normalizes_pending_entry_symbols_for_state_manager(monke
     first_call = state_manager.calls[0]
     assert len(first_call["pending_entries"]) == 1
     assert first_call["pending_entries"][0].symbol == "BTC/USDT"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_live_positions_monitored_even_when_not_in_base_assets(monkeypatch):
+    def _fake_prompt_payload(event, timeframes, **kwargs):
+        del kwargs
+        return {
+            "symbol": event.symbol,
+            "trigger_reason": event.trigger_reason.value,
+            "timeframes": list(timeframes),
+        }
+
+    monkeypatch.setattr(
+        "app.application.automation.pipeline.build_prompt_request",
+        _fake_prompt_payload,
+    )
+
+    monitored_assets = StubMonitoredAssetsService(["BTC"])
+    state_manager = StubEmaStateManager()
+    prompt_queue = StubPromptQueue()
+    outbox = StubOutbox()
+    pipeline = AutomationPipelineService(
+        ema_scanner=StubDynamicEmaScanner(),
+        ema_config=StubEmaConfigFromMonitoredAssets(monitored_assets),
+        ema_state_manager=state_manager,
+        quant_scanner=StubQuantScanner(),
+        quant_config=StubQuantConfig(),
+        prompt_queue=prompt_queue,
+        outbox=outbox,
+        portfolio_service=StubPortfolioWithPosition([StubPosition("AAPL/USDT")]),
+        monitored_assets_service=monitored_assets,
+        telegram_notifier=None,
+        history_service=None,
+    )
+
+    result = await pipeline.run_ema_cycle(max_positions=4)
+
+    assert monitored_assets.sync_calls == [["AAPL"]]
+    assert result["queued"] == 2
+    assert "AAPL/USDT" in [payload["symbol"] for payload in prompt_queue.payloads]
+    assert state_manager.calls[0]["monitored_assets"] == ["BTC", "AAPL"]
+    assert state_manager.calls[0]["update_assets"] == ["BTC/USDT"]
+    assert state_manager.calls[1]["update_assets"] == ["AAPL/USDT"]

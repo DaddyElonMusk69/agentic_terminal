@@ -58,7 +58,7 @@ Be Brutally Concise: Use professional trading terminology. No fluff.
 
 Data First: Back every claim with a number from the JSON packet (e.g., "OI dropped -1.5%", not "OI dropped a lot").`;
 
-const DEFAULT_VEGAS_INTERVALS = ["30m", "1h", "2h", "4h", "8h", "12h"];
+const DEFAULT_VEGAS_INTERVALS = ["5m", "30m", "1h", "2h", "4h", "8h", "12h"];
 
 const buildDefaultIntervalConfig = () => {
   const cached = readMarketCache();

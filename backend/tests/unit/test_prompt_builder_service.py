@@ -3,6 +3,14 @@ from datetime import datetime, timezone
 import pytest
 
 from app.application.prompt_builder.service import PromptBuilderService, PromptBuildError
+from app.domain.auto_add.models import (
+    AutoAddPositionRecord,
+    AutoAddPositionSnapshot,
+    AutoAddStatus,
+    AutoAddTrancheKind,
+    AutoAddTrancheRecord,
+    AutoAddTrancheStatus,
+)
 from app.domain.chart_generator.models import AtrOverlay
 from app.domain.position_origin.models import ActivePositionOriginRecord
 from app.domain.position_origin.symbols import normalize_position_origin_symbol
@@ -88,6 +96,48 @@ class StubPortfolioSnapshotWithPosition:
         ]
 
 
+class StubPortfolioSnapshotWithPositionNoOpenedAt:
+    account = type("Account", (), {"id": "acc-1"})()
+    state = StubPortfolioState()
+
+    def __init__(self) -> None:
+        self.positions = [
+            Position(
+                symbol="TON/USDT",
+                direction="long",
+                size=10.0,
+                entry_price=3.25,
+                mark_price=3.41,
+                unrealized_pnl=1.75,
+                liquidation_price=2.1,
+                margin=5.0,
+                leverage=6.0,
+                opened_at=None,
+            )
+        ]
+
+
+class StubPortfolioSnapshotWithLowPricePosition:
+    account = type("Account", (), {"id": "acc-1"})()
+    state = StubPortfolioState()
+
+    def __init__(self) -> None:
+        self.positions = [
+            Position(
+                symbol="ACH/USDT",
+                direction="long",
+                size=1000.0,
+                entry_price=0.005973,
+                mark_price=0.006053,
+                unrealized_pnl=0.08,
+                liquidation_price=0.003018,
+                margin=3.0,
+                leverage=2.0,
+                opened_at=datetime(2024, 9, 1, 10, 0, tzinfo=timezone.utc),
+            )
+        ]
+
+
 class StubDailyPnl:
     realized_pnl = 0.0
     trade_count = 0
@@ -116,6 +166,16 @@ class StubPortfolioServiceWithPosition(StubPortfolioService):
         return StubPortfolioSnapshotWithPosition()
 
 
+class StubPortfolioServiceWithPositionNoOpenedAt(StubPortfolioService):
+    async def get_portfolio_snapshot(self):
+        return StubPortfolioSnapshotWithPositionNoOpenedAt()
+
+
+class StubPortfolioServiceWithLowPricePosition(StubPortfolioService):
+    async def get_portfolio_snapshot(self):
+        return StubPortfolioSnapshotWithLowPricePosition()
+
+
 class StubPortfolioServiceWithPositionAndTpOrder(StubPortfolioServiceWithPosition):
     async def get_open_orders(self):
         return [
@@ -125,6 +185,54 @@ class StubPortfolioServiceWithPositionAndTpOrder(StubPortfolioServiceWithPositio
                 "stopPrice": 3.5,
                 "status": "NEW",
             }
+        ]
+
+
+class StubPortfolioServiceWithPositionAndNestedProtectionOrders(StubPortfolioServiceWithPosition):
+    async def get_open_orders(self):
+        return [
+            {
+                "symbol": "TONUSDT",
+                "status": "NEW",
+                "info": {
+                    "symbol": "TONUSDT",
+                    "orderType": "STOP_MARKET",
+                    "triggerPrice": "3.10",
+                },
+            },
+            {
+                "symbol": "TONUSDT",
+                "status": "NEW",
+                "info": {
+                    "symbol": "TONUSDT",
+                    "orderType": "TAKE_PROFIT_MARKET",
+                    "triggerPrice": "3.50",
+                },
+            },
+        ]
+
+
+class StubPortfolioServiceWithLowPriceProtectionOrders(StubPortfolioServiceWithLowPricePosition):
+    async def get_open_orders(self):
+        return [
+            {
+                "symbol": "ACHUSDT",
+                "status": "NEW",
+                "info": {
+                    "symbol": "ACHUSDT",
+                    "orderType": "STOP_MARKET",
+                    "triggerPrice": "0.005915",
+                },
+            },
+            {
+                "symbol": "ACHUSDT",
+                "status": "NEW",
+                "info": {
+                    "symbol": "ACHUSDT",
+                    "orderType": "TAKE_PROFIT_MARKET",
+                    "triggerPrice": "0.006129",
+                },
+            },
         ]
 
 
@@ -161,10 +269,47 @@ class StubPositionOriginService:
     def __init__(self, rows: dict[str, ActivePositionOriginRecord] | None = None) -> None:
         self._rows = rows or {}
         self.prune_calls: list[tuple[str, list[str]]] = []
+        self.sync_calls: list[tuple[str, list[str]]] = []
 
     async def prune_missing(self, account_id: str, live_symbols):  # noqa: ANN001
         self.prune_calls.append((account_id, list(live_symbols)))
         return 0
+
+    async def sync_live_positions(self, account_id: str, positions):  # noqa: ANN001
+        self.sync_calls.append((account_id, [getattr(position, "symbol", None) for position in positions]))
+        output = {}
+        for position in positions:
+            normalized = normalize_position_origin_symbol(getattr(position, "symbol", None))
+            if not normalized:
+                continue
+            existing = self._rows.get(normalized)
+            margin = getattr(position, "margin", None) or 0.0
+            unrealized_pnl = getattr(position, "unrealized_pnl", None)
+            current_roe = None
+            if margin and unrealized_pnl is not None:
+                current_roe = (unrealized_pnl / margin) * 100.0
+            peak_roe = current_roe
+            if existing is not None and existing.peak_roe is not None and current_roe is not None:
+                peak_roe = max(existing.peak_roe, current_roe)
+            record = ActivePositionOriginRecord(
+                account_id=account_id,
+                symbol=normalized,
+                anchor_frame=existing.anchor_frame if existing is not None else None,
+                active_tunnel=existing.active_tunnel if existing is not None else None,
+                stop_loss_roe=existing.stop_loss_roe if existing is not None else None,
+                take_profit_roe=existing.take_profit_roe if existing is not None else None,
+                position_side=existing.position_side if existing is not None else getattr(position, "direction", None),
+                exchange_opened_at=(
+                    existing.exchange_opened_at
+                    if existing is not None and existing.exchange_opened_at is not None
+                    else getattr(position, "opened_at", None)
+                ),
+                peak_roe=peak_roe,
+                created_at=existing.created_at if existing is not None else None,
+            )
+            self._rows[normalized] = record
+            output[normalized] = record
+        return output
 
     async def get_many(self, account_id: str, symbols):  # noqa: ANN001
         del account_id
@@ -192,6 +337,29 @@ class StubUploaderService:
 
     async def get_uploader(self):
         return self._uploader
+
+
+class StubAutoAddRepository:
+    def __init__(self, snapshots: dict[str, AutoAddPositionSnapshot] | None = None) -> None:
+        self._snapshots = {
+            normalize_position_origin_symbol(symbol): snapshot
+            for symbol, snapshot in (snapshots or {}).items()
+        }
+
+    async def list_latest_positions_for_symbols(self, account_id: str, symbols):  # noqa: ANN001
+        del account_id
+        rows = []
+        for symbol in symbols:
+            snapshot = self._snapshots.get(normalize_position_origin_symbol(symbol))
+            if snapshot is not None:
+                rows.append(snapshot.record)
+        return rows
+
+    async def list_tranches(self, auto_add_position_id: str):
+        for snapshot in self._snapshots.values():
+            if snapshot.record.id == auto_add_position_id:
+                return list(snapshot.tranches)
+        return []
 
 
 def _build_snapshot(symbol: str = "BTC") -> QuantSnapshot:
@@ -596,6 +764,319 @@ async def test_prompt_builder_includes_current_take_profit_roe_fields():
 
 
 @pytest.mark.asyncio
+async def test_prompt_builder_extracts_sl_tp_from_nested_binance_style_orders():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": [
+                    "stop_loss",
+                    "take_profit",
+                    "current_take_profit_roe_pct",
+                    "remaining_take_profit_roe_pct",
+                ],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPositionAndNestedProtectionOrders(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-nested-protection",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["TON/USDT"]
+    assert position["stop_loss"] == 3.1
+    assert position["take_profit"] == 3.5
+    assert position["current_take_profit_roe_pct"] == 46.15
+    assert position["remaining_take_profit_roe_pct"] == 16.62
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_includes_default_single_tranche_for_open_position():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": [
+                    "filled_tranche_count",
+                    "total_tranches",
+                    "tranches",
+                ],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-default-tranche",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["TON/USDT"]
+    assert position["filled_tranche_count"] == 1
+    assert position["total_tranches"] == 1
+    assert position["tranches"] == [
+        {
+            "tranche_index": 0,
+            "kind": "INITIAL",
+            "filled": True,
+            "status": "FILLED",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_includes_auto_add_tranche_fill_state():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": [
+                    "filled_tranche_count",
+                    "total_tranches",
+                    "tranches",
+                ],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    auto_add_snapshot = AutoAddPositionSnapshot(
+        record=AutoAddPositionRecord(
+            id="auto-add-1",
+            account_id="acc-1",
+            session_id="session-1",
+            symbol="TON",
+            side="long",
+            status=AutoAddStatus.ACTIVE,
+            initial_margin_used=5.0,
+            initial_stop_price=3.1,
+            original_risk_usd=1.5,
+            trigger_basis_price=3.25,
+            next_trigger_price=3.75,
+            initial_entry_price=3.25,
+            initial_quantity=10.0,
+            expected_quantity=10.0,
+            leverage=6.0,
+            add_count=1,
+            max_tranches=3,
+            trigger_atr_multiple=1.0,
+            tranche_margin_pct=0.80,
+            protected_stop_roe=0.002,
+            active=True,
+            created_at=datetime(2024, 9, 1, 10, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 9, 1, 10, 0, tzinfo=timezone.utc),
+        ),
+        tranches=(
+            AutoAddTrancheRecord(
+                id="tr-0",
+                auto_add_position_id="auto-add-1",
+                tranche_index=0,
+                kind=AutoAddTrancheKind.INITIAL,
+                status=AutoAddTrancheStatus.INITIAL,
+                exchange_order_id=None,
+                trigger_price=None,
+                fill_price=3.25,
+                filled_quantity=10.0,
+                margin_used=5.0,
+                position_notional_usd=32.5,
+                fill_time=datetime(2024, 9, 1, 10, 0, tzinfo=timezone.utc),
+                atr_value=0.25,
+                trigger_basis_price=3.25,
+            ),
+            AutoAddTrancheRecord(
+                id="tr-1",
+                auto_add_position_id="auto-add-1",
+                tranche_index=1,
+                kind=AutoAddTrancheKind.ADD,
+                status=AutoAddTrancheStatus.RESOLVED,
+                exchange_order_id="ex-1",
+                trigger_price=3.5,
+                fill_price=3.5,
+                filled_quantity=8.0,
+                margin_used=4.0,
+                position_notional_usd=28.0,
+                fill_time=datetime(2024, 9, 1, 10, 15, tzinfo=timezone.utc),
+                atr_value=0.25,
+                trigger_basis_price=3.25,
+            ),
+            AutoAddTrancheRecord(
+                id="tr-2",
+                auto_add_position_id="auto-add-1",
+                tranche_index=2,
+                kind=AutoAddTrancheKind.ADD,
+                status=AutoAddTrancheStatus.PLACED,
+                exchange_order_id="ex-2",
+                trigger_price=3.75,
+                fill_price=None,
+                filled_quantity=None,
+                margin_used=4.0,
+                position_notional_usd=30.0,
+                fill_time=None,
+                atr_value=0.25,
+                trigger_basis_price=3.25,
+            ),
+        ),
+    )
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+        auto_add_repository=StubAutoAddRepository({"TON": auto_add_snapshot}),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-auto-add-tranches",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["TON/USDT"]
+    assert position["filled_tranche_count"] == 2
+    assert position["total_tranches"] == 4
+    assert position["tranches"] == [
+        {
+            "tranche_index": 0,
+            "kind": "INITIAL",
+            "filled": True,
+            "status": "FILLED",
+        },
+        {
+            "tranche_index": 1,
+            "kind": "ADD",
+            "filled": True,
+            "status": "FILLED",
+        },
+        {
+            "tranche_index": 2,
+            "kind": "ADD",
+            "filled": False,
+            "status": "PENDING",
+        },
+        {
+            "tranche_index": 3,
+            "kind": "ADD",
+            "filled": False,
+            "status": "PLANNED",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_preserves_small_price_precision_for_open_position_protection():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": [
+                    "entry_price",
+                    "current_price",
+                    "stop_loss",
+                    "take_profit",
+                    "liquidation",
+                ],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("ACH/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithLowPricePosition(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-low-price",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["ACH/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["ACH/USDT"]
+    assert position["entry_price"] == 0.005973
+    assert position["current_price"] == 0.006053
+    assert position["liquidation"] == 0.003018
+
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithLowPriceProtectionOrders(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["ACH/USDT"]
+    assert position["stop_loss"] == 0.005915
+    assert position["take_profit"] == 0.006129
+
+
+@pytest.mark.asyncio
 async def test_prompt_builder_fills_signal_frame_and_active_tunnel_in_rich_text():
     template = PromptTemplate(
         id=1,
@@ -642,6 +1123,215 @@ async def test_prompt_builder_fills_signal_frame_and_active_tunnel_in_rich_text(
 
     assert "Original signal frame: 4h" in result.prompt_text
     assert "Active tunnel at entry: fast" in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_fills_peak_roe_in_position_management_rich_text():
+    template = PromptTemplate(
+        id=1,
+        name="pm-peak-roe",
+        intro="Peak ROE: {peak_roe}",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": ["peak_roe"],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm-peak-roe",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "Peak ROE: 35.0" in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_prefers_persisted_peak_roe_over_current_roe():
+    template = PromptTemplate(
+        id=1,
+        name="pm-peak-roe-persisted",
+        intro="Peak ROE: {peak_roe}",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": ["peak_roe"],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+        position_origin_service=StubPositionOriginService(
+            {
+                "TON": ActivePositionOriginRecord(
+                    account_id="acc-1",
+                    symbol="TON",
+                    peak_roe=42.0,
+                    exchange_opened_at=datetime(2024, 9, 1, 10, 0, tzinfo=timezone.utc),
+                )
+            }
+        ),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm-peak-roe-persisted",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "Peak ROE: 42.0" in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_falls_back_to_position_origin_created_at_for_duration(monkeypatch):
+    fixed_now = datetime(2024, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(
+        "app.application.prompt_builder.service.datetime",
+        FixedDateTime,
+    )
+
+    template = PromptTemplate(
+        id=1,
+        name="pm-origin-duration",
+        intro="Duration: {duration}",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={"data_selections": ["quantitative_signals"]},
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPositionNoOpenedAt(),
+        risk_config_service=StubRiskConfigService(),
+        position_origin_service=StubPositionOriginService(
+            {
+                "TON": ActivePositionOriginRecord(
+                    account_id="acc-1",
+                    symbol="TON",
+                    anchor_frame="4h",
+                    active_tunnel="fast",
+                    created_at=datetime(2024, 9, 1, 8, 0, tzinfo=timezone.utc),
+                )
+            }
+        ),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm-origin-duration",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "Duration: 4h0m" in result.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_prefers_exchange_opened_at_over_origin_created_at_for_duration(monkeypatch):
+    fixed_now = datetime(2024, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(
+        "app.application.prompt_builder.service.datetime",
+        FixedDateTime,
+    )
+
+    template = PromptTemplate(
+        id=1,
+        name="pm-origin-exchange-duration",
+        intro="Duration: {duration}",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={"data_selections": ["quantitative_signals"]},
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPosition(),
+        risk_config_service=StubRiskConfigService(),
+        position_origin_service=StubPositionOriginService(
+            {
+                "TON": ActivePositionOriginRecord(
+                    account_id="acc-1",
+                    symbol="TON",
+                    created_at=datetime(2024, 9, 1, 8, 0, tzinfo=timezone.utc),
+                    exchange_opened_at=datetime(2024, 9, 1, 11, 0, tzinfo=timezone.utc),
+                )
+            }
+        ),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-pm-origin-exchange-duration",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+        template_context={"ticker": "TON/USDT"},
+    )
+
+    result = await service.build(request)
+
+    assert "Duration: 1h0m" in result.prompt_text
 
 
 @pytest.mark.asyncio

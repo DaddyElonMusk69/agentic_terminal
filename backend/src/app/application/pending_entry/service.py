@@ -576,7 +576,12 @@ class PendingEntryService:
     async def _sync_position_origin(self, record: PendingEntryRecord) -> None:
         if self._position_origin_service is None:
             return
-        if record.anchor_frame is None and record.active_tunnel is None:
+        if (
+            record.anchor_frame is None
+            and record.active_tunnel is None
+            and record.stop_loss_roe is None
+            and record.take_profit_roe is None
+        ):
             return
         try:
             await self._position_origin_service.upsert(

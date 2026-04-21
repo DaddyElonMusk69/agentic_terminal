@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.application.automation import topics
@@ -14,6 +15,7 @@ from app.domain.position_origin.models import ActivePositionOriginRecord
 
 class ProtectionReconcilerService:
     POLL_INTERVAL_SECONDS = 5
+    EMPTY_SNAPSHOT_PRUNE_GRACE_SECONDS = 30
 
     def __init__(
         self,
@@ -21,12 +23,15 @@ class ProtectionReconcilerService:
         position_origin_service: PositionOriginService,
         portfolio_service: PortfolioService,
         trade_executor: TradeExecutorService,
+        auto_add_service=None,
         outbox: OutboxService | None = None,
     ) -> None:
         self._position_origin_service = position_origin_service
         self._portfolio_service = portfolio_service
         self._trade_executor = trade_executor
+        self._auto_add_service = auto_add_service
         self._outbox = outbox
+        self._empty_snapshot_started_at: dict[str, datetime] = {}
 
     async def poll_once(self) -> int:
         account = await self._portfolio_service.get_active_account()
@@ -38,7 +43,11 @@ class ProtectionReconcilerService:
         except Exception:
             return 0
 
-        live_positions = snapshot.positions or []
+        live_positions = [
+            position
+            for position in (snapshot.positions or [])
+            if _position_is_open(position)
+        ]
         live_symbols = sorted(
             {
                 _normalize_symbol(getattr(position, "symbol", None))
@@ -46,17 +55,35 @@ class ProtectionReconcilerService:
                 if _normalize_symbol(getattr(position, "symbol", None))
             }
         )
+        if live_symbols and self._auto_add_service is not None:
+            try:
+                await self._auto_add_service.cancel_missing_parent_positions(live_symbols)
+            except Exception:
+                pass
+        if not live_symbols:
+            if not await self._should_prune_empty_snapshot(account.id):
+                return 0
+            try:
+                await self._position_origin_service.prune_missing(account.id, [])
+            except Exception:
+                pass
+            return 0
+        self._empty_snapshot_started_at.pop(account.id, None)
         try:
             await self._position_origin_service.prune_missing(account.id, live_symbols)
         except Exception:
             pass
-        if not live_symbols:
-            return 0
 
         try:
-            origin_rows = await self._position_origin_service.get_many(account.id, live_symbols)
+            origin_rows = await self._position_origin_service.sync_live_positions(
+                account.id,
+                live_positions,
+            )
         except Exception:
-            return 0
+            try:
+                origin_rows = await self._position_origin_service.get_many(account.id, live_symbols)
+            except Exception:
+                return 0
 
         managed: list[tuple[ActivePositionOriginRecord, Any]] = []
         for position in live_positions:
@@ -199,6 +226,14 @@ class ProtectionReconcilerService:
             return
         await self._outbox.enqueue_event(topic, payload)
 
+    async def _should_prune_empty_snapshot(self, account_id: str) -> bool:
+        now = datetime.now(timezone.utc)
+        first_empty_seen_at = self._empty_snapshot_started_at.get(account_id)
+        if first_empty_seen_at is None:
+            self._empty_snapshot_started_at[account_id] = now
+            return False
+        return now - first_empty_seen_at >= timedelta(seconds=self.EMPTY_SNAPSHOT_PRUNE_GRACE_SECONDS)
+
 
 def _normalize_symbol(value: object) -> str:
     if not isinstance(value, str):
@@ -232,6 +267,13 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _position_is_open(position: Any) -> bool:
+    size = _safe_float(getattr(position, "size", None))
+    if size is None:
+        return True
+    return abs(size) > 1e-8
 
 
 def _extract_nested_symbol(order: dict) -> str | None:

@@ -40,6 +40,31 @@ class StubTradeGuard:
         return GuardResult(is_valid=True, decision=decision)
 
 
+class StubMarketCapTradeGuard:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def validate(self, decision, **kwargs):  # noqa: ANN001
+        self.calls.append(kwargs)
+        max_positions = kwargs.get("max_positions")
+        inflight_market_open_count = kwargs.get("inflight_market_open_count", 0)
+        open_positions = kwargs.get("open_positions") or []
+        live_positions = len(
+            {
+                str(position.get("symbol") or "").upper()
+                for position in open_positions
+                if isinstance(position, dict) and position.get("symbol")
+            }
+        )
+        if max_positions is not None and live_positions + inflight_market_open_count > max_positions:
+            return GuardResult(
+                is_valid=False,
+                decision=decision,
+                errors=["market position cap reached"],
+            )
+        return GuardResult(is_valid=True, decision=decision)
+
+
 class StubCircuitBreaker:
     def evaluate(self, decision):  # noqa: ANN001
         return CircuitBreakerResult(allowed=True, decision=decision)
@@ -281,13 +306,14 @@ def _build_worker_with_pending(
     result: ExecutionResult | list[ExecutionResult],
     position_origin_service: StubPositionOriginService,
     pending_entry_service: StubPendingEntryService,
+    trade_guard=None,  # noqa: ANN001
     portfolio_service=None,  # noqa: ANN001
     auto_add_service=None,  # noqa: ANN001
     automation_config_service=None,  # noqa: ANN001
 ):
     return OrderQueueWorker(
         repository=StubOrderQueueRepository(item),
-        trade_guard=StubTradeGuard(),
+        trade_guard=trade_guard or StubTradeGuard(),
         circuit_breaker=StubCircuitBreaker(),
         trade_executor=StubTradeExecutor(result),
         outbox=StubOutbox(),
@@ -782,6 +808,51 @@ async def test_order_queue_worker_does_not_retry_market_open_failures():
     assert worker._repository.done_result is None
     assert worker._repository.failed_error == ("ord-1", "market_open_failed_once")
     assert len(worker._trade_executor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_order_queue_worker_rejects_market_open_when_inflight_reservations_exceed_max_positions():
+    OrderQueueWorker._market_open_reservations = {
+        "acc-1": {
+            "other-request": type(
+                "Reservation",
+                (),
+                {
+                    "symbol": "BTC",
+                    "expires_at": datetime.now(timezone.utc) + timedelta(seconds=30),
+                },
+            )(),
+        }
+    }
+
+    idea = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="ETH",
+        position_size_usd=100,
+    ).to_dict()
+    pending_entry_service = StubPendingEntryService()
+    position_origin_service = StubPositionOriginService()
+    trade_guard = StubMarketCapTradeGuard()
+    worker = _build_worker_with_pending(
+        _build_item(idea),
+        ExecutionResult(success=True, status="filled", order_id="should-not-run"),
+        position_origin_service,
+        pending_entry_service,
+        trade_guard=trade_guard,
+        automation_config_service=StubAutomationConfigService(max_positions=1),
+    )
+
+    handled = await worker.process_next()
+
+    assert handled is True
+    assert worker._repository.done_result is None
+    assert worker._repository.failed_error == ("ord-1", "trade_guard_rejected")
+    assert len(worker._trade_executor.calls) == 0
+    assert trade_guard.calls[0]["max_positions"] == 1
+    assert trade_guard.calls[0]["inflight_market_open_count"] == 2
+    assert "src-1" not in OrderQueueWorker._market_open_reservations.get("acc-1", {})
+
+    OrderQueueWorker._market_open_reservations = {}
 
 
 @pytest.mark.asyncio

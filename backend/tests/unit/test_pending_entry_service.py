@@ -753,6 +753,80 @@ async def test_pending_entry_service_attaches_protection_for_market_fill_retry_w
 
 
 @pytest.mark.asyncio
+async def test_pending_entry_service_syncs_position_origin_for_protection_without_anchor_metadata():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+    repository = SqlPendingEntryRepository(sessionmaker)
+    portfolio = StubPortfolioService()
+    trade_executor = StubTradeExecutor()
+    origin_service = StubPositionOriginService()
+    service = PendingEntryService(
+        repository=repository,
+        portfolio_service=portfolio,
+        trade_executor=trade_executor,
+        automation_config_service=StubAutomationConfigService(),
+        position_origin_service=origin_service,
+        outbox=None,
+    )
+
+    decision = ExecutionIdea(
+        action=ExecutionAction.OPEN_LONG,
+        symbol="BTC",
+        position_size_usd=100.0,
+        leverage=5,
+        stop_loss_roe=0.03,
+        take_profit_roe=0.08,
+    )
+    result = ExecutionResult(
+        success=True,
+        status="filled",
+        order_id="ord-m3",
+        fill_price=101.0,
+        filled_size=1.0,
+        error="protection_attach_failed: No open position for BTC/USDT:USDT",
+        raw_response={"id": "ord-m3", "symbol": "BTC/USDT:USDT", "average": 101.0, "filled": 1.0},
+    )
+
+    record = await service.register_protection_pending_entry(
+        decision=decision,
+        execution_result=result,
+        session_id="session-m3",
+    )
+    assert record is not None
+
+    portfolio.positions = [
+        Position(
+            symbol="BTC/USDT",
+            direction="long",
+            size=1.0,
+            entry_price=101.0,
+            mark_price=102.0,
+            unrealized_pnl=1.0,
+            liquidation_price=None,
+            margin=20.2,
+            leverage=5.0,
+        )
+    ]
+
+    handled = await service.poll_once()
+
+    assert handled == 1
+    assert origin_service.upserts == [
+        {
+            "account_id": "acc-1",
+            "symbol": "BTC",
+            "anchor_frame": None,
+            "active_tunnel": None,
+            "stop_loss_roe": 0.03,
+            "take_profit_roe": 0.08,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_pending_entry_service_registers_auto_add_after_limit_fill_is_protected():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
