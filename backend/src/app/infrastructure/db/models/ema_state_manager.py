@@ -77,7 +77,7 @@ class EmaStateManagerConfigModel(Base):
             name="ck_ema_state_bb_rejection_touches_max",
         ),
         CheckConstraint(
-            "bb_htf_min_interval_minutes >= 60",
+            "bb_htf_min_interval_minutes >= 15",
             name="ck_ema_state_bb_htf_min",
         ),
         CheckConstraint(

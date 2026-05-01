@@ -4,6 +4,9 @@ Revision ID: 0005_create_prompt_templates
 Revises: 0004_ema_state_mgr
 Create Date: 2024-09-02 00:00:04.000000
 """
+
+from datetime import datetime, timezone
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -12,6 +15,9 @@ revision = "0005_create_prompt_templates"
 down_revision = "0004_ema_state_mgr"
 branch_labels = None
 depends_on = None
+
+
+SEED_TIMESTAMP = datetime(2024, 9, 2, tzinfo=timezone.utc)
 
 
 def upgrade() -> None:
@@ -88,8 +94,8 @@ def upgrade() -> None:
                 "quant_fields": quant_fields,
                 "chart_defaults": chart_defaults,
                 "is_default": True,
-                "created_at": "2024-09-02T00:00:00Z",
-                "updated_at": "2024-09-02T00:00:00Z",
+                "created_at": SEED_TIMESTAMP,
+                "updated_at": SEED_TIMESTAMP,
             },
         )
 

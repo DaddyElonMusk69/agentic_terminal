@@ -82,6 +82,8 @@ class StubPortfolioService:
         )
         self.positions = positions
         self.open_orders: list[dict] = []
+        self.positions_error: Exception | None = None
+        self.open_orders_error: Exception | None = None
         self.canceled: list[tuple[str, str]] = []
         self.candle_calls = 0
 
@@ -89,10 +91,14 @@ class StubPortfolioService:
         return self.account
 
     async def get_positions(self):
+        if self.positions_error is not None:
+            raise self.positions_error
         return list(self.positions)
 
     async def get_open_orders(self, symbols=None, *, include_conditional_orders=True):  # noqa: ANN001
         del symbols, include_conditional_orders
+        if self.open_orders_error is not None:
+            raise self.open_orders_error
         return list(self.open_orders)
 
     async def cancel_order(self, order_id: str, symbol: str):
@@ -323,6 +329,103 @@ async def test_poll_once_cancels_remaining_orders_when_position_disappears():
     assert portfolio.canceled == [("ladder-1", "BTC"), ("ladder-2", "BTC")]
     assert tranches[1].status == AutoAddTrancheStatus.CANCELED
     assert tranches[2].status == AutoAddTrancheStatus.CANCELED
+
+
+@pytest.mark.asyncio
+async def test_poll_once_ignores_position_fetch_errors_and_keeps_ladder_active():
+    service, repository, portfolio = await _build_service(
+        positions=[_position(entry_price=100.0, mark_price=100.2, margin=20.0, leverage=5.0)],
+        stop_market_results=[
+            ExecutionResult(success=True, status="resting", order_id="ladder-1"),
+            ExecutionResult(success=True, status="resting", order_id="ladder-2"),
+        ],
+    )
+    portfolio.open_orders = [
+        {
+            "id": "sl-1",
+            "symbol": "BTC/USDT:USDT",
+            "type": "stop_market",
+            "stopPrice": 98.0,
+            "reduceOnly": True,
+            "status": "open",
+        }
+    ]
+    record = await service.register_fresh_entry(
+        decision=ExecutionIdea(
+            action=ExecutionAction.OPEN_LONG,
+            symbol="BTC",
+            position_size_usd=100.0,
+            leverage=5,
+        ),
+        execution_result=ExecutionResult(success=True, status="filled", order_id="entry-1", fill_price=100.0),
+        session_id="session-1",
+        open_positions_before=[],
+    )
+    assert record is not None
+
+    portfolio.positions_error = RuntimeError("network error")
+
+    handled = await service.poll_once()
+
+    stored = await repository.get_position(record.id)
+    tranches = await repository.list_tranches(record.id)
+    assert handled == 0
+    assert stored is not None
+    assert stored.status == AutoAddStatus.ACTIVE
+    assert stored.active is True
+    assert stored.add_count == 0
+    assert portfolio.canceled == []
+    assert tranches[1].status == AutoAddTrancheStatus.PLACED
+    assert tranches[2].status == AutoAddTrancheStatus.PLACED
+
+
+@pytest.mark.asyncio
+async def test_snapshot_refresh_skips_tranche_resolution_when_open_orders_are_unavailable():
+    service, repository, portfolio = await _build_service(
+        positions=[_position(entry_price=100.0, mark_price=100.2, margin=20.0, leverage=5.0)],
+        stop_market_results=[
+            ExecutionResult(success=True, status="resting", order_id="ladder-1"),
+            ExecutionResult(success=True, status="resting", order_id="ladder-2"),
+        ],
+    )
+    portfolio.open_orders = [
+        {
+            "id": "sl-1",
+            "symbol": "BTC/USDT:USDT",
+            "type": "stop_market",
+            "stopPrice": 98.0,
+            "reduceOnly": True,
+            "status": "open",
+        }
+    ]
+    record = await service.register_fresh_entry(
+        decision=ExecutionIdea(
+            action=ExecutionAction.OPEN_LONG,
+            symbol="BTC",
+            position_size_usd=100.0,
+            leverage=5,
+        ),
+        execution_result=ExecutionResult(success=True, status="filled", order_id="entry-1", fill_price=100.0),
+        session_id="session-1",
+        open_positions_before=[],
+    )
+    assert record is not None
+
+    portfolio.open_orders_error = RuntimeError("network error")
+
+    snapshots = await service.list_position_snapshots_for_active_account(symbols=["BTC"])
+
+    stored = await repository.get_position(record.id)
+    tranches = await repository.list_tranches(record.id)
+    assert len(snapshots) == 1
+    assert snapshots[0].record.status == AutoAddStatus.ACTIVE
+    assert snapshots[0].tranches[1].status == AutoAddTrancheStatus.PLACED
+    assert snapshots[0].tranches[2].status == AutoAddTrancheStatus.PLACED
+    assert stored is not None
+    assert stored.status == AutoAddStatus.ACTIVE
+    assert stored.add_count == 0
+    assert tranches[1].status == AutoAddTrancheStatus.PLACED
+    assert tranches[2].status == AutoAddTrancheStatus.PLACED
 
 
 @pytest.mark.asyncio

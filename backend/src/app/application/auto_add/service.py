@@ -113,7 +113,7 @@ class AutoAddService:
         try:
             live_positions = await self._portfolio_service.get_positions()
         except Exception:
-            live_positions = []
+            return 0
         position_index = {
             _normalize_symbol(getattr(position, "symbol", None)): position
             for position in live_positions or []
@@ -128,7 +128,7 @@ class AutoAddService:
                 record,
                 tranches=tranches,
                 live_position=position_index.get(record.symbol),
-                open_orders=open_orders_index.get(record.symbol, []),
+                open_orders=(open_orders_index.get(record.symbol, []) if open_orders_index is not None else None),
             )
             if changed:
                 handled += 1
@@ -190,7 +190,7 @@ class AutoAddService:
             refreshed_record, refreshed_tranches = await self._reconcile_tranche_resolution(
                 record,
                 tranches=tranches,
-                open_orders=open_orders_index.get(record.symbol, []),
+                open_orders=(open_orders_index.get(record.symbol, []) if open_orders_index is not None else None),
             )
             snapshots.append(
                 AutoAddPositionSnapshot(
@@ -243,8 +243,9 @@ class AutoAddService:
             return existing
 
         live_position = await self._get_live_position(normalized_symbol)
-        open_orders = (await self._get_open_orders_index([normalized_symbol])).get(normalized_symbol, [])
-        stop_price = _extract_stop_price(open_orders, normalized_symbol)
+        open_orders_index = await self._get_open_orders_index([normalized_symbol])
+        open_orders = open_orders_index.get(normalized_symbol, []) if open_orders_index is not None else None
+        stop_price = _extract_stop_price(open_orders, normalized_symbol) if open_orders is not None else None
         entry_price = _safe_float(getattr(live_position, "entry_price", None)) or fill_price
         quantity = _position_quantity(live_position)
         margin_used = _position_margin(live_position) or initial_margin_used
@@ -315,7 +316,7 @@ class AutoAddService:
         *,
         tranches: list[AutoAddTrancheRecord],
         live_position,
-        open_orders: list[dict],
+        open_orders: list[dict] | None,
     ) -> bool:
         if live_position is None:
             await self._cancel_and_finalize(
@@ -376,8 +377,13 @@ class AutoAddService:
         leverage = _safe_float(getattr(live_position, "leverage", None)) or record.leverage
         margin_used = _position_margin(live_position) or record.initial_margin_used
         quantity = _position_quantity(live_position) or record.initial_quantity
-        open_orders = (await self._get_open_orders_index([record.symbol])).get(record.symbol, [])
-        stop_price = _extract_stop_price(open_orders, record.symbol) or record.initial_stop_price
+        open_orders_index = await self._get_open_orders_index([record.symbol])
+        open_orders = open_orders_index.get(record.symbol, []) if open_orders_index is not None else None
+        stop_price = (
+            _extract_stop_price(open_orders, record.symbol)
+            if open_orders is not None
+            else record.initial_stop_price
+        ) or record.initial_stop_price
 
         if entry_price is None or leverage is None or leverage <= 0 or margin_used is None or margin_used <= 0:
             updated = await self._maybe_update_record(
@@ -504,9 +510,12 @@ class AutoAddService:
         record: AutoAddPositionRecord,
         *,
         tranches: list[AutoAddTrancheRecord],
-        open_orders: list[dict],
+        open_orders: list[dict] | None,
         live_position=None,
     ) -> tuple[AutoAddPositionRecord, list[AutoAddTrancheRecord]]:
+        if open_orders is None:
+            return record, tranches
+
         open_order_ids = {
             order_id
             for order_id in (_extract_order_id(order) for order in open_orders or [])
@@ -600,14 +609,14 @@ class AutoAddService:
                 return position
         return None
 
-    async def _get_open_orders_index(self, symbols: list[str]) -> dict[str, list[dict]]:
+    async def _get_open_orders_index(self, symbols: list[str]) -> dict[str, list[dict]] | None:
         unique = sorted({_normalize_symbol(symbol) for symbol in symbols if symbol})
         if not unique:
             return {}
         try:
             orders = await self._portfolio_service.get_open_orders(unique)
         except Exception:
-            return {symbol: [] for symbol in unique}
+            return None
         index = {symbol: [] for symbol in unique}
         for order in orders or []:
             normalized_symbol = _normalize_symbol(order.get("symbol") or _extract_nested_symbol(order))

@@ -70,6 +70,8 @@ export type EmaScannerLine = {
 export type EmaScannerConfig = {
   ema_lines: EmaScannerLine[];
   tolerance_pct: number;
+  available_intervals: string[];
+  scan_intervals: string[];
 };
 
 export type EmaScannerRunPayload = {

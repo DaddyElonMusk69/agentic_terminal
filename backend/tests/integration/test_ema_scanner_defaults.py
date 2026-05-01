@@ -25,6 +25,10 @@ def test_ema_scanner_defaults_seeded(tmp_path):
         tolerance_values = [row[0] for row in tolerance.fetchall()]
         assert tolerance_values == [0.2]
 
+        scan_intervals = conn.execute(sa.text("SELECT scan_intervals FROM ema_scanner_config"))
+        scan_interval_values = [row[0] for row in scan_intervals.fetchall()]
+        assert scan_interval_values == [None]
+
         lines = conn.execute(sa.text("SELECT length FROM ema_scanner_lines ORDER BY length"))
         assert [row[0] for row in lines.fetchall()] == [144, 169]
 

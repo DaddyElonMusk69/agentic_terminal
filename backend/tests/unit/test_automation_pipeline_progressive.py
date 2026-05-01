@@ -86,6 +86,9 @@ class StubEmaConfig:
             tolerance_pct=0.5,
         )
 
+    async def list_available_intervals(self):
+        return ["1h", "2h", "4h", "8h"]
+
 
 class StubEmaConfigFromMonitoredAssets:
     def __init__(self, monitored_assets) -> None:
@@ -99,6 +102,9 @@ class StubEmaConfigFromMonitoredAssets:
             ema_lengths=[144],
             tolerance_pct=0.5,
         )
+
+    async def list_available_intervals(self):
+        return ["1h", "2h", "4h"]
 
 
 class StubEmaStateManager:
@@ -375,3 +381,41 @@ async def test_pipeline_keeps_live_positions_monitored_even_when_not_in_base_ass
     assert state_manager.calls[0]["monitored_assets"] == ["BTC", "AAPL"]
     assert state_manager.calls[0]["update_assets"] == ["BTC/USDT"]
     assert state_manager.calls[1]["update_assets"] == ["AAPL/USDT"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_uses_global_monitored_intervals_for_prompt_building(monkeypatch):
+    captured_intervals = []
+
+    def _fake_prompt_payload(event, timeframes, **kwargs):
+        del event, kwargs
+        captured_intervals.append(list(timeframes))
+        return {"timeframes": list(timeframes)}
+
+    monkeypatch.setattr(
+        "app.application.automation.pipeline.build_prompt_request",
+        _fake_prompt_payload,
+    )
+
+    state_manager = StubEmaStateManager()
+    prompt_queue = StubPromptQueue()
+    outbox = StubOutbox()
+    pipeline = AutomationPipelineService(
+        ema_scanner=StubEmaScanner(),
+        ema_config=StubEmaConfig(),
+        ema_state_manager=state_manager,
+        quant_scanner=StubQuantScanner(),
+        quant_config=StubQuantConfig(),
+        prompt_queue=prompt_queue,
+        outbox=outbox,
+        portfolio_service=StubPortfolio(),
+        telegram_notifier=None,
+        history_service=None,
+    )
+
+    await pipeline.run_ema_cycle(max_positions=4)
+
+    assert captured_intervals == [
+        ["1h", "2h", "4h", "8h"],
+        ["1h", "2h", "4h", "8h"],
+    ]

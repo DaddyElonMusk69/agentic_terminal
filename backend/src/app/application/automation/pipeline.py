@@ -90,6 +90,12 @@ class AutomationPipelineService:
         except Exception as exc:
             await log_event("scan_error", {"error": str(exc)})
             raise
+        try:
+            monitored_intervals = await self._ema_config.list_available_intervals()
+        except Exception:
+            monitored_intervals = list(config.timeframes)
+        if not monitored_intervals:
+            monitored_intervals = list(config.timeframes)
 
         await log_event(
             "scan_config",
@@ -156,7 +162,7 @@ class AutomationPipelineService:
                 template_id = _resolve_template_id(event.trigger_reason.value, template_map)
                 payload = build_prompt_request(
                     event,
-                    config.timeframes,
+                    monitored_intervals,
                     template_id=template_id,
                     execution_mode=mode,
                     llm_model=llm_model,

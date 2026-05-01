@@ -11,6 +11,12 @@ from app.infrastructure.repositories.ema_scanner_repository import SqlEmaScanner
 from app.settings import get_settings
 
 
+class StubAssetsService:
+    async def list_assets(self, include_positions: bool = True, force_refresh: bool = False):
+        del include_positions, force_refresh
+        return ["BTC", "ETH", "SOL"]
+
+
 @pytest.mark.asyncio
 async def test_ema_scanner_repository_builds_config(tmp_path):
     db_path = tmp_path / "ema_repo.db"
@@ -27,12 +33,18 @@ async def test_ema_scanner_repository_builds_config(tmp_path):
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
 
     repository = SqlEmaScannerRepository(sessionmaker)
-    service = EmaScannerConfigService(repository)
+    service = EmaScannerConfigService(repository, StubAssetsService())
     config = await service.build_config()
 
     assert config.tolerance_pct == 0.2
     assert config.ema_lengths == [144, 169]
     assert config.assets == ["BTC", "ETH", "SOL"]
     assert config.timeframes == ["2h", "4h"]
+
+    updated = await service.update_scan_intervals(["4h"])
+    assert updated == ["4h"]
+
+    filtered_config = await service.build_config()
+    assert filtered_config.timeframes == ["4h"]
 
     await engine.dispose()

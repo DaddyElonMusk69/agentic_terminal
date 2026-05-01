@@ -35,6 +35,8 @@ class EmaLineResponse(BaseModel):
 class EmaScannerConfigResponse(BaseModel):
     ema_lines: List[EmaLineResponse]
     tolerance_pct: float
+    available_intervals: List[str] = Field(default_factory=list)
+    scan_intervals: List[str] = Field(default_factory=list)
 
 
 class EmaScannerConfigDataResponse(BaseModel):
@@ -46,8 +48,9 @@ class EmaLineCreateRequest(BaseModel):
     length: int = Field(..., ge=1, le=5000)
 
 
-class EmaToleranceUpdateRequest(BaseModel):
-    tolerance_pct: float = Field(..., ge=0.05, le=2.0)
+class EmaConfigUpdateRequest(BaseModel):
+    tolerance_pct: float | None = Field(default=None, ge=0.05, le=2.0)
+    scan_intervals: List[str] | None = None
 
 
 class ScannerVoteResponse(BaseModel):
@@ -133,7 +136,7 @@ class EmaStateManagerConfigPayload(BaseModel):
     bb_exit_warning_cooldown_seconds: int = Field(..., ge=60, le=3600)
     position_check_interval_seconds: int = Field(..., ge=60, le=3600)
     bb_rejection_min_touches: int = Field(..., ge=1, le=30)
-    bb_htf_min_interval_minutes: int = Field(..., ge=60)
+    bb_htf_min_interval_minutes: int = Field(..., ge=15)
     new_resonance_min_touches: int = Field(..., ge=1, le=30)
     emit_new_resonance: Optional[bool] = None
     emit_resonance_increase: Optional[bool] = None
@@ -173,8 +176,18 @@ def _meta(request: Request) -> ApiMeta:
     return ApiMeta(request_id=getattr(request.state, "request_id", None))
 
 
-def _config_response(ema_lines: List[EmaLineResponse], tolerance_pct: float) -> EmaScannerConfigResponse:
-    return EmaScannerConfigResponse(ema_lines=ema_lines, tolerance_pct=tolerance_pct)
+def _config_response(
+    ema_lines: List[EmaLineResponse],
+    tolerance_pct: float,
+    available_intervals: List[str],
+    scan_intervals: List[str],
+) -> EmaScannerConfigResponse:
+    return EmaScannerConfigResponse(
+        ema_lines=ema_lines,
+        tolerance_pct=tolerance_pct,
+        available_intervals=available_intervals,
+        scan_intervals=scan_intervals,
+    )
 
 
 async def _emit_log(request: Request, event: str, data: Optional[dict] = None) -> None:
@@ -330,25 +343,32 @@ async def get_config(request: Request) -> EmaScannerConfigDataResponse:
     service = get_ema_config_service()
     lines = await service.list_lines()
     tolerance = await service.get_tolerance_value()
+    available_intervals = await service.list_available_intervals()
+    scan_intervals = await service.get_effective_scan_intervals()
     payload = [EmaLineResponse(id=line.id, length=line.length) for line in lines]
     return EmaScannerConfigDataResponse(
-        data=_config_response(payload, tolerance),
+        data=_config_response(payload, tolerance, available_intervals, scan_intervals),
         meta=_meta(request),
     )
 
 
 @router.put("/config", response_model=EmaScannerConfigDataResponse)
 async def update_config(
-    payload: EmaToleranceUpdateRequest,
+    payload: EmaConfigUpdateRequest,
     request: Request,
 ) -> EmaScannerConfigDataResponse:
     service = get_ema_config_service()
-    await service.set_tolerance(payload.tolerance_pct)
+    if payload.tolerance_pct is not None:
+        await service.set_tolerance(payload.tolerance_pct)
+    if payload.scan_intervals is not None:
+        await service.update_scan_intervals(payload.scan_intervals)
     lines = await service.list_lines()
     tolerance = await service.get_tolerance_value()
+    available_intervals = await service.list_available_intervals()
+    scan_intervals = await service.get_effective_scan_intervals()
     line_payload = [EmaLineResponse(id=line.id, length=line.length) for line in lines]
     return EmaScannerConfigDataResponse(
-        data=_config_response(line_payload, tolerance),
+        data=_config_response(line_payload, tolerance, available_intervals, scan_intervals),
         meta=_meta(request),
     )
 
@@ -361,9 +381,11 @@ async def add_line(
     service = get_ema_config_service()
     lines = await service.add_line(payload.length)
     tolerance = await service.get_tolerance_value()
+    available_intervals = await service.list_available_intervals()
+    scan_intervals = await service.get_effective_scan_intervals()
     line_payload = [EmaLineResponse(id=line.id, length=line.length) for line in lines]
     return EmaScannerConfigDataResponse(
-        data=_config_response(line_payload, tolerance),
+        data=_config_response(line_payload, tolerance, available_intervals, scan_intervals),
         meta=_meta(request),
     )
 
@@ -376,9 +398,11 @@ async def remove_line(
     service = get_ema_config_service()
     lines = await service.remove_line(line_id)
     tolerance = await service.get_tolerance_value()
+    available_intervals = await service.list_available_intervals()
+    scan_intervals = await service.get_effective_scan_intervals()
     line_payload = [EmaLineResponse(id=line.id, length=line.length) for line in lines]
     return EmaScannerConfigDataResponse(
-        data=_config_response(line_payload, tolerance),
+        data=_config_response(line_payload, tolerance, available_intervals, scan_intervals),
         meta=_meta(request),
     )
 

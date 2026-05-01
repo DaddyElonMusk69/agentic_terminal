@@ -150,6 +150,52 @@
           </BaseCard>
 
           <BaseCard>
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs uppercase tracking-wide text-muted">Scanned Intervals</div>
+                <div class="mt-1 text-[11px] text-muted">
+                  Limit EMA scans to selected intervals from the global monitored list.
+                </div>
+              </div>
+              <button
+                class="rounded-md border border-border bg-panel px-2 py-1 text-[10px] text-muted hover:text-text disabled:opacity-60"
+                type="button"
+                :disabled="isSavingScanIntervals || store.availableIntervals.length === 0"
+                @click="handleUseAllScanIntervals"
+              >
+                {{ isSavingScanIntervals ? "Saving..." : "Use All" }}
+              </button>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <label
+                v-for="interval in store.availableIntervals"
+                :key="interval"
+                class="flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1 text-xs transition-colors"
+                :class="
+                  store.scanIntervals.includes(interval)
+                    ? 'border-accent/50 bg-accent/10 text-text'
+                    : 'border-border bg-panel text-muted'
+                "
+              >
+                <input
+                  class="accent-current"
+                  type="checkbox"
+                  :checked="store.scanIntervals.includes(interval)"
+                  :disabled="isSavingScanIntervals"
+                  @change="toggleScanInterval(interval)"
+                />
+                <span>{{ interval }}</span>
+              </label>
+              <span v-if="store.availableIntervals.length === 0" class="text-xs text-muted">
+                No global monitored intervals configured.
+              </span>
+            </div>
+            <div v-if="scanIntervalError" class="mt-2 text-[11px] text-negative">
+              {{ scanIntervalError }}
+            </div>
+          </BaseCard>
+
+          <BaseCard>
             <div class="flex items-center justify-between">
               <span class="text-xs uppercase tracking-wide text-muted">State Manager</span>
               <span class="text-[10px] text-muted">
@@ -266,16 +312,22 @@
               <label class="block space-y-1">
                 <div class="flex items-center justify-between">
                   <span>Minimum BB Timeframe</span>
-                  <span class="font-mono text-text">{{ htfMinHours }}h</span>
+                  <span class="font-mono text-text">
+                    {{ formatTimeframeLabel(stateConfig.bb_htf_min_interval_minutes) }}
+                  </span>
                 </div>
-                <input
-                  v-model.number="htfMinHours"
-                  class="w-full"
-                  type="range"
-                  min="1"
-                  max="48"
-                  step="1"
-                />
+                <select
+                  v-model.number="stateConfig.bb_htf_min_interval_minutes"
+                  class="w-full rounded-md border border-border bg-panel px-2 py-1 text-xs text-text"
+                >
+                  <option
+                    v-for="option in bbMinTimeframeOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
               </label>
               <div class="rounded-md border border-border/60 bg-panel/40 p-2">
                 <div class="text-[10px] uppercase tracking-wide text-muted">Emit Events</div>
@@ -807,6 +859,8 @@ const stateConfig = ref<StateManagerConfig>({
   emit_position_management: true,
   emit_bb_exit_warning: true,
 });
+const isSavingScanIntervals = ref(false);
+const scanIntervalError = ref("");
 const isSavingStateConfig = ref(false);
 const stateConfigError = ref("");
 const isClearingVegasState = ref(false);
@@ -865,6 +919,33 @@ const handleImportChange = async (event: Event) => {
 
 const handleExport = () => {
   void store.exportScanResults();
+};
+
+const persistScanIntervals = async (intervals: string[]) => {
+  isSavingScanIntervals.value = true;
+  scanIntervalError.value = "";
+  try {
+    await store.updateScanIntervals(intervals);
+  } catch (err) {
+    scanIntervalError.value =
+      err instanceof Error ? err.message : "Failed to update scanned intervals.";
+  } finally {
+    isSavingScanIntervals.value = false;
+  }
+};
+
+const toggleScanInterval = (interval: string) => {
+  const next = new Set(store.scanIntervals);
+  if (next.has(interval)) {
+    next.delete(interval);
+  } else {
+    next.add(interval);
+  }
+  void persistScanIntervals(Array.from(next));
+};
+
+const handleUseAllScanIntervals = () => {
+  void persistScanIntervals([...store.availableIntervals]);
 };
 
 const handleClearVegasState = () => {
@@ -1019,13 +1100,19 @@ const vegasLastUpdatedLabel = computed(() => {
   return `Updated ${formatTime(store.vegasLastUpdated)}`;
 });
 
-const htfMinHours = computed({
-  get: () => Math.max(1, Math.round((stateConfig.value.bb_htf_min_interval_minutes || 0) / 60)),
-  set: (value: number) => {
-    const minutes = Math.max(60, Math.round(value) * 60);
-    stateConfig.value.bb_htf_min_interval_minutes = minutes;
-  },
-});
+const bbMinTimeframeOptions = [
+  { value: 15, label: "15m" },
+  { value: 30, label: "30m" },
+  { value: 60, label: "1h" },
+  { value: 120, label: "2h" },
+  { value: 240, label: "4h" },
+  { value: 360, label: "6h" },
+  { value: 480, label: "8h" },
+  { value: 720, label: "12h" },
+  { value: 1440, label: "1d" },
+  { value: 4320, label: "3d" },
+  { value: 10080, label: "1w" },
+];
 
 const vegasElapsedSeconds = computed(() => {
   if (!store.vegasLastUpdated) return null;
@@ -1098,6 +1185,20 @@ const formatTime = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString();
+};
+
+const formatTimeframeLabel = (minutes?: number) => {
+  if (!minutes || minutes <= 0) return "--";
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes % 1440 === 0) {
+    return `${minutes / 1440}d`;
+  }
+  if (minutes % 60 === 0) {
+    return `${minutes / 60}h`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
 };
 
 const formatLogMessage = (log: ScannerLog, withPrompt = false) => {

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.db.models.base import Base
@@ -53,6 +53,7 @@ class EmaScannerConfigModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tolerance_pct: Mapped[float] = mapped_column(nullable=False)
+    scan_intervals: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

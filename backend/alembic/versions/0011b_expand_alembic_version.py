@@ -15,7 +15,14 @@ branch_labels = None
 depends_on = None
 
 
+def _supports_alter_column() -> bool:
+    bind = op.get_bind()
+    return bind.dialect.name != "sqlite"
+
+
 def upgrade() -> None:
+    if not _supports_alter_column():
+        return
     op.alter_column(
         "alembic_version",
         "version_num",
@@ -26,6 +33,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _supports_alter_column():
+        return
     op.alter_column(
         "alembic_version",
         "version_num",

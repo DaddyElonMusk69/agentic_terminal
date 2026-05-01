@@ -72,6 +72,8 @@ export const useScannerEmaStore = defineStore("scannerEma", {
     calendarData: {} as Record<string, number>,
     emaLines: [] as EmaScannerLine[],
     tolerancePct: 0.2,
+    availableIntervals: [] as string[],
+    scanIntervals: [] as string[],
     vegasStates: [] as VegasTickerState[],
     vegasSummary: {
       tickers: 0,
@@ -338,6 +340,12 @@ export const useScannerEmaStore = defineStore("scannerEma", {
       if (!data.data) return;
       this.emaLines = data.data.ema_lines || [];
       this.tolerancePct = Number(data.data.tolerance_pct ?? this.tolerancePct);
+      this.availableIntervals = Array.isArray(data.data.available_intervals)
+        ? data.data.available_intervals.filter((item) => typeof item === "string")
+        : [];
+      this.scanIntervals = Array.isArray(data.data.scan_intervals)
+        ? data.data.scan_intervals.filter((item) => typeof item === "string")
+        : [];
     },
     async loadVegasState() {
       const res = await fetch("/api/v1/scanner/ema/state");
@@ -362,6 +370,32 @@ export const useScannerEmaStore = defineStore("scannerEma", {
         body: JSON.stringify({ tolerance_pct: value }),
       });
     },
+    async updateScanIntervals(intervals: string[]) {
+      const normalized = Array.from(
+        new Set(intervals.filter((item): item is string => typeof item === "string" && item.trim())),
+      );
+      const response = await fetch("/api/v1/scanner/ema/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scan_intervals: normalized }),
+      });
+      const data = await parseResponse<EmaScannerConfig>(response);
+      if (!response.ok) {
+        throw new Error(resolveError(data, "Failed to update scanned intervals."));
+      }
+      if (data.data) {
+        this.emaLines = data.data.ema_lines || this.emaLines;
+        this.tolerancePct = Number(data.data.tolerance_pct ?? this.tolerancePct);
+        this.availableIntervals = Array.isArray(data.data.available_intervals)
+          ? data.data.available_intervals.filter((item) => typeof item === "string")
+          : this.availableIntervals;
+        this.scanIntervals = Array.isArray(data.data.scan_intervals)
+          ? data.data.scan_intervals.filter((item) => typeof item === "string")
+          : this.scanIntervals;
+        return;
+      }
+      await this.loadConfig();
+    },
     async addEmaLine(length: number) {
       if (!length) return;
       const response = await fetch("/api/v1/scanner/ema/lines", {
@@ -373,6 +407,12 @@ export const useScannerEmaStore = defineStore("scannerEma", {
       if (data.data?.ema_lines) {
         this.emaLines = data.data.ema_lines;
         this.tolerancePct = Number(data.data.tolerance_pct ?? this.tolerancePct);
+        this.availableIntervals = Array.isArray(data.data.available_intervals)
+          ? data.data.available_intervals.filter((item) => typeof item === "string")
+          : this.availableIntervals;
+        this.scanIntervals = Array.isArray(data.data.scan_intervals)
+          ? data.data.scan_intervals.filter((item) => typeof item === "string")
+          : this.scanIntervals;
         return;
       }
       await this.loadConfig();
@@ -385,6 +425,12 @@ export const useScannerEmaStore = defineStore("scannerEma", {
       if (data.data?.ema_lines) {
         this.emaLines = data.data.ema_lines;
         this.tolerancePct = Number(data.data.tolerance_pct ?? this.tolerancePct);
+        this.availableIntervals = Array.isArray(data.data.available_intervals)
+          ? data.data.available_intervals.filter((item) => typeof item === "string")
+          : this.availableIntervals;
+        this.scanIntervals = Array.isArray(data.data.scan_intervals)
+          ? data.data.scan_intervals.filter((item) => typeof item === "string")
+          : this.scanIntervals;
         return;
       }
       await this.loadConfig();
