@@ -106,10 +106,6 @@ class AutoAddService:
         if account is None:
             return 0
 
-        records = await self._repository.list_active_positions(account.id)
-        if not records:
-            return 0
-
         try:
             live_positions = await self._portfolio_service.get_positions()
         except Exception:
@@ -119,6 +115,14 @@ class AutoAddService:
             for position in live_positions or []
             if _is_open_position(position) and _normalize_symbol(getattr(position, "symbol", None))
         }
+        records = await self._repository.list_active_positions(account.id)
+        records = await self._include_recoverable_records(
+            account.id,
+            records=records,
+            position_index=position_index,
+        )
+        if not records:
+            return 0
 
         open_orders_index = await self._get_open_orders_index([record.symbol for record in records])
         handled = 0
@@ -133,6 +137,70 @@ class AutoAddService:
             if changed:
                 handled += 1
         return handled
+
+    async def _include_recoverable_records(
+        self,
+        account_id: str,
+        *,
+        records: list[AutoAddPositionRecord],
+        position_index: dict[str, Any],
+    ) -> list[AutoAddPositionRecord]:
+        if not position_index:
+            return records
+        by_id = {record.id: record for record in records}
+        tracked_symbols = {record.symbol for record in records}
+        candidate_symbols = [
+            symbol
+            for symbol in sorted(position_index.keys())
+            if symbol and symbol not in tracked_symbols
+        ]
+        if not candidate_symbols:
+            return records
+
+        latest_records = await self._repository.list_latest_positions_for_symbols(account_id, candidate_symbols)
+        recovered: list[AutoAddPositionRecord] = []
+        for record in latest_records:
+            if record.active or record.status != AutoAddStatus.COMPLETED:
+                continue
+            live_position = position_index.get(record.symbol)
+            if not _record_matches_live_position(record, live_position):
+                continue
+            tranches = await self._repository.list_tranches(record.id)
+            add_tranches = [tranche for tranche in tranches if tranche.kind == AutoAddTrancheKind.ADD]
+            recover_reason = "recovering_premature_auto_add_completion"
+            if add_tranches:
+                has_unconfirmed_resolution = _has_unconfirmed_resolved_tranches(record, tranches, live_position)
+                has_retryable_failures = _has_retryable_failed_tranches(tranches)
+                if not has_unconfirmed_resolution and not has_retryable_failures:
+                    continue
+                if has_unconfirmed_resolution:
+                    for tranche in add_tranches:
+                        if tranche.status == AutoAddTrancheStatus.RESOLVED and tranche.filled_quantity is None:
+                            await self._repository.update_tranche(
+                                replace(
+                                    tranche,
+                                    status=AutoAddTrancheStatus.FAILED,
+                                    fill_price=None,
+                                    fill_time=None,
+                                    last_error="unconfirmed_auto_add_resolution",
+                                )
+                            )
+                    recover_reason = "recovering_unconfirmed_auto_add_resolution"
+                else:
+                    recover_reason = "recovering_failed_auto_add_completion"
+            recovered_record = replace(
+                record,
+                status=AutoAddStatus.WAITING_PROTECTION,
+                active=True,
+                add_count=0,
+                next_trigger_price=None,
+                resolved_at=None,
+                last_error=recover_reason,
+            )
+            recovered.append(await self._repository.update_position(recovered_record))
+        for record in recovered:
+            by_id.setdefault(record.id, record)
+        return list(by_id.values())
 
     async def cancel_missing_parent_positions(self, live_symbols: list[str]) -> int:
         account = await self._portfolio_service.get_active_account()
@@ -336,7 +404,10 @@ class AutoAddService:
             )
             return True
 
-        if record.status == AutoAddStatus.WAITING_PROTECTION:
+        has_add_tranches = any(tranche.kind == AutoAddTrancheKind.ADD for tranche in tranches)
+        if record.status == AutoAddStatus.WAITING_PROTECTION or (
+            record.status == AutoAddStatus.ACTIVE and not has_add_tranches
+        ):
             updated = await self._arm_ladder(record, live_position=live_position)
             return updated is not None
 
@@ -521,6 +592,18 @@ class AutoAddService:
             for order_id in (_extract_order_id(order) for order in open_orders or [])
             if order_id
         }
+        live_quantity = _position_quantity(live_position)
+        previous_expected_quantity = (
+            record.expected_quantity
+            or record.last_seen_position_size
+            or record.initial_quantity
+            or 0.0
+        )
+        available_fill_quantity = (
+            max(0.0, live_quantity - previous_expected_quantity)
+            if live_quantity is not None
+            else 0.0
+        )
         refreshed_tranches = list(tranches)
         changed = False
         for idx, tranche in enumerate(refreshed_tranches):
@@ -529,19 +612,42 @@ class AutoAddService:
             if tranche.status != AutoAddTrancheStatus.PLACED:
                 continue
             if tranche.exchange_order_id and tranche.exchange_order_id not in open_order_ids:
+                if available_fill_quantity <= 1e-8:
+                    continue
+                estimated_quantity = _estimated_tranche_quantity(tranche)
+                filled_quantity = (
+                    min(available_fill_quantity, estimated_quantity)
+                    if estimated_quantity is not None
+                    else available_fill_quantity
+                )
+                if filled_quantity <= 1e-8:
+                    continue
+                available_fill_quantity = max(0.0, available_fill_quantity - filled_quantity)
                 resolved = replace(
                     tranche,
                     status=AutoAddTrancheStatus.RESOLVED,
                     fill_time=tranche.fill_time or _utcnow(),
                     fill_price=tranche.fill_price or tranche.trigger_price,
+                    filled_quantity=tranche.filled_quantity or filled_quantity,
                     last_error=None,
                 )
                 refreshed_tranches[idx] = await self._repository.update_tranche(resolved)
                 changed = True
 
+        add_tranches = [
+            tranche
+            for tranche in refreshed_tranches
+            if tranche.kind == AutoAddTrancheKind.ADD
+        ]
+        if not add_tranches:
+            return record, refreshed_tranches
+
         resolved_count = sum(1 for tranche in refreshed_tranches if tranche.status == AutoAddTrancheStatus.RESOLVED)
         next_trigger_price = _next_active_trigger_price(refreshed_tranches)
-        target_status = AutoAddStatus.ACTIVE if next_trigger_price is not None else AutoAddStatus.COMPLETED
+        target_status = _target_status_after_tranche_reconciliation(
+            refreshed_tranches,
+            max_tranches=record.max_tranches,
+        )
         updated_record = await self._maybe_update_record(
             record,
             add_count=resolved_count,
@@ -553,7 +659,8 @@ class AutoAddService:
             last_seen_entry_price=_safe_float(getattr(live_position, "entry_price", None)) if live_position is not None else record.last_seen_entry_price,
             last_seen_mark_price=_safe_float(getattr(live_position, "mark_price", None)) if live_position is not None else record.last_seen_mark_price,
             last_seen_margin=_position_margin(live_position) if live_position is not None else record.last_seen_margin,
-            last_error=record.last_error if target_status == AutoAddStatus.ACTIVE else None,
+            expected_quantity=max(previous_expected_quantity, live_quantity) if live_quantity is not None else record.expected_quantity,
+            last_error=_reconciled_last_error(record, refreshed_tranches, target_status),
         )
         return updated_record or record, refreshed_tranches
 
@@ -738,6 +845,107 @@ def _position_margin(position) -> float | None:
     if entry_price is None or leverage is None or leverage <= 0 or quantity is None:
         return None
     return quantity * entry_price / leverage
+
+
+def _estimated_tranche_quantity(tranche: AutoAddTrancheRecord) -> float | None:
+    if tranche.position_notional_usd is None or tranche.trigger_price is None or tranche.trigger_price <= 0:
+        return None
+    quantity = tranche.position_notional_usd / tranche.trigger_price
+    return quantity if quantity > 0 else None
+
+
+def _record_matches_live_position(record: AutoAddPositionRecord, live_position) -> bool:
+    if live_position is None:
+        return False
+    opened_at = getattr(live_position, "opened_at", None)
+    if opened_at is None or record.created_at is None:
+        return True
+    return record.created_at >= opened_at - timedelta(minutes=5)
+
+
+def _has_unconfirmed_resolved_tranches(
+    record: AutoAddPositionRecord,
+    tranches: list[AutoAddTrancheRecord],
+    live_position,
+) -> bool:
+    if live_position is None:
+        return False
+    if not any(
+        tranche.kind == AutoAddTrancheKind.ADD
+        and tranche.status == AutoAddTrancheStatus.RESOLVED
+        and tranche.filled_quantity is None
+        for tranche in tranches
+    ):
+        return False
+    live_quantity = _position_quantity(live_position)
+    initial_quantity = record.initial_quantity or 0.0
+    confirmed_add_quantity = sum(
+        tranche.filled_quantity or 0.0
+        for tranche in tranches
+        if tranche.kind == AutoAddTrancheKind.ADD
+        and tranche.status == AutoAddTrancheStatus.RESOLVED
+        and tranche.filled_quantity is not None
+    )
+    if live_quantity is None:
+        return False
+    return live_quantity <= initial_quantity + confirmed_add_quantity + 1e-8
+
+
+def _has_retryable_failed_tranches(tranches: list[AutoAddTrancheRecord]) -> bool:
+    add_tranches = [
+        tranche
+        for tranche in tranches
+        if tranche.kind == AutoAddTrancheKind.ADD
+    ]
+    if not add_tranches:
+        return False
+    if any(
+        tranche.status == AutoAddTrancheStatus.RESOLVED
+        and tranche.filled_quantity is not None
+        for tranche in add_tranches
+    ):
+        return False
+    return any(tranche.status == AutoAddTrancheStatus.FAILED for tranche in add_tranches)
+
+
+def _target_status_after_tranche_reconciliation(
+    tranches: list[AutoAddTrancheRecord],
+    *,
+    max_tranches: int,
+) -> AutoAddStatus:
+    add_tranches = [
+        tranche
+        for tranche in tranches
+        if tranche.kind == AutoAddTrancheKind.ADD
+    ]
+    if any(tranche.status == AutoAddTrancheStatus.PLACED for tranche in add_tranches):
+        return AutoAddStatus.ACTIVE
+    resolved_count = sum(1 for tranche in add_tranches if tranche.status == AutoAddTrancheStatus.RESOLVED)
+    if resolved_count >= max_tranches and max_tranches > 0:
+        return AutoAddStatus.COMPLETED
+    if add_tranches and all(tranche.status == AutoAddTrancheStatus.RESOLVED for tranche in add_tranches):
+        return AutoAddStatus.COMPLETED
+    if any(tranche.status == AutoAddTrancheStatus.FAILED for tranche in add_tranches):
+        return AutoAddStatus.ERROR
+    return AutoAddStatus.ACTIVE
+
+
+def _reconciled_last_error(
+    record: AutoAddPositionRecord,
+    tranches: list[AutoAddTrancheRecord],
+    target_status: AutoAddStatus,
+) -> str | None:
+    if target_status == AutoAddStatus.COMPLETED:
+        return None
+    failed_errors = [
+        f"tranche_{tranche.tranche_index}:{tranche.last_error or 'failed'}"
+        for tranche in tranches
+        if tranche.kind == AutoAddTrancheKind.ADD
+        and tranche.status == AutoAddTrancheStatus.FAILED
+    ]
+    if failed_errors:
+        return "; ".join(failed_errors)
+    return record.last_error
 
 
 def _calculate_margin_from_notional(position_size_usd: float | None, leverage: float | None) -> float | None:

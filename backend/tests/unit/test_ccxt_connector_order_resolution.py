@@ -120,6 +120,42 @@ async def test_fetch_open_orders_filters_binance_algo_orders_after_single_fetch(
 
 
 @pytest.mark.asyncio
+async def test_fetch_open_orders_uses_binance_algo_request_fallback():
+    connector = _build_connector("binance")
+
+    class FakeClient:
+        has = {"fetchOpenOrders": True}
+        markets = {
+            "BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "base": "BTC", "quote": "USDT", "swap": True, "id": "BTCUSDT"},
+        }
+        markets_by_id = {
+            "BTCUSDT": {"symbol": "BTC/USDT:USDT"},
+        }
+
+        def __init__(self) -> None:
+            self.request_calls: list[tuple[str, str, str, dict]] = []
+
+        async def fetch_open_orders(self, symbol=None):  # noqa: ANN001
+            return []
+
+        async def request(self, path, api, method, params=None):  # noqa: ANN001
+            self.request_calls.append((path, api, method, params or {}))
+            return [
+                {"algoId": "a1", "symbol": "BTCUSDT", "orderType": "STOP_MARKET", "triggerPrice": "100"},
+            ]
+
+    client = FakeClient()
+    connector._client = lambda: _AsyncContext(client)  # type: ignore[method-assign]
+
+    orders = await connector.fetch_open_orders(["BTC"])
+
+    assert client.request_calls == [("openAlgoOrders", "fapiPrivate", "GET", {})]
+    assert len(orders) == 1
+    assert orders[0]["id"] == "a1"
+    assert orders[0]["symbol"] == "BTC/USDT:USDT"
+
+
+@pytest.mark.asyncio
 async def test_fetch_open_orders_skips_binance_algo_orders_when_disabled():
     connector = _build_connector("binance")
 

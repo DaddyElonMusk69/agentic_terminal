@@ -250,6 +250,41 @@ export const stageMessage = (topic: string, payload: unknown): string | null => 
     return count !== null ? `Quant scan complete · ${count} snapshots` : "Quant scan complete";
   }
 
+  if (topic === "automation.prompt.config_selected") {
+    const detail =
+      data.details && typeof data.details === "object"
+        ? (data.details as Record<string, unknown>)
+        : data;
+    const resolved = Array.isArray(detail.resolved_prompt_configs)
+      ? detail.resolved_prompt_configs
+      : [];
+    const promptParts = resolved
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const record = entry as Record<string, unknown>;
+        const key = typeof record.key === "string" ? record.key : null;
+        const templateId =
+          typeof record.template_id === "number" ? record.template_id : null;
+        const templateName =
+          typeof record.template_name === "string" && record.template_name
+            ? record.template_name
+            : null;
+        if (!key || templateId === null) return null;
+        return `${key}=#${templateId}${templateName ? ` ${templateName}` : " (missing template)"}`;
+      })
+      .filter(Boolean);
+    const runtimeParts = [
+      typeof detail.execution_mode === "string" ? `mode=${detail.execution_mode}` : null,
+      typeof detail.provider === "string" && detail.provider ? `provider=${detail.provider}` : null,
+      typeof detail.model === "string" && detail.model ? `model=${detail.model}` : null,
+      typeof detail.reasoning_effort === "string" && detail.reasoning_effort
+        ? `reasoning=${detail.reasoning_effort}`
+        : null,
+    ].filter(Boolean);
+    const parts = [...runtimeParts, ...(promptParts.length ? promptParts : ["no prompt overrides"])];
+    return `Prompt config in use · ${parts.join(" · ")}`;
+  }
+
   if (topic === "automation.prompt.requested") {
     const symbol = extractSymbol(data);
     const trigger = typeof data.trigger_reason === "string" ? data.trigger_reason : null;
@@ -636,6 +671,14 @@ const buildStageLogEntry = (topic: string, payload: unknown, ts?: string): Autom
     if (typeof record.model === "string" && record.model.trim()) {
       data.model = record.model;
     }
+  }
+  if (topic === "automation.prompt.config_selected" && payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    const details =
+      record.details && typeof record.details === "object"
+        ? (record.details as Record<string, unknown>)
+        : record;
+    data.details = details;
   }
   if (
     (topic === "automation.parser.completed" || topic === "automation.parser.failed") &&

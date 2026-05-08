@@ -198,6 +198,7 @@ class StubPortfolioServiceWithPositionAndNestedProtectionOrders(StubPortfolioSer
                     "symbol": "TONUSDT",
                     "orderType": "STOP_MARKET",
                     "triggerPrice": "3.10",
+                    "closePosition": True,
                 },
             },
             {
@@ -207,6 +208,34 @@ class StubPortfolioServiceWithPositionAndNestedProtectionOrders(StubPortfolioSer
                     "symbol": "TONUSDT",
                     "orderType": "TAKE_PROFIT_MARKET",
                     "triggerPrice": "3.50",
+                },
+            },
+        ]
+
+
+class StubPortfolioServiceWithPositionAndAddTrancheOrder(StubPortfolioServiceWithPosition):
+    async def get_open_orders(self):
+        return [
+            {
+                "id": "add-tranche-1",
+                "symbol": "TONUSDT",
+                "status": "NEW",
+                "info": {
+                    "symbol": "TONUSDT",
+                    "orderType": "STOP_MARKET",
+                    "triggerPrice": "3.40",
+                    "closePosition": False,
+                },
+            },
+            {
+                "id": "protective-sl",
+                "symbol": "TONUSDT",
+                "status": "NEW",
+                "info": {
+                    "symbol": "TONUSDT",
+                    "orderType": "STOP_MARKET",
+                    "triggerPrice": "3.10",
+                    "closePosition": True,
                 },
             },
         ]
@@ -222,6 +251,7 @@ class StubPortfolioServiceWithLowPriceProtectionOrders(StubPortfolioServiceWithL
                     "symbol": "ACHUSDT",
                     "orderType": "STOP_MARKET",
                     "triggerPrice": "0.005915",
+                    "closePosition": True,
                 },
             },
             {
@@ -1074,6 +1104,50 @@ async def test_prompt_builder_preserves_small_price_precision_for_open_position_
     position = result.data["open_positions"]["ACH/USDT"]
     assert position["stop_loss"] == 0.005915
     assert position["take_profit"] == 0.006129
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_ignores_add_tranche_stop_market_orders_for_stop_loss():
+    template = PromptTemplate(
+        id=1,
+        name="positions",
+        intro="Hello",
+        response_format="OK",
+        quant_fields=["price_current"],
+        chart_defaults={
+            "data_selections": ["open_positions"],
+            "field_selections": {
+                "open_positions": [
+                    "stop_loss",
+                    "take_profit",
+                ],
+            },
+        },
+        is_default=True,
+    )
+    snapshot = _build_snapshot("TON/USDT")
+    service = PromptBuilderService(
+        template_repository=StubTemplateRepo(template),
+        quant_provider=StubQuantProvider(snapshot),
+        chart_preview_service=StubChartGenerator(),
+        uploader_service=StubUploaderService(StubUploader()),
+        portfolio_service=StubPortfolioServiceWithPositionAndAddTrancheOrder(),
+        risk_config_service=StubRiskConfigService(),
+    )
+
+    request = PromptBuildRequest(
+        request_id="req-open-add-tranche-stop",
+        template_id=1,
+        trigger_reason="position_management",
+        tickers=["TON/USDT"],
+        intervals=["2h"],
+    )
+
+    result = await service.build(request)
+
+    position = result.data["open_positions"]["TON/USDT"]
+    assert position["stop_loss"] == 3.1
+    assert position["take_profit"] is None
 
 
 @pytest.mark.asyncio

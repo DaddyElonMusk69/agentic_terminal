@@ -135,12 +135,43 @@ def test_update_sl_uses_open_orders_when_symbol_formats_differ():
             "symbol": "BTC/USDT:USDT",
             "type": "STOP_MARKET",
             "stopPrice": 100.0,
+            "closePosition": True,
             "status": "NEW",
         }
     ]
     result = guard.validate(decision, open_positions=open_positions, open_orders=open_orders)
     assert result.is_valid is True
     assert result.decision.action == ExecutionAction.HOLD
+
+
+def test_update_sl_ignores_add_tranche_stop_market_order_when_checking_wider_stop():
+    config = _base_config()
+    guard = create_default_guard(config)
+    decision = ExecutionIdea(
+        action=ExecutionAction.UPDATE_SL,
+        symbol="BTC",
+        new_stop_loss=102.0,
+    )
+    open_positions = [{"symbol": "BTC/USDT:USDT", "direction": "long", "size": 1}]
+    open_orders = [
+        {
+            "symbol": "BTC/USDT:USDT",
+            "type": "STOP_MARKET",
+            "stopPrice": 105.0,
+            "closePosition": False,
+            "status": "NEW",
+        },
+        {
+            "symbol": "BTC/USDT:USDT",
+            "type": "STOP_MARKET",
+            "stopPrice": 100.0,
+            "closePosition": True,
+            "status": "NEW",
+        },
+    ]
+    result = guard.validate(decision, open_positions=open_positions, open_orders=open_orders)
+    assert result.is_valid is True
+    assert result.decision.action == ExecutionAction.UPDATE_SL
 
 
 def test_update_sl_converts_stop_loss_roe_to_break_even_price_for_long():

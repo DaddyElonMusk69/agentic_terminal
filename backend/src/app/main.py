@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from app.application.auto_add.runtime import get_auto_add_runtime
 from app.application.pending_entry.runtime import get_pending_entry_runtime
@@ -29,6 +32,16 @@ from app.api.v1 import (
 from app.common.logging import setup_logging
 from app.realtime.server import create_socketio_app, create_socketio_server
 from app.settings import get_settings
+
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
 
 
 @asynccontextmanager
@@ -77,11 +90,24 @@ def _create_api() -> FastAPI:
     api.include_router(observability_router, prefix="/api/v1")
     api.include_router(oi_rank_router, prefix="/api/v1")
 
-    @api.get("/")
-    async def root() -> dict:
-        return {"service": settings.service_name, "version": settings.version}
+    if not _mount_frontend(api, settings.frontend_dist_path):
+        @api.get("/")
+        async def root() -> dict:
+            return {"service": settings.service_name, "version": settings.version}
 
     return api
+
+
+def _mount_frontend(api: FastAPI, frontend_dist_path: str) -> bool:
+    if not frontend_dist_path:
+        return False
+    dist_path = Path(frontend_dist_path).expanduser()
+    if not dist_path.is_absolute():
+        dist_path = Path.cwd() / dist_path
+    if not (dist_path / "index.html").is_file():
+        return False
+    api.mount("/", SPAStaticFiles(directory=str(dist_path), html=True), name="frontend")
+    return True
 
 
 def create_app():

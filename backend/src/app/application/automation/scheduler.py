@@ -63,6 +63,31 @@ class AutomationScheduler:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
 
+    def update_config(
+        self,
+        *,
+        ema_interval_seconds: int,
+        quant_interval_seconds: int,
+        max_positions: int,
+        execution_mode: str,
+        template_map: Optional[dict[str, int]],
+        llm_model: Optional[str],
+        llm_provider: Optional[str],
+        llm_reasoning_effort: Optional[str],
+        include_entry_timing_15m_chart: bool,
+        use_all_monitored_interval_charts: bool,
+    ) -> None:
+        self._ema_interval = max(1, int(ema_interval_seconds))
+        self._quant_interval = max(1, int(quant_interval_seconds))
+        self._max_positions = max(1, int(max_positions))
+        self._execution_mode = execution_mode
+        self._template_map = dict(template_map or {})
+        self._llm_model = llm_model
+        self._llm_provider = llm_provider
+        self._llm_reasoning_effort = llm_reasoning_effort
+        self._include_entry_timing_15m_chart = bool(include_entry_timing_15m_chart)
+        self._use_all_monitored_interval_charts = bool(use_all_monitored_interval_charts)
+
     async def _run_ema_loop(self) -> None:
         while not self._stop_event.is_set():
             cycle_number = self._ema_cycles + 1

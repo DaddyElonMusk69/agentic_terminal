@@ -114,6 +114,46 @@ class AutomationRuntime:
             await self._stop_locked()
             return self.snapshot()
 
+    async def update_config(self, config: AutomationRuntimeConfig) -> dict:
+        async with self._lock:
+            normalized = _normalize_config(
+                AutomationRuntimeConfig(
+                    execution_mode=config.execution_mode,
+                    ema_interval_seconds=config.ema_interval_seconds,
+                    quant_interval_seconds=config.quant_interval_seconds,
+                    pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
+                    max_positions=config.max_positions,
+                    auto_add_enabled=config.auto_add_enabled,
+                    auto_add_trigger_atr_multiple=config.auto_add_trigger_atr_multiple,
+                    auto_add_tranche_margin_pct=config.auto_add_tranche_margin_pct,
+                    auto_add_max_tranches=config.auto_add_max_tranches,
+                    auto_add_protected_stop_roe=config.auto_add_protected_stop_roe,
+                    provider=config.provider,
+                    model=config.model,
+                    reasoning_effort=config.reasoning_effort,
+                    include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
+                    use_all_monitored_interval_charts=config.use_all_monitored_interval_charts,
+                    reverse_order_enabled=config.reverse_order_enabled,
+                    vegas_prompt_configs=config.vegas_prompt_configs,
+                    session_id=self._session_id if self._running else config.session_id,
+                )
+            )
+            self._config = normalized
+            if self._running and self._scheduler is not None:
+                self._scheduler.update_config(
+                    ema_interval_seconds=normalized.ema_interval_seconds,
+                    quant_interval_seconds=normalized.quant_interval_seconds,
+                    max_positions=normalized.max_positions,
+                    execution_mode=normalized.execution_mode,
+                    template_map=normalized.vegas_prompt_configs,
+                    llm_model=normalized.model,
+                    llm_provider=normalized.provider,
+                    llm_reasoning_effort=normalized.reasoning_effort,
+                    include_entry_timing_15m_chart=normalized.include_entry_timing_15m_chart,
+                    use_all_monitored_interval_charts=normalized.use_all_monitored_interval_charts,
+                )
+            return self.snapshot()
+
     def snapshot(self) -> dict:
         stats = self._scheduler.stats() if self._scheduler else {}
         ema_cycles = stats.get("ema_cycles", 0)

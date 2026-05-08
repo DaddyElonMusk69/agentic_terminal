@@ -1098,7 +1098,7 @@ def _extract_sl_tp(orders: List[dict]) -> tuple[Optional[float], Optional[float]
             if take_profit is None:
                 take_profit = candidate
             continue
-        if "stop" in order_type:
+        if "stop" in order_type and _is_protection_order(order):
             if stop_loss is None:
                 stop_loss = candidate
             continue
@@ -1138,6 +1138,22 @@ def _extract_trigger_price(order: dict) -> Optional[float]:
         if value is not None and value > 0:
             return value
     return None
+
+
+def _is_protection_order(order: dict) -> bool:
+    return _extract_order_flag(order, "reduceOnly") or _extract_order_flag(order, "closePosition")
+
+
+def _extract_order_flag(order: dict, key: str) -> bool:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for source in (order, info, params):
+        value = source.get(key)
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() == "true":
+            return True
+    return False
 
 
 def _calculate_price_target_roe_pct(

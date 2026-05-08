@@ -1,6 +1,7 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
@@ -11,10 +12,12 @@ from app.application.automation.execution_mode import normalize_execution_mode, 
 from app.application.automation.dependencies import (
     get_automation_config_service,
     get_automation_history_service,
+    get_outbox_service,
 )
 from app.application.auto_add.dependencies import get_auto_add_service
 from app.application.pending_entry.dependencies import get_pending_entry_service
 from app.application.portfolio.dependencies import get_portfolio_service
+from app.application.prompt_templates.dependencies import get_prompt_template_service
 from app.application.trade_executor.dependencies import get_trade_executor_service
 from app.application.bus.outbox_service import OutboxService
 from app.common.api import ApiMeta
@@ -28,6 +31,7 @@ from app.realtime.hub import hub
 
 
 router = APIRouter(prefix="/automation", tags=["automation"])
+logger = logging.getLogger(__name__)
 
 
 class AutomationStartRequest(BaseModel):
@@ -174,6 +178,8 @@ class AutomationSessionSummary(BaseModel):
     duration_seconds: Optional[int] = None
     new_resonance_prompt_version: Optional[int] = None
     position_management_prompt_version: Optional[int] = None
+    ema_scanner_settings: Optional[dict] = None
+    auto_add_settings: Optional[dict] = None
 
 
 class AutomationSessionList(BaseModel):
@@ -446,9 +452,25 @@ def _extract_sl_tp(orders: list[dict]) -> tuple[float | None, float | None]:
             continue
         if "take" in order_type and take_profit is None:
             take_profit = trigger_price
-        elif "stop" in order_type and stop_loss is None:
+        elif "stop" in order_type and stop_loss is None and _is_protection_order(order):
             stop_loss = trigger_price
     return stop_loss, take_profit
+
+
+def _is_protection_order(order: dict) -> bool:
+    return _extract_order_flag(order, "reduceOnly") or _extract_order_flag(order, "closePosition")
+
+
+def _extract_order_flag(order: dict, key: str) -> bool:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for source in (order, info, params):
+        value = source.get(key)
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() == "true":
+            return True
+    return False
 
 
 def _safe_float(value) -> float | None:
@@ -460,7 +482,7 @@ def _safe_float(value) -> float | None:
         return None
 
 
-def _to_session_summary(session) -> AutomationSessionSummary:
+def _to_session_summary(session, logs: Optional[List[object]] = None) -> AutomationSessionSummary:
     prompt_snapshot = session.config_snapshot if isinstance(session.config_snapshot, dict) else {}
     return AutomationSessionSummary(
         id=session.id,
@@ -484,7 +506,63 @@ def _to_session_summary(session) -> AutomationSessionSummary:
             prompt_snapshot,
             "position_management",
         ),
+        ema_scanner_settings=_extract_ema_scanner_settings(prompt_snapshot, logs),
+        auto_add_settings=_extract_auto_add_settings(prompt_snapshot),
     )
+
+
+def _extract_auto_add_settings(config_snapshot: dict) -> dict:
+    settings = {
+        "auto_add_enabled": _safe_bool_or_none(config_snapshot.get("auto_add_enabled")),
+        "auto_add_trigger_atr_multiple": _safe_float(
+            config_snapshot.get("auto_add_trigger_atr_multiple")
+        ),
+        "auto_add_tranche_margin_pct": _safe_float(
+            config_snapshot.get("auto_add_tranche_margin_pct")
+        ),
+        "auto_add_max_tranches": _safe_int(config_snapshot.get("auto_add_max_tranches")),
+        "pending_entry_timeout_seconds": _safe_int(
+            config_snapshot.get("pending_entry_timeout_seconds")
+        ),
+    }
+    return {key: value for key, value in settings.items() if value is not None}
+
+
+def _extract_ema_scanner_settings(config_snapshot: dict, logs: Optional[List[object]] = None) -> dict:
+    scanner_data = _latest_ema_scan_config_log(logs or [])
+    settings = {
+        "automation_interval_seconds": _safe_int(config_snapshot.get("ema_interval_seconds")),
+        "include_entry_timing_15m_chart": _safe_bool_or_none(
+            config_snapshot.get("include_entry_timing_15m_chart")
+        ),
+        "use_all_monitored_interval_charts": _safe_bool_or_none(
+            config_snapshot.get("use_all_monitored_interval_charts")
+        ),
+        "assets_count": _safe_int(scanner_data.get("assets_count")),
+        "timeframes_count": _safe_int(scanner_data.get("timeframes_count")),
+        "ema_lines_count": _safe_int(scanner_data.get("ema_lines_count")),
+        "tolerance_pct": _safe_float(scanner_data.get("tolerance_pct")),
+        "assets": _safe_string_list(scanner_data.get("assets")),
+        "timeframes": _safe_string_list(scanner_data.get("timeframes")),
+        "ema_lengths": _safe_int_list(scanner_data.get("ema_lengths")),
+        "quote_asset": _safe_str_or_none(scanner_data.get("quote_asset")),
+        "monitored_intervals": _safe_string_list(scanner_data.get("monitored_intervals")),
+    }
+    return {key: value for key, value in settings.items() if value is not None}
+
+
+def _latest_ema_scan_config_log(logs: List[object]) -> dict:
+    for log in logs:
+        data = getattr(log, "data", None)
+        if not isinstance(data, dict):
+            continue
+        if data.get("event") != "scan_config":
+            continue
+        nested_data = data.get("data")
+        if isinstance(nested_data, dict):
+            return nested_data
+        return data
+    return {}
 
 
 def _extract_prompt_version(config_snapshot: dict, key: str) -> Optional[int]:
@@ -497,6 +575,163 @@ def _extract_prompt_version(config_snapshot: dict, key: str) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
+async def _load_prompt_template_names(prompt_configs: Optional[dict]) -> dict[int, str]:
+    if not isinstance(prompt_configs, dict) or not prompt_configs:
+        return {}
+
+    template_ids: set[int] = set()
+    for raw_value in prompt_configs.values():
+        try:
+            template_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if template_id > 0:
+            template_ids.add(template_id)
+    if not template_ids:
+        return {}
+
+    names: dict[int, str] = {}
+    try:
+        service = get_prompt_template_service()
+        for template_id in sorted(template_ids):
+            template = await service.get_template(template_id)
+            if template is not None and template.name:
+                names[template_id] = template.name
+    except Exception as exc:  # pragma: no cover - best-effort logging context
+        logger.warning("Failed to resolve automation prompt template names: %s", exc)
+    return names
+
+
+def _build_prompt_config_log_payload(
+    *,
+    session_id: str,
+    runtime_state: dict[str, Any],
+    template_names: dict[int, str],
+) -> dict:
+    prompt_configs = _normalize_prompt_config_payload(runtime_state.get("vegas_prompt_configs"))
+    resolved_prompt_configs = []
+    prompt_parts = []
+    for key, template_id in prompt_configs.items():
+        template_name = template_names.get(template_id)
+        status = "resolved" if template_name else "missing"
+        resolved_prompt_configs.append(
+            {
+                "key": key,
+                "template_id": template_id,
+                "template_name": template_name,
+                "status": status,
+            }
+        )
+        if template_name:
+            prompt_parts.append(f"{key}=#{template_id} {template_name}")
+        else:
+            prompt_parts.append(f"{key}=#{template_id} (missing template)")
+
+    execution_mode = _string_or_none(runtime_state.get("execution_mode"))
+    provider = _string_or_none(runtime_state.get("provider"))
+    model = _string_or_none(runtime_state.get("model"))
+    reasoning_effort = _string_or_none(runtime_state.get("reasoning_effort"))
+
+    runtime_parts = [
+        f"mode={execution_mode}" if execution_mode else None,
+        f"provider={provider}" if provider else None,
+        f"model={model}" if model else None,
+        f"reasoning={reasoning_effort}" if reasoning_effort else None,
+    ]
+    summary_parts = [part for part in runtime_parts if part]
+    summary_parts.extend(prompt_parts or ["no prompt overrides"])
+
+    details = {
+        "source": "automation_runtime_after_start",
+        "execution_mode": execution_mode,
+        "provider": provider,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "vegas_prompt_configs": prompt_configs,
+        "resolved_prompt_configs": resolved_prompt_configs,
+    }
+
+    return {
+        "session_id": session_id,
+        "message": f"Prompt config in use | {' | '.join(summary_parts)}",
+        "execution_mode": execution_mode,
+        "provider": provider,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "details": details,
+    }
+
+
+def _normalize_prompt_config_payload(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, int] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        try:
+            template_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if template_id > 0:
+            cleaned[key] = template_id
+    return cleaned
+
+
+def _string_or_none(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _safe_int(value) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_str_or_none(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _safe_bool_or_none(value) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
+def _safe_string_list(value) -> Optional[List[str]]:
+    if not isinstance(value, list):
+        return None
+    result = [str(item).strip() for item in value if str(item).strip()]
+    return result or None
+
+
+def _safe_int_list(value) -> Optional[List[int]]:
+    if not isinstance(value, list):
+        return None
+    result: List[int] = []
+    for item in value:
+        parsed = _safe_int(item)
+        if parsed is not None:
+            result.append(parsed)
+    return result or None
 
 
 def _to_log_entry(log) -> AutomationLogEntry:
@@ -687,6 +922,27 @@ async def update_automation_config(
         reverse_order_enabled=payload.reverse_order_enabled,
         vegas_prompt_configs=payload.vegas_prompt_configs,
     )
+    await get_automation_runtime().update_config(
+        AutomationRuntimeConfig(
+            execution_mode=config.execution_mode,
+            ema_interval_seconds=config.ema_interval_seconds,
+            quant_interval_seconds=config.quant_interval_seconds,
+            pending_entry_timeout_seconds=config.pending_entry_timeout_seconds,
+            max_positions=config.max_positions,
+            auto_add_enabled=config.auto_add_enabled,
+            auto_add_trigger_atr_multiple=config.auto_add_trigger_atr_multiple,
+            auto_add_tranche_margin_pct=config.auto_add_tranche_margin_pct,
+            auto_add_max_tranches=config.auto_add_max_tranches,
+            auto_add_protected_stop_roe=config.auto_add_protected_stop_roe,
+            provider=config.provider,
+            model=config.model,
+            reasoning_effort=config.reasoning_effort,
+            include_entry_timing_15m_chart=config.include_entry_timing_15m_chart,
+            use_all_monitored_interval_charts=config.use_all_monitored_interval_charts,
+            reverse_order_enabled=config.reverse_order_enabled,
+            vegas_prompt_configs=config.vegas_prompt_configs,
+        )
+    )
     view = AutomationConfigView(
         execution_mode=config.execution_mode,
         ema_interval_seconds=config.ema_interval_seconds,
@@ -817,6 +1073,19 @@ async def start_automation(
         "started_at": state.get("started_at"),
         "session_id": session_id,
     }
+    try:
+        prompt_template_names = await _load_prompt_template_names(state.get("vegas_prompt_configs"))
+        prompt_config_payload = _build_prompt_config_log_payload(
+            session_id=session_id,
+            runtime_state=state,
+            template_names=prompt_template_names,
+        )
+        await get_outbox_service().enqueue_event(
+            topics.PROMPT_CONFIG_SELECTED,
+            prompt_config_payload,
+        )
+    except Exception as exc:  # pragma: no cover - start should not fail on logging
+        logger.warning("Failed to enqueue automation prompt config log: %s", exc)
     await hub.emit_topic(
         "automation.session.started",
         config_payload,
@@ -1158,7 +1427,7 @@ async def get_session_detail(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     payload = AutomationSessionDetail(
-        session=_to_session_summary(session),
+        session=_to_session_summary(session, logs),
         logs=[_to_log_entry(log) for log in logs],
         trades=[_to_trade_entry(trade) for trade in trades],
     )
@@ -1176,7 +1445,7 @@ async def export_session(
         raise HTTPException(status_code=404, detail="Session not found")
     payload = AutomationSessionExport(
         exported_at=datetime.now(timezone.utc).isoformat(),
-        session=_to_session_summary(session),
+        session=_to_session_summary(session, logs),
         logs=[_to_log_entry(log) for log in logs],
         trades=[_to_trade_entry(trade) for trade in trades],
     )

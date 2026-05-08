@@ -35,6 +35,30 @@ class StubScheduler:
         return {}
 
 
+class RecordingScheduler:
+    instances: list["RecordingScheduler"] = []
+
+    def __init__(self, *args, session_id: str | None = None, **kwargs) -> None:  # noqa: ANN002,ANN003
+        del args
+        self.session_id = session_id
+        self.kwargs = dict(kwargs)
+        self.updates: list[dict] = []
+        RecordingScheduler.instances.append(self)
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    def update_config(self, **kwargs) -> None:  # noqa: ANN003
+        self.updates.append(dict(kwargs))
+        self.kwargs.update(kwargs)
+
+    def stats(self) -> dict:
+        return {}
+
+
 async def _idle_loop(self) -> None:  # noqa: ANN001
     await asyncio.Event().wait()
 
@@ -93,3 +117,44 @@ async def test_stopping_automation_does_not_stop_pending_entry_runtime(monkeypat
 
     await _wait_for(lambda: pending_service.calls > calls_before_stop)
     await pending_runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_running_automation_runtime_updates_scheduler_prompt_map(monkeypatch):
+    import app.application.automation.runtime as automation_runtime_module
+
+    RecordingScheduler.instances.clear()
+    monkeypatch.setattr(automation_runtime_module, "AutomationScheduler", RecordingScheduler)
+    monkeypatch.setattr(automation_runtime_module, "get_automation_pipeline_service", lambda: object())
+
+    runtime = AutomationRuntime()
+    runtime._run_prompt_loop = MethodType(_idle_loop, runtime)
+    runtime._run_llm_loop = MethodType(_idle_loop, runtime)
+    runtime._run_order_loop = MethodType(_idle_loop, runtime)
+    runtime._run_outbox_loop = MethodType(_idle_loop, runtime)
+
+    await runtime.start(
+        AutomationRuntimeConfig(
+            session_id="session-test",
+            vegas_prompt_configs={"new_resonance": 1},
+            model="old-model",
+        )
+    )
+    scheduler = RecordingScheduler.instances[-1]
+
+    await runtime.update_config(
+        AutomationRuntimeConfig(
+            vegas_prompt_configs={"new_resonance": 2, "position_management": 3},
+            model="new-model",
+            session_id="ignored-new-session",
+        )
+    )
+
+    snapshot = runtime.snapshot()
+    assert snapshot["session_id"] == "session-test"
+    assert snapshot["model"] == "new-model"
+    assert snapshot["vegas_prompt_configs"] == {"new_resonance": 2, "position_management": 3}
+    assert scheduler.updates[-1]["template_map"] == {"new_resonance": 2, "position_management": 3}
+    assert scheduler.updates[-1]["llm_model"] == "new-model"
+
+    await runtime.stop()

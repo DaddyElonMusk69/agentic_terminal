@@ -154,6 +154,26 @@ Prompt tuning is treated as an operational workflow. The system exposes the conf
 - Root-level integration scripts: [tests/README.md](tests/README.md)
 - Prompt-ops workflow: [skills/README.md](skills/README.md)
 
+## Local Production Runner
+
+For a local, no-reload run that serves the built frontend and backend from one port:
+
+```bash
+./scripts/run-local-prod.sh
+```
+
+The launcher builds `frontend/dist`, serves it from FastAPI, and starts the backend at
+`http://127.0.0.1:8101` using `backend/.env.8101` by default. It does not recreate,
+reset, truncate, or migrate the database. To use a different env file:
+
+```bash
+BACKEND_ENV_FILE=backend/.env ./scripts/run-local-prod.sh
+```
+
+On macOS, the launcher wraps the process with `caffeinate -dimsu` when available so
+the app is kept awake while the command is running. Lid-closed behavior can still
+depend on macOS power settings and whether the laptop is connected to power.
+
 ## The Thesis
 
 For the full architectural reasoning behind this system — including the intelligence-execution gap, the tuning process behind its benchmark performance, why event-gated model invocation outperforms schedule-driven loops, and why scaffolding beats raw model intelligence — read [WHITEPAPER.md](WHITEPAPER.md).

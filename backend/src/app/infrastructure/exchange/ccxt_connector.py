@@ -1320,28 +1320,31 @@ def _resolve_ccxt_market_symbol(client: Any, symbol: str) -> str:
 
 
 async def _fetch_binance_open_algo_orders(client: Any, symbols: Optional[List[str]]) -> List[dict]:
-    if not hasattr(client, "fapiPrivateGetOpenAlgoOrders"):
-        return []
-
     orders: List[dict] = []
 
     if symbols:
         for symbol in symbols:
             market_id = _resolve_market_id(client, symbol)
             params = {"symbol": market_id} if market_id else {}
-            try:
-                payload = await client.fapiPrivateGetOpenAlgoOrders(params)
-            except Exception:
-                payload = []
+            payload = await _fetch_binance_open_algo_payload(client, params)
             orders.extend(_normalize_algo_orders(client, payload, market_id))
     else:
-        try:
-            payload = await client.fapiPrivateGetOpenAlgoOrders()
-        except Exception:
-            payload = []
+        payload = await _fetch_binance_open_algo_payload(client, {})
         orders.extend(_normalize_algo_orders(client, payload, None))
 
     return orders
+
+
+async def _fetch_binance_open_algo_payload(client: Any, params: dict) -> Any:
+    try:
+        if hasattr(client, "fapiPrivateGetOpenAlgoOrders"):
+            return await client.fapiPrivateGetOpenAlgoOrders(params)
+        request = getattr(client, "request", None)
+        if callable(request):
+            return await request("openAlgoOrders", "fapiPrivate", "GET", params)
+    except Exception:
+        return []
+    return []
 
 
 def _resolve_market_id(client: Any, symbol: Optional[str]) -> Optional[str]:

@@ -1612,6 +1612,8 @@ def _extract_stop_prices(orders: list, symbol: str) -> List[float]:
 
         if "take" in order_type and "stop" not in order_type:
             continue
+        if not _is_protection_order(order):
+            continue
 
         prices.append(stop_price)
 
@@ -1654,6 +1656,22 @@ def _extract_take_profit_prices(orders: list, symbol: str) -> List[float]:
         prices.append(stop_price)
 
     return prices
+
+
+def _is_protection_order(order: dict) -> bool:
+    return _extract_order_flag(order, "reduceOnly") or _extract_order_flag(order, "closePosition")
+
+
+def _extract_order_flag(order: dict, key: str) -> bool:
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    params = order.get("params") if isinstance(order.get("params"), dict) else {}
+    for source in (order, info, params):
+        value = source.get(key)
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() == "true":
+            return True
+    return False
 
 
 def _select_stop_price(

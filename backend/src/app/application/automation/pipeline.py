@@ -104,6 +104,11 @@ class AutomationPipelineService:
                 "timeframes_count": len(config.timeframes),
                 "ema_lines_count": len(config.ema_lengths),
                 "tolerance_pct": config.tolerance_pct,
+                "assets": [asset.strip().upper() for asset in config.assets if asset.strip()],
+                "timeframes": list(config.timeframes),
+                "ema_lengths": list(config.ema_lengths),
+                "quote_asset": config.quote_asset,
+                "monitored_intervals": list(monitored_intervals),
             },
         )
 

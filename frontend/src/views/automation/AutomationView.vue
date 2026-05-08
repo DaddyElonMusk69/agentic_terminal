@@ -1739,6 +1739,34 @@
                           {{ formatPromptVersion(sessionDetail.session.position_management_prompt_version) }}
                         </div>
                       </div>
+                      <div class="space-y-2 border-t border-border pt-3">
+                        <div class="text-[10px] uppercase tracking-wide text-muted">EMA Scanner</div>
+                        <template v-if="sessionEmaSettingsRows.length">
+                          <div
+                            v-for="row in sessionEmaSettingsRows"
+                            :key="row.label"
+                            class="space-y-0.5"
+                          >
+                            <div class="text-[10px] uppercase tracking-wide text-muted">{{ row.label }}</div>
+                            <div class="break-words font-mono text-[11px] text-text">{{ row.value }}</div>
+                          </div>
+                        </template>
+                        <div v-else class="text-[11px] text-muted">No scanner settings captured.</div>
+                      </div>
+                      <div class="space-y-2 border-t border-border pt-3">
+                        <div class="text-[10px] uppercase tracking-wide text-muted">Auto-Add</div>
+                        <template v-if="sessionAutoAddSettingsRows.length">
+                          <div
+                            v-for="row in sessionAutoAddSettingsRows"
+                            :key="row.label"
+                            class="space-y-0.5"
+                          >
+                            <div class="text-[10px] uppercase tracking-wide text-muted">{{ row.label }}</div>
+                            <div class="break-words font-mono text-[11px] text-text">{{ row.value }}</div>
+                          </div>
+                        </template>
+                        <div v-else class="text-[11px] text-muted">No auto-add settings captured.</div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2301,6 +2329,8 @@ type SessionItem = {
   duration_seconds?: number | null;
   new_resonance_prompt_version?: number | null;
   position_management_prompt_version?: number | null;
+  ema_scanner_settings?: Record<string, unknown> | null;
+  auto_add_settings?: Record<string, unknown> | null;
 };
 
 type SessionDetail = {
@@ -2364,6 +2394,7 @@ const showSessionModal = ref(false);
 const sessions = ref<SessionItem[]>([]);
 const selectedSessionId = ref<string | null>(null);
 const sessionDetail = ref<SessionDetail | null>(null);
+const sessionEmaSettingsCache = ref<Record<string, Record<string, unknown>>>({});
 const sessionsLoading = ref(false);
 const sessionDetailLoading = ref(false);
 const sessionError = ref("");
@@ -2470,6 +2501,49 @@ const hasMoreSessions = computed(
 const sessionLogHasMore = computed(() => {
   if (!sessionDetail.value) return false;
   return sessionDetail.value.logs.length >= sessionLogPageSize;
+});
+
+const sessionEmaSettingsRows = computed(() => {
+  const session = sessionDetail.value?.session;
+  const currentSettings =
+    session?.ema_scanner_settings && typeof session.ema_scanner_settings === "object"
+      ? session.ema_scanner_settings
+      : null;
+  const cachedSettings = session?.id ? sessionEmaSettingsCache.value[session.id] : null;
+  const settings = {
+    ...(cachedSettings || {}),
+    ...(currentSettings || {}),
+  };
+  if (!settings || typeof settings !== "object") return [];
+  const rows = [
+    ["Automation cadence", formatSecondsValue(settings.automation_interval_seconds)],
+    ["Scan intervals", formatListValue(settings.timeframes)],
+    ["Available intervals", formatListValue(settings.monitored_intervals)],
+    ["EMA lengths", formatListValue(settings.ema_lengths)],
+    ["Tolerance", formatPercentValue(settings.tolerance_pct)],
+    ["Assets", formatAssetsSetting(settings)],
+    ["Quote", formatPlainValue(settings.quote_asset)],
+    ["Entry timing chart", formatBooleanValue(settings.include_entry_timing_15m_chart)],
+    ["All monitored charts", formatBooleanValue(settings.use_all_monitored_interval_charts)],
+  ];
+  return rows
+    .filter((row): row is [string, string] => Boolean(row[1]))
+    .map(([label, value]) => ({ label, value }));
+});
+
+const sessionAutoAddSettingsRows = computed(() => {
+  const settings = sessionDetail.value?.session?.auto_add_settings;
+  if (!settings || typeof settings !== "object") return [];
+  const rows = [
+    ["Enabled", formatBooleanValue(settings.auto_add_enabled)],
+    ["ATR multiple", formatMultiplierValue(settings.auto_add_trigger_atr_multiple)],
+    ["Tranche margin", formatRatioPercentValue(settings.auto_add_tranche_margin_pct)],
+    ["Max tranches", formatPlainValue(settings.auto_add_max_tranches)],
+    ["Pending timeout", formatDurationSecondsValue(settings.pending_entry_timeout_seconds)],
+  ];
+  return rows
+    .filter((row): row is [string, string] => Boolean(row[1]))
+    .map(([label, value]) => ({ label, value }));
 });
 
 type PaginationItem =
@@ -2815,6 +2889,58 @@ const formatNumber = (value?: number | null) => {
 const formatRate = (value?: number | null) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return value >= 10 ? value.toFixed(0) : value.toFixed(1);
+};
+
+const formatPlainValue = (value: unknown) => {
+  if (value === null || value === undefined || value === "") return "";
+  return String(value);
+};
+
+const formatBooleanValue = (value: unknown) => {
+  if (typeof value !== "boolean") return "";
+  return value ? "Yes" : "No";
+};
+
+const formatSecondsValue = (value: unknown) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return `${value}s`;
+};
+
+const formatPercentValue = (value: unknown) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return `${value}%`;
+};
+
+const formatRatioPercentValue = (value: unknown) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return `${Math.round(value * 100)}%`;
+};
+
+const formatMultiplierValue = (value: unknown) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return `${value.toFixed(2)}x`;
+};
+
+const formatDurationSecondsValue = (value: unknown) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  const minutes = value / 60;
+  if (Number.isInteger(minutes)) return `${minutes}m`;
+  return `${value}s`;
+};
+
+const formatListValue = (value: unknown) => {
+  if (!Array.isArray(value)) return "";
+  const items = value
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+  return items.length ? items.join(", ") : "";
+};
+
+const formatAssetsSetting = (settings: Record<string, unknown>) => {
+  const assets = formatListValue(settings.assets);
+  if (assets) return assets;
+  const count = settings.assets_count;
+  return typeof count === "number" && !Number.isNaN(count) ? `${count} assets` : "";
 };
 
 const formatPromptVersion = (value?: number | null) => {
@@ -3811,7 +3937,18 @@ const loadSessionDetail = async (sessionId: string, page = 1) => {
     if (!response.ok || !data?.data) {
       throw new Error(data?.detail || data?.error || "Failed to load session detail.");
     }
-    sessionDetail.value = data.data as SessionDetail;
+    const detail = data.data as SessionDetail;
+    const settings = detail.session?.ema_scanner_settings;
+    if (detail.session?.id && settings && Object.keys(settings).length > 0) {
+      sessionEmaSettingsCache.value = {
+        ...sessionEmaSettingsCache.value,
+        [detail.session.id]: {
+          ...(sessionEmaSettingsCache.value[detail.session.id] || {}),
+          ...settings,
+        },
+      };
+    }
+    sessionDetail.value = detail;
   } catch (error) {
     sessionError.value = error instanceof Error ? error.message : "Failed to load session detail.";
   } finally {

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
     socketio_path: str = "/realtime"
+    frontend_dist_path: str = ""
     database_url: str = "postgresql+asyncpg://localhost/trading_backend"
     redis_url: str = "redis://localhost:6379/0"
     prompt_image_store_path: str = "backend/tmp/prompt_images"
